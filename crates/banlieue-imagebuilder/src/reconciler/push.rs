@@ -13,8 +13,6 @@
 //!
 //! Everything here is pure; the reconciler does the API calls.
 
-use std::collections::BTreeMap;
-
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactStatus, ImageSource, ImageSourceKind, OciArtifactPhase,
     OciArtifactStatus,
@@ -25,6 +23,8 @@ use banlieue_provider_sdk::naming::truncate_with_hash;
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::Toleration;
 use serde_json::{Value, json};
+
+use super::job::{JobParts, job_parts};
 
 /// Provider class whose `Url` sources are delivered through the registry.
 pub const PROVIDER_CLASS_CLOUD_HYPERVISOR: &str = "cloud-hypervisor";
@@ -261,12 +261,12 @@ pub fn build_push_job(inputs: &PushJobInputs<'_>) -> Value {
         tolerations,
     } = *inputs;
 
-    let pvc = artifact
-        .pvc_ref
-        .as_ref()
-        .map(|r| r.name.clone())
-        .unwrap_or_default();
-    let file = artifact.file.clone().unwrap_or_default();
+    let JobParts {
+        pvc,
+        file,
+        labels,
+        owner_references,
+    } = job_parts("registry-push", vmimage, artifact, os_artifact_uid);
     let target = push_target(registry, os_artifact_uid);
 
     let mut args = vec![
@@ -316,19 +316,6 @@ pub fn build_push_job(inputs: &PushJobInputs<'_>) -> Value {
         mounts.push(json!({ "name": VOLUME_CA, "mountPath": CA_MOUNT_PATH, "readOnly": true }));
         volumes.push(ca.volume());
     }
-
-    let labels = BTreeMap::from([
-        ("app.kubernetes.io/name".to_string(), "banlieue".to_string()),
-        (
-            "app.kubernetes.io/component".to_string(),
-            "registry-push".to_string(),
-        ),
-        ("banlieue.io/vmimage".to_string(), vmimage.to_string()),
-    ]);
-    let owner_references = banlieue_provider_sdk::osartifact::owner_references(
-        &artifact.os_artifact_ref,
-        Some(os_artifact_uid),
-    );
 
     json!({
         "apiVersion": "batch/v1",

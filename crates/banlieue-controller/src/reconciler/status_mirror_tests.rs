@@ -110,14 +110,7 @@ mod tests {
     #[test]
     fn observed_power_state_absent_until_infra_reports_one() {
         let current = baseline_status_scheduled();
-        let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
-            conditions: vec![],
-        };
+        let infra = FakeInfra::default();
 
         let out = mirror_status_from_infra(&current, &infra, 1);
         assert_eq!(out.observed_power_state, None);
@@ -127,16 +120,12 @@ mod tests {
     fn maps_infra_ready_to_infrastructure_ready_condition() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
             conditions: vec![cond(
                 condition_types::READY,
                 condition_status::TRUE,
                 "Provisioned",
             )],
+            ..Default::default()
         };
         let out = mirror_status_from_infra(&current, &infra, 1);
 
@@ -152,14 +141,7 @@ mod tests {
     #[test]
     fn missing_infra_ready_condition_yields_pending_reason() {
         let current = baseline_status_scheduled();
-        let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
-            conditions: vec![],
-        };
+        let infra = FakeInfra::default();
         let out = mirror_status_from_infra(&current, &infra, 1);
 
         let ir = out
@@ -181,18 +163,15 @@ mod tests {
             "Valid",
         ));
         let infra = FakeInfra {
-            power_state: None,
             init: InitializationStatus {
                 provisioned: Some(true),
             },
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
             conditions: vec![cond(
                 condition_types::READY,
                 condition_status::TRUE,
                 "Provisioned",
             )],
+            ..Default::default()
         };
         let out = mirror_status_from_infra(&current, &infra, 1);
 
@@ -209,16 +188,12 @@ mod tests {
     fn aggregate_ready_is_false_when_infra_not_ready() {
         let current = baseline_status_scheduled();
         let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
             conditions: vec![cond(
                 condition_types::READY,
                 condition_status::FALSE,
                 "Cloning",
             )],
+            ..Default::default()
         };
         let out = mirror_status_from_infra(&current, &infra, 1);
 
@@ -240,16 +215,12 @@ mod tests {
             "Drift",
         ));
         let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
             conditions: vec![cond(
                 condition_types::READY,
                 condition_status::TRUE,
                 "Provisioned",
             )],
+            ..Default::default()
         };
         let out = mirror_status_from_infra(&current, &infra, 1);
 
@@ -267,16 +238,12 @@ mod tests {
         // current has no Scheduled=True
         let current = VirtualMachineStatus::default();
         let infra = FakeInfra {
-            power_state: None,
-            init: InitializationStatus::default(),
-            addresses: vec![],
-            failure_domain: None,
-            provider_id: None,
             conditions: vec![cond(
                 condition_types::READY,
                 condition_status::TRUE,
                 "Provisioned",
             )],
+            ..Default::default()
         };
         let out = mirror_status_from_infra(&current, &infra, 1);
 

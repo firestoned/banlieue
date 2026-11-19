@@ -19,22 +19,21 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::{
-    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage, VMImageStatus,
+    ImagePerProviderStatus, ImageSource, ImageSourceKind, Provider, VMImage,
 };
-use banlieue_provider_sdk::reconciler::providers_in_scope;
-use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_PROXMOX, status_field_manager};
+use banlieue_provider_sdk::reconciler::{
+    list_providers_of_class, providers_in_scope, requeue_default, requeue_long,
+};
+use banlieue_provider_sdk::ssa::{
+    FIELD_MANAGER_PROVIDER_PROXMOX, apply_status, status_field_manager,
+};
+use banlieue_provider_sdk::status::{image_row, provider_rows_status};
 use banlieue_proxmox::ProxmoxApi;
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, ListParams, Patch, PatchParams},
-    runtime::controller::Action,
-};
-use serde_json::json;
-use tracing::{info, warn};
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
+use tracing::info;
 
 use crate::context::Context;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::reconciler::provider::PROVIDER_CLASS_NAME;
 
 /// `cluster_vms` `type` of a QEMU guest.
@@ -80,15 +79,7 @@ pub fn api_failure_reason(e: &banlieue_proxmox::Error) -> &'static str {
 /// A not-ready row for `provider`.
 #[must_use]
 pub fn failure_row(provider: &Provider, reason: &str, message: String) -> ImagePerProviderStatus {
-    ImagePerProviderStatus {
-        provider_name: provider.name_any(),
-        provider_namespace: provider.namespace().unwrap_or_default(),
-        ready: false,
-        resolved_ref: None,
-        reason: Some(reason.to_string()),
-        message: Some(message),
-        zones: vec![],
-    }
+    image_row(provider, false, reason, Some(message))
 }
 
 /// Resolve `source` against one cluster.
@@ -133,13 +124,8 @@ pub async fn row_for(
         );
     }
     ImagePerProviderStatus {
-        provider_name: provider.name_any(),
-        provider_namespace: provider.namespace().unwrap_or_default(),
-        ready: true,
         resolved_ref: Some(vmid.to_string()),
-        reason: Some(reasons::RECONCILED.to_string()),
-        message: None,
-        zones: vec![],
+        ..image_row(provider, true, reasons::RECONCILED, None)
     }
 }
 
@@ -158,7 +144,9 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     };
 
-    let providers = list_providers(&ctx).await?;
+    let of_class =
+        list_providers_of_class(&ctx.client, ctx.namespace.as_deref(), PROVIDER_CLASS_NAME).await?;
+    let providers = providers_in_scope(of_class, ctx.provider_name.as_deref());
     if providers.is_empty() {
         info!("no proxmox Providers in scope; leaving status untouched");
         return Ok(requeue_long());
@@ -205,27 +193,6 @@ async fn row_for_provider(
     row_for(api.as_ref(), provider, source).await
 }
 
-/// Providers of class `proxmox` in scope for this process.
-async fn list_providers(ctx: &Context) -> Result<Vec<Provider>> {
-    let api: Api<Provider> = match ctx.namespace.as_deref() {
-        Some(ns) => Api::namespaced(ctx.client.clone(), ns),
-        None => Api::all(ctx.client.clone()),
-    };
-    let of_class = api
-        .list(&ListParams::default())
-        .await?
-        .into_iter()
-        .filter(|p| p.spec.provider_class_ref.name == PROVIDER_CLASS_NAME)
-        .collect();
-    Ok(providers_in_scope(of_class, ctx.provider_name.as_deref()))
-}
-
-/// Requeue after a reconcile error.
-pub fn error_policy(_image: Arc<VMImage>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "vmimage reconcile error policy fired");
-    requeue_on_error()
-}
-
 async fn patch_vmimage_status(
     ctx: &Context,
     name: &str,
@@ -235,26 +202,9 @@ async fn patch_vmimage_status(
 ) -> Result<()> {
     // Only this provider's rows: `buildArtifact` belongs to the imagebuilder
     // and the aggregate `Ready` to the controller (ADR-0010, ADR-0015).
-    let status = VMImageStatus {
-        per_provider,
-        build_artifact: None,
-        conditions: Vec::new(),
-        observed_generation: Some(generation),
-        first_boot_sealing: None,
-    };
-    let patch = json!({
-        "apiVersion": VMImage::api_version(&()).to_string(),
-        "kind": VMImage::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
+    let status = provider_rows_status(per_provider, generation);
     let api: Api<VMImage> = Api::all(ctx.client.clone());
-    api.patch_status(
-        name,
-        &PatchParams::apply(field_manager).force(),
-        &Patch::Apply(&patch),
-    )
-    .await?;
+    apply_status(&api, name, field_manager, &status, true).await?;
     Ok(())
 }
 

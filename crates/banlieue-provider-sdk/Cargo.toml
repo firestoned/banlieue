@@ -17,7 +17,6 @@ sha2.workspace = true
 banlieue-api = { path = "../banlieue-api" }
 kube.workspace = true
 k8s-openapi.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 # Re-encoding DER certificates as PEM for CR status (ADR-0045).
@@ -27,8 +26,9 @@ x509-parser.workspace = true
 thiserror.workspace = true
 # `net` + `io-util` back the health and metrics listeners (`httpd`), `time`
 # their request-line read timeout and the leader-election sleeps, `signal` the
-# shutdown future; `macros` + `rt-multi-thread` are the base runtime.
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time"] }
+# shutdown future; `fs` reads a built image for its checksum (`artifact`);
+# `macros` + `rt-multi-thread` are the base runtime.
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "signal", "time", "fs"] }
 futures.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
@@ -42,7 +42,6 @@ tracing-opentelemetry.workspace = true
 # Installs `ring` as the process crypto provider before the OTLP exporter's
 # reqwest client (built with `rustls-no-provider`) makes its first TLS call.
 rustls.workspace = true
-async-trait.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

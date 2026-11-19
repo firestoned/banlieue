@@ -56,204 +56,78 @@ pub trait InfraMachineRead {
     fn desired_power_state(&self) -> &PowerState;
 }
 
-impl InfraMachineRead for VSphereMachine {
-    fn initialization(&self) -> &InitializationStatus {
-        self.status
-            .as_ref()
-            .map(|s| &s.initialization)
-            .unwrap_or(&NO_INIT)
-    }
+/// Implements [`InfraMachineRead`] for one infra CR kind. Every kind shares
+/// the CAPI v1beta2 status shape, so the accessors are identical; only the
+/// `tpm_endorsement_certificates` body differs and is supplied by the caller.
+macro_rules! impl_infra_machine_read {
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr) => {
+        impl InfraMachineRead for $kind {
+            fn initialization(&self) -> &InitializationStatus {
+                self.status
+                    .as_ref()
+                    .map(|s| &s.initialization)
+                    .unwrap_or(&NO_INIT)
+            }
 
-    fn addresses(&self) -> &[MachineAddress] {
-        self.status
-            .as_ref()
-            .map(|s| s.addresses.as_slice())
-            .unwrap_or(&[])
-    }
+            fn addresses(&self) -> &[MachineAddress] {
+                self.status
+                    .as_ref()
+                    .map(|s| s.addresses.as_slice())
+                    .unwrap_or(&[])
+            }
 
-    fn failure_domain(&self) -> Option<&str> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.failure_domain.as_deref())
-    }
+            fn failure_domain(&self) -> Option<&str> {
+                self.status
+                    .as_ref()
+                    .and_then(|s| s.failure_domain.as_deref())
+            }
 
-    fn provider_id(&self) -> Option<&str> {
-        self.spec.provider_id.as_deref()
-    }
+            fn provider_id(&self) -> Option<&str> {
+                self.spec.provider_id.as_deref()
+            }
 
-    fn conditions(&self) -> &[Condition] {
-        self.status
-            .as_ref()
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or(&[])
-    }
+            fn conditions(&self) -> &[Condition] {
+                self.status
+                    .as_ref()
+                    .map(|s| s.conditions.as_slice())
+                    .unwrap_or(&[])
+            }
 
-    fn observed_power_state(&self) -> Option<&PowerState> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.observed_power_state.as_ref())
-    }
+            fn observed_power_state(&self) -> Option<&PowerState> {
+                self.status
+                    .as_ref()
+                    .and_then(|s| s.observed_power_state.as_ref())
+            }
 
-    fn tpm_endorsement_certificates(&self) -> &[String] {
-        self.status
-            .as_ref()
-            .map(|s| s.tpm_endorsement_certificates.as_slice())
-            .unwrap_or(&[])
-    }
+            $(#[$tpm_doc])*
+            fn tpm_endorsement_certificates(&self) -> &[String] {
+                let $this = self;
+                $tpm
+            }
 
-    fn desired_power_state(&self) -> &PowerState {
-        &self.spec.desired_power_state
-    }
-}
-
-impl InfraMachineRead for LibvirtMachine {
-    fn initialization(&self) -> &InitializationStatus {
-        self.status
-            .as_ref()
-            .map(|s| &s.initialization)
-            .unwrap_or(&NO_INIT)
-    }
-
-    fn addresses(&self) -> &[MachineAddress] {
-        self.status
-            .as_ref()
-            .map(|s| s.addresses.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn failure_domain(&self) -> Option<&str> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.failure_domain.as_deref())
-    }
-
-    fn provider_id(&self) -> Option<&str> {
-        self.spec.provider_id.as_deref()
-    }
-
-    fn conditions(&self) -> &[Condition] {
-        self.status
-            .as_ref()
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn observed_power_state(&self) -> Option<&PowerState> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.observed_power_state.as_ref())
-    }
-
-    fn tpm_endorsement_certificates(&self) -> &[String] {
-        self.status
+            fn desired_power_state(&self) -> &PowerState {
+                &self.spec.desired_power_state
+            }
+        }
+    };
+    ($kind:ty) => {
+        impl_infra_machine_read!($kind, |this| this
+            .status
             .as_ref()
             .map(|s| s.tpm_endorsement_certificates.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn desired_power_state(&self) -> &PowerState {
-        &self.spec.desired_power_state
-    }
+            .unwrap_or(&[]));
+    };
 }
 
-impl InfraMachineRead for CloudHypervisorMachine {
-    fn initialization(&self) -> &InitializationStatus {
-        self.status
-            .as_ref()
-            .map(|s| &s.initialization)
-            .unwrap_or(&NO_INIT)
-    }
-
-    fn addresses(&self) -> &[MachineAddress] {
-        self.status
-            .as_ref()
-            .map(|s| s.addresses.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn failure_domain(&self) -> Option<&str> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.failure_domain.as_deref())
-    }
-
-    fn provider_id(&self) -> Option<&str> {
-        self.spec.provider_id.as_deref()
-    }
-
-    fn conditions(&self) -> &[Condition] {
-        self.status
-            .as_ref()
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn observed_power_state(&self) -> Option<&PowerState> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.observed_power_state.as_ref())
-    }
-
-    fn tpm_endorsement_certificates(&self) -> &[String] {
-        self.status
-            .as_ref()
-            .map(|s| s.tpm_endorsement_certificates.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn desired_power_state(&self) -> &PowerState {
-        &self.spec.desired_power_state
-    }
-}
-
-impl InfraMachineRead for ProxmoxMachine {
-    fn initialization(&self) -> &InitializationStatus {
-        self.status
-            .as_ref()
-            .map(|s| &s.initialization)
-            .unwrap_or(&NO_INIT)
-    }
-
-    fn addresses(&self) -> &[MachineAddress] {
-        self.status
-            .as_ref()
-            .map(|s| s.addresses.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn failure_domain(&self) -> Option<&str> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.failure_domain.as_deref())
-    }
-
-    fn provider_id(&self) -> Option<&str> {
-        self.spec.provider_id.as_deref()
-    }
-
-    fn conditions(&self) -> &[Condition] {
-        self.status
-            .as_ref()
-            .map(|s| s.conditions.as_slice())
-            .unwrap_or(&[])
-    }
-
-    fn observed_power_state(&self) -> Option<&PowerState> {
-        self.status
-            .as_ref()
-            .and_then(|s| s.observed_power_state.as_ref())
-    }
-
+impl_infra_machine_read!(VSphereMachine);
+impl_infra_machine_read!(LibvirtMachine);
+impl_infra_machine_read!(CloudHypervisorMachine);
+impl_infra_machine_read!(
+    ProxmoxMachine,
     /// Proxmox publishes no EK certificate: its vTPM is a `tpmstate0`
     /// volume with no host-side certificate read (ADR-0075 Decision 6).
-    fn tpm_endorsement_certificates(&self) -> &[String] {
-        &[]
-    }
-
-    fn desired_power_state(&self) -> &PowerState {
-        &self.spec.desired_power_state
-    }
-}
+    |_this| &[]
+);
 
 // Stable empty status fallbacks so accessors can return references even when
 // the infra CR has not produced a `status` yet (initial reconciles).

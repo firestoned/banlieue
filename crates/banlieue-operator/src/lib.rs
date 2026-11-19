@@ -33,6 +33,8 @@ pub mod events;
 pub mod heartbeat;
 pub mod host_credential;
 pub mod naming;
+mod pod;
+mod rbac;
 pub mod reconciler;
 pub mod workload;
 

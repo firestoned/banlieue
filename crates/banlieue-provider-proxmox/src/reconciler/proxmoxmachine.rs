@@ -46,15 +46,12 @@ use banlieue_api::infrastructure::{
 use banlieue_provider_sdk::cloudinit::{CIDATA_LABEL, build_iso9660, seed_files};
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_PROXMOX;
+use banlieue_provider_sdk::ssa::{
+    FIELD_MANAGER_PROVIDER_PROXMOX, apply_provider_id, apply_status, is_not_found,
+};
 use banlieue_provider_sdk::status::{condition_status, set_condition};
 use banlieue_proxmox::{CloneParams, ClusterVm, ProxmoxApi, Upid, VmConfig};
-use kube::{
-    ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
-};
-use serde_json::json;
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use tracing::{debug, info, warn};
 
 use crate::config::{
@@ -739,8 +736,6 @@ pub async fn reconcile(machine: Arc<ProxmoxMachine>, ctx: Arc<Context>) -> Resul
     }
 }
 
-const HTTP_NOT_FOUND: u16 = 404;
-
 /// Whether `err` says the `ProxmoxMachine` itself no longer exists.
 #[must_use]
 pub fn is_gone(err: &Error) -> bool {
@@ -748,7 +743,7 @@ pub fn is_gone(err: &Error) -> bool {
         Error::Kube(e) | Error::Sdk(banlieue_provider_sdk::Error::Kube(e)) => e,
         _ => return false,
     };
-    matches!(kube, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND)
+    is_not_found(kube)
 }
 
 /// A write after converge failed with `err`. If the machine is gone, remove
@@ -789,29 +784,13 @@ pub async fn compensate_gone(
     Ok(Action::await_change())
 }
 
-/// Requeue after a reconcile error.
-pub fn error_policy(_m: Arc<ProxmoxMachine>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "proxmox machine reconcile error policy fired");
-    requeue_on_error()
-}
-
 /// Server-side-apply the machine's status.
 async fn patch_status(
     api: &Api<ProxmoxMachine>,
     name: &str,
     status: &ProxmoxMachineStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": "infrastructure.banlieue.io/v1alpha1",
-        "kind": "ProxmoxMachine",
-        "status": status,
-    });
-    api.patch_status(
-        name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_PROXMOX).force(),
-        &Patch::Apply(&patch),
-    )
-    .await?;
+    apply_status(api, name, FIELD_MANAGER_PROVIDER_PROXMOX, status, true).await?;
     Ok(())
 }
 
@@ -819,17 +798,7 @@ async fn patch_status(
 /// under the provider's field manager so it never contends with the
 /// controller's ownership of the rest of spec.
 async fn patch_provider_id(api: &Api<ProxmoxMachine>, name: &str, id: &str) -> Result<()> {
-    let patch = json!({
-        "apiVersion": "infrastructure.banlieue.io/v1alpha1",
-        "kind": "ProxmoxMachine",
-        "spec": { "providerID": id },
-    });
-    api.patch(
-        name,
-        &PatchParams::apply(FIELD_MANAGER_PROVIDER_PROXMOX),
-        &Patch::Apply(&patch),
-    )
-    .await?;
+    apply_provider_id(api, name, FIELD_MANAGER_PROVIDER_PROXMOX, id).await?;
     Ok(())
 }
 

@@ -30,28 +30,20 @@ use banlieue_provider_sdk::capacity::{
     QEMU_MEMORY_OVERHEAD_MIB, available_memory_mib, bytes_to_gib,
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_LIBVIRT;
-use banlieue_provider_sdk::status::{condition_status, set_condition};
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_LIBVIRT, apply_status};
+use banlieue_provider_sdk::status::{
+    condition_status, provider_condition_types as condition_types, set_condition,
+    unreachable_provider_status,
 };
-use serde_json::json;
-use tracing::{info, warn};
+use kube::{Api, ResourceExt, runtime::controller::Action};
+use tracing::info;
 
 use crate::client::{HostCapacity, LibvirtClient};
 use crate::context::Context;
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// The `providerClassRef.name` this controller answers to.
 pub const PROVIDER_CLASS_NAME: &str = "libvirt";
-
-/// Condition types written onto `Provider.status.conditions`.
-pub mod condition_types {
-    pub const READY: &str = "Ready";
-    pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
-}
 
 /// Stable `reason` strings. Operators match on these.
 pub mod reasons {
@@ -63,8 +55,6 @@ pub mod reasons {
     pub const CONNECT_FAILED: &str = "ConnectFailed";
     /// The credentials Secret or CA bundle is missing or malformed.
     pub const CREDENTIALS_UNAVAILABLE: &str = "CredentialsUnavailable";
-    /// Reconciliation is suspended via `spec.paused`.
-    pub const PAUSED: &str = "Paused";
 }
 
 /// The storage-class `target` key naming a libvirt pool.
@@ -98,7 +88,11 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     let identity = match crate::credentials::resolve(&ctx.client, &namespace, &provider).await {
         Ok(id) => id,
         Err(e) => {
-            let status = failed_status(generation, reasons::CREDENTIALS_UNAVAILABLE, e.to_string());
+            let status = unreachable_provider_status(
+                generation,
+                reasons::CREDENTIALS_UNAVAILABLE,
+                e.to_string(),
+            );
             patch_status(&ctx, &name, &namespace, status).await?;
             return Ok(requeue_on_error());
         }
@@ -111,7 +105,8 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     {
         Ok(c) => c,
         Err(e) => {
-            let status = failed_status(generation, reasons::CONNECT_FAILED, e.to_string());
+            let status =
+                unreachable_provider_status(generation, reasons::CONNECT_FAILED, e.to_string());
             patch_status(&ctx, &name, &namespace, status).await?;
             return Ok(requeue_on_error());
         }
@@ -120,7 +115,8 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     let status = match compute_status(client.as_ref(), &provider, generation).await {
         Ok(s) => s,
         Err(e) => {
-            let status = failed_status(generation, reasons::CONNECT_FAILED, e.to_string());
+            let status =
+                unreachable_provider_status(generation, reasons::CONNECT_FAILED, e.to_string());
             patch_status(&ctx, &name, &namespace, status).await?;
             return Ok(requeue_on_error());
         }
@@ -128,12 +124,6 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
 
     patch_status(&ctx, &name, &namespace, status).await?;
     Ok(requeue_default())
-}
-
-/// `error_policy` invoked on `reconcile` failure.
-pub fn error_policy(_p: Arc<Provider>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "libvirt provider reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// Build the `Provider` status from live inventory.
@@ -375,58 +365,14 @@ fn join_names<'a>(names: impl Iterator<Item = &'a str>) -> String {
     names.collect::<Vec<_>>().join(",")
 }
 
-/// Status for a provider we could not reach or configure.
-///
-/// `failureDomains` is left **empty** on failure rather than stale: the
-/// scheduler reads it to place VMs, and advertising domains we could not
-/// verify would be worse than advertising none.
-pub fn failed_status(generation: i64, reason: &str, message: String) -> ProviderStatus {
-    let mut conditions = Vec::new();
-    set_condition(
-        &mut conditions,
-        condition_types::PROVIDER_REACHABLE,
-        condition_status::FALSE,
-        reason,
-        message.clone(),
-        generation,
-    );
-    set_condition(
-        &mut conditions,
-        condition_types::READY,
-        condition_status::FALSE,
-        reason,
-        message,
-        generation,
-    );
-    ProviderStatus {
-        failure_domains: Vec::new(),
-        conditions,
-        // `status.workload` belongs to banlieue-operator's field manager
-        // (ADR-0012); this provider must never write it, or the two managers
-        // would contend over the same field.
-        workload: None,
-        observed_generation: Some(generation),
-        ek_ca_certificates: vec![],
-    }
-}
-
 async fn patch_status(
     ctx: &Context,
     name: &str,
     namespace: &str,
     status: ProviderStatus,
 ) -> Result<()> {
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()).to_string(),
-        "kind": Provider::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
-    let params = PatchParams::apply(FIELD_MANAGER_PROVIDER_LIBVIRT).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
-    Ok(())
+    Ok(apply_status(&api, name, FIELD_MANAGER_PROVIDER_LIBVIRT, &status, true).await?)
 }
 
 #[cfg(test)]

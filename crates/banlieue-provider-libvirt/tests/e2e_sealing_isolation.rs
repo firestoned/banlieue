@@ -75,17 +75,17 @@
 //! the teardown left on the host. Unset variables and an unreachable host
 //! fail the run: this suite never skips.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use banlieue_api::banlieue::{Provider, VMImage, VirtualMachine};
 use banlieue_api::common::PowerState;
 use banlieue_api::infrastructure::LibvirtMachine;
 use banlieue_libvirt::{
-    AGENT_TIMEOUT_DEFAULT, DEFAULT_TLS_PORT, Domain, Session, StoragePool, StorageVol, TlsIdentity,
-    connect_open, connect_tls, domain_get_state, domain_lookup_by_name, domain_qemu_agent_command,
-    is_not_found, raw_volume_xml, storage_pool_lookup_by_name, storage_vol_create_xml_from,
-    storage_vol_delete, storage_vol_lookup_by_name,
+    AGENT_TIMEOUT_DEFAULT, Domain, Session, StoragePool, StorageVol, domain_get_state,
+    domain_lookup_by_name, domain_qemu_agent_command, is_not_found, raw_volume_xml,
+    storage_pool_lookup_by_name, storage_vol_create_xml_from, storage_vol_delete,
+    storage_vol_lookup_by_name,
 };
 use banlieue_provider_libvirt::guest::{
     guest_file_close_cmd, guest_file_open_cmd, guest_file_read_cmd, parse_file_handle,
@@ -97,6 +97,9 @@ use kube::Client;
 use kube::api::{Api, DeleteParams, Patch, PatchParams, PostParams};
 use serde_json::json;
 use tokio::io::{AsyncRead, AsyncWrite};
+
+mod common;
+use common::{expand_home, load_identity, open_session};
 
 /// A sealed member: first boot, first-boot encryption, report. A pool of
 /// two warmed in 125 s raw and 65 s pre-laid on libvirt (ADR-0088,
@@ -121,7 +124,6 @@ const PROBE_READ_MAX: usize = 4096;
 const MAPPED_SOURCE_PREFIX: &str = "/dev/mapper/";
 const SEALED_PARTITION: &str = "COS_PERSISTENT";
 const DEFAULT_NAMESPACE: &str = "banlieue-system";
-const LIBVIRT_URI: &str = "qemu:///system";
 const PROVIDER_CLASS: &str = "libvirt";
 const CONDITION_GUEST_READY: &str = "GuestReady";
 const REASON_SEALING_TIMEOUT: &str = "FirstBootSealingTimeout";
@@ -148,11 +150,6 @@ fn required(name: &str) -> String {
 }
 
 fn settings() -> Settings {
-    let dir = required("LIBVIRT_TLS_DIR");
-    let dir = match (dir.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => dir,
-    };
     Settings {
         provider: required("BANLIEUE_E2E_PROVIDER"),
         image: required("BANLIEUE_E2E_IMAGE"),
@@ -160,19 +157,7 @@ fn settings() -> Settings {
         namespace: std::env::var("BANLIEUE_E2E_NAMESPACE")
             .unwrap_or_else(|_| DEFAULT_NAMESPACE.into()),
         libvirt_host: required("LIBVIRT_HOST"),
-        tls_dir: PathBuf::from(dir),
-    }
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
+        tls_dir: PathBuf::from(expand_home(&required("LIBVIRT_TLS_DIR"))),
     }
 }
 
@@ -282,14 +267,7 @@ impl Scratch {
     /// A fresh libvirt session: one per step, so a long wait never holds a
     /// connection the host may have dropped.
     async fn libvirt(&self) -> Session<impl AsyncRead + AsyncWrite + Unpin> {
-        let identity = load_identity(&self.s.tls_dir);
-        let mut session = connect_tls(&self.s.libvirt_host, DEFAULT_TLS_PORT, &identity)
-            .await
-            .unwrap_or_else(|e| panic!("TLS to libvirt on {}: {e}", self.s.libvirt_host));
-        connect_open(&mut session, Some(LIBVIRT_URI), false)
-            .await
-            .expect("CONNECT_OPEN");
-        session
+        open_session(&self.s.libvirt_host, &load_identity(&self.s.tls_dir)).await
     }
 
     /// Fail in seconds, with a clear message, on a fixture that cannot work.

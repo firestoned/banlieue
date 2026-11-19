@@ -12,6 +12,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use banlieue_api::banlieue::{DiskController, InstallMode, NicAdapter, ProviderConnection};
 use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
+use futures::future::BoxFuture;
 use tracing::{debug, info, instrument, warn};
 use vim_rs::core::client::{Client, ClientBuilder, VimClient};
 use vim_rs::mo::cluster_compute_resource::ClusterComputeResource;
@@ -377,1055 +378,1142 @@ impl VimClientImpl {
     }
 }
 
-#[async_trait]
-impl VSphereClient for VimClientImpl {
+/// The vCenter calls behind [`VSphereClient`], as plain boxed futures.
+///
+/// Deliberately NOT written inside the `#[async_trait]` impl below. That macro
+/// gives every method `where 'life0: 'async_trait, ..` bounds, and under such
+/// bounds rustc cannot use its global trait cache: proving one future `Send`
+/// then re-walks the whole `vim_rs` type model (thousands of structs), about
+/// two minutes per distinct signature shape. Here each future is boxed under a
+/// single lifetime with no where-clauses, where the same proof takes about a
+/// second, and the trait impl only awaits the already-boxed future.
+impl VimClientImpl {
     #[instrument(name = "vsphere.list_datacenters", skip_all)]
-    async fn list_datacenters(&self) -> Result<Vec<Datacenter>> {
-        let sc = self.client.service_content();
-        let view_manager_moref = sc
-            .view_manager
-            .as_ref()
-            .ok_or(Error::Missing("ServiceContent.view_manager"))?;
-        let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
+    fn list_datacenters<'a>(&'a self) -> BoxFuture<'a, Result<Vec<Datacenter>>> {
+        Box::pin(async move {
+            let sc = self.client.service_content();
+            let view_manager_moref = sc
+                .view_manager
+                .as_ref()
+                .ok_or(Error::Missing("ServiceContent.view_manager"))?;
+            let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
 
-        let view_ref = vm
-            .create_container_view(
-                &sc.root_folder,
-                Some(&[MO_TYPE_DATACENTER.to_string()]),
-                true,
-            )
-            .await
-            .map_err(|e| Error::Vsphere(format!("create_container_view(Datacenter): {e}")))?;
-        let view = ContainerView::new(self.client.clone(), &view_ref.value);
-
-        let morefs = view
-            .view()
-            .await
-            .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
-            .unwrap_or_default();
-
-        // Destroy the view eagerly so vCenter doesn't accumulate ghost views.
-        // Ignore destroy errors — they're not fatal for the caller.
-        let _ = view.destroy_view().await;
-
-        let mut out = Vec::with_capacity(morefs.len());
-        for moref in morefs {
-            let dc = VimDatacenter::new(self.client.clone(), &moref.value);
-            let name = dc
-                .name()
+            let view_ref = vm
+                .create_container_view(
+                    &sc.root_folder,
+                    Some(&[MO_TYPE_DATACENTER.to_string()]),
+                    true,
+                )
                 .await
-                .map_err(|e| Error::Vsphere(format!("Datacenter.name({}): {e}", moref.value)))?;
-            out.push(Datacenter {
-                name,
-                moref: moref.value,
-            });
-        }
-        Ok(out)
+                .map_err(|e| Error::Vsphere(format!("create_container_view(Datacenter): {e}")))?;
+            let view = ContainerView::new(self.client.clone(), &view_ref.value);
+
+            let morefs = view
+                .view()
+                .await
+                .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
+                .unwrap_or_default();
+
+            // Destroy the view eagerly so vCenter doesn't accumulate ghost views.
+            // Ignore destroy errors — they're not fatal for the caller.
+            let _ = view.destroy_view().await;
+
+            let mut out = Vec::with_capacity(morefs.len());
+            for moref in morefs {
+                let dc = VimDatacenter::new(self.client.clone(), &moref.value);
+                let name = dc.name().await.map_err(|e| {
+                    Error::Vsphere(format!("Datacenter.name({}): {e}", moref.value))
+                })?;
+                out.push(Datacenter {
+                    name,
+                    moref: moref.value,
+                });
+            }
+            Ok(out)
+        })
     }
 
     #[instrument(name = "vsphere.list_clusters", skip_all, fields(datacenter = %dc.name))]
-    async fn list_clusters(&self, dc: &Datacenter) -> Result<Vec<Cluster>> {
-        let sc = self.client.service_content();
-        let view_manager_moref = sc
-            .view_manager
-            .as_ref()
-            .ok_or(Error::Missing("ServiceContent.view_manager"))?;
-        let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
+    fn list_clusters<'a>(&'a self, dc: &'a Datacenter) -> BoxFuture<'a, Result<Vec<Cluster>>> {
+        Box::pin(async move {
+            let sc = self.client.service_content();
+            let view_manager_moref = sc
+                .view_manager
+                .as_ref()
+                .ok_or(Error::Missing("ServiceContent.view_manager"))?;
+            let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
 
-        // Scope the container view to the Datacenter so we only see its clusters.
-        let dc_moref = ManagedObjectReference {
-            r#type: vim_rs::types::enums::MoTypesEnum::Datacenter,
-            value: dc.moref.clone(),
-        };
-        let view_ref = vm
-            .create_container_view(&dc_moref, Some(&[MO_TYPE_CLUSTER.to_string()]), true)
-            .await
-            .map_err(|e| Error::Vsphere(format!("create_container_view(Cluster): {e}")))?;
-        let view = ContainerView::new(self.client.clone(), &view_ref.value);
-
-        let morefs = view
-            .view()
-            .await
-            .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
-            .unwrap_or_default();
-        let _ = view.destroy_view().await;
-
-        let mut out = Vec::with_capacity(morefs.len());
-        for moref in morefs {
-            let cluster = ClusterComputeResource::new(self.client.clone(), &moref.value);
-            let name = cluster
-                .name()
+            // Scope the container view to the Datacenter so we only see its clusters.
+            let dc_moref = ManagedObjectReference {
+                r#type: vim_rs::types::enums::MoTypesEnum::Datacenter,
+                value: dc.moref.clone(),
+            };
+            let view_ref = vm
+                .create_container_view(&dc_moref, Some(&[MO_TYPE_CLUSTER.to_string()]), true)
                 .await
-                .map_err(|e| Error::Vsphere(format!("Cluster.name({}): {e}", moref.value)))?;
-            out.push(Cluster {
-                name,
-                moref: moref.value,
-                datacenter_moref: dc.moref.clone(),
-            });
-        }
-        Ok(out)
+                .map_err(|e| Error::Vsphere(format!("create_container_view(Cluster): {e}")))?;
+            let view = ContainerView::new(self.client.clone(), &view_ref.value);
+
+            let morefs = view
+                .view()
+                .await
+                .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
+                .unwrap_or_default();
+            let _ = view.destroy_view().await;
+
+            let mut out = Vec::with_capacity(morefs.len());
+            for moref in morefs {
+                let cluster = ClusterComputeResource::new(self.client.clone(), &moref.value);
+                let name = cluster
+                    .name()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("Cluster.name({}): {e}", moref.value)))?;
+                out.push(Cluster {
+                    name,
+                    moref: moref.value,
+                    datacenter_moref: dc.moref.clone(),
+                });
+            }
+            Ok(out)
+        })
     }
 
     #[instrument(name = "vsphere.find_template", skip_all, fields(datacenter = %dc.name, template = %name))]
-    async fn find_template(
-        &self,
-        dc: &Datacenter,
-        folder: Option<&str>,
-        name: &str,
-    ) -> Result<Option<Template>> {
-        let sc = self.client.service_content();
-        let view_manager_moref = sc
-            .view_manager
-            .as_ref()
-            .ok_or(Error::Missing("ServiceContent.view_manager"))?;
-        let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
+    fn find_template<'a>(
+        &'a self,
+        dc: &'a Datacenter,
+        folder: Option<&'a str>,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<Template>>> {
+        Box::pin(async move {
+            let sc = self.client.service_content();
+            let view_manager_moref = sc
+                .view_manager
+                .as_ref()
+                .ok_or(Error::Missing("ServiceContent.view_manager"))?;
+            let vm = ViewManager::new(self.client.clone(), &view_manager_moref.value);
 
-        // Root the view at the requested folder (per-zone `Url`-kind
-        // import), or the whole datacenter (`Template`-kind, no per-zone
-        // folder). A missing folder means no template can be in it.
-        let root_moref = match folder {
-            Some(path) if !path.is_empty() => {
-                let dc_client = VimDatacenter::new(self.client.clone(), &dc.moref);
-                let vm_folder = dc_client.vm_folder().await.map_err(|e| {
-                    Error::Vsphere(format!("Datacenter.vmFolder({}): {e}", dc.moref))
-                })?;
-                match self.find_folder(&vm_folder.value, path).await? {
-                    Some(m) => m,
-                    None => return Ok(None),
+            // Root the view at the requested folder (per-zone `Url`-kind
+            // import), or the whole datacenter (`Template`-kind, no per-zone
+            // folder). A missing folder means no template can be in it.
+            let root_moref = match folder {
+                Some(path) if !path.is_empty() => {
+                    let dc_client = VimDatacenter::new(self.client.clone(), &dc.moref);
+                    let vm_folder = dc_client.vm_folder().await.map_err(|e| {
+                        Error::Vsphere(format!("Datacenter.vmFolder({}): {e}", dc.moref))
+                    })?;
+                    match self.find_folder(&vm_folder.value, path).await? {
+                        Some(m) => m,
+                        None => return Ok(None),
+                    }
                 }
-            }
-            _ => dc.moref.clone(),
-        };
-        let root_type = if folder.is_some_and(|p| !p.is_empty()) {
-            vim_rs::types::enums::MoTypesEnum::Folder
-        } else {
-            vim_rs::types::enums::MoTypesEnum::Datacenter
-        };
-        let root_ref = ManagedObjectReference {
-            r#type: root_type,
-            value: root_moref,
-        };
-        let view_ref = vm
-            .create_container_view(
-                &root_ref,
-                Some(&[MO_TYPE_VIRTUAL_MACHINE.to_string()]),
-                true,
-            )
-            .await
-            .map_err(|e| Error::Vsphere(format!("create_container_view(VirtualMachine): {e}")))?;
-        let view = ContainerView::new(self.client.clone(), &view_ref.value);
-
-        let morefs = view
-            .view()
-            .await
-            .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
-            .unwrap_or_default();
-        let _ = view.destroy_view().await;
-
-        // Filter to templates and match by name. vCenter inventories can have
-        // thousands of VMs; we ask each per-VM rather than fetching all configs
-        // up front because PropertyCollector batching is iteration-2b territory.
-        // The common case (handful of templates per DC) is fine without it.
-        for moref in morefs {
-            let Some((vm_name, is_template)) = self.raw_vm_summary(&moref.value).await? else {
-                continue;
+                _ => dc.moref.clone(),
             };
-            if !is_template {
-                continue;
+            let root_type = if folder.is_some_and(|p| !p.is_empty()) {
+                vim_rs::types::enums::MoTypesEnum::Folder
+            } else {
+                vim_rs::types::enums::MoTypesEnum::Datacenter
+            };
+            let root_ref = ManagedObjectReference {
+                r#type: root_type,
+                value: root_moref,
+            };
+            let view_ref = vm
+                .create_container_view(
+                    &root_ref,
+                    Some(&[MO_TYPE_VIRTUAL_MACHINE.to_string()]),
+                    true,
+                )
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!("create_container_view(VirtualMachine): {e}"))
+                })?;
+            let view = ContainerView::new(self.client.clone(), &view_ref.value);
+
+            let morefs = view
+                .view()
+                .await
+                .map_err(|e| Error::Vsphere(format!("ContainerView.view: {e}")))?
+                .unwrap_or_default();
+            let _ = view.destroy_view().await;
+
+            // Filter to templates and match by name. vCenter inventories can have
+            // thousands of VMs; we ask each per-VM rather than fetching all configs
+            // up front because PropertyCollector batching is iteration-2b territory.
+            // The common case (handful of templates per DC) is fine without it.
+            for moref in morefs {
+                let Some((vm_name, is_template)) = self.raw_vm_summary(&moref.value).await? else {
+                    continue;
+                };
+                if !is_template {
+                    continue;
+                }
+                if vm_name.as_deref() != Some(name) {
+                    continue;
+                }
+                return Ok(Some(Template {
+                    name: name.to_string(),
+                    moref: moref.value,
+                    datacenter_moref: dc.moref.clone(),
+                }));
             }
-            if vm_name.as_deref() != Some(name) {
-                continue;
-            }
-            return Ok(Some(Template {
-                name: name.to_string(),
-                moref: moref.value,
-                datacenter_moref: dc.moref.clone(),
-            }));
-        }
-        Ok(None)
+            Ok(None)
+        })
     }
 
     #[instrument(name = "vsphere.list_datastores", skip_all, fields(cluster = %cluster.name))]
-    async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>> {
-        // A cluster's reachable datastores come from its own `datastore`
-        // association, not the folder tree — so read the property directly
-        // rather than a container view (ADR-0019).
-        let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
-        let morefs = ccr
-            .datastore()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Cluster.datastore({}): {e}", cluster.moref)))?
-            .unwrap_or_default();
-
-        let mut out = Vec::with_capacity(morefs.len());
-        for moref in morefs {
-            let ds = VimDatastore::new(self.client.clone(), &moref.value);
-            let name = ds
-                .name()
+    fn list_datastores<'a>(
+        &'a self,
+        cluster: &'a Cluster,
+    ) -> BoxFuture<'a, Result<Vec<Datastore>>> {
+        Box::pin(async move {
+            // A cluster's reachable datastores come from its own `datastore`
+            // association, not the folder tree — so read the property directly
+            // rather than a container view (ADR-0019).
+            let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
+            let morefs = ccr
+                .datastore()
                 .await
-                .map_err(|e| Error::Vsphere(format!("Datastore.name({}): {e}", moref.value)))?;
-            // A datastore in an SDRS datastore cluster has a StoragePod parent;
-            // record that name so `target.datastoreCluster` can be matched.
-            let datastore_cluster = match ds.parent().await {
-                Ok(Some(parent)) if parent.r#type == MoTypesEnum::StoragePod => {
-                    let pod = VimStoragePod::new(self.client.clone(), &parent.value);
-                    pod.name().await.ok()
-                }
-                _ => None,
-            };
-            // Free space and size (summary.freeSpace, summary.capacity),
-            // best effort: None if the summary read fails, so datastore-cluster
-            // selection can still fall back to a deterministic choice and the
-            // failure domain simply publishes no space figure (ADR-0128).
-            let summary = ds.summary().await.ok();
-            out.push(Datastore {
-                name,
-                moref: moref.value,
-                datastore_cluster,
-                free_space_bytes: summary.as_ref().map(|s| s.free_space),
-                capacity_bytes: summary.as_ref().map(|s| s.capacity),
-            });
-        }
-        Ok(out)
+                .map_err(|e| Error::Vsphere(format!("Cluster.datastore({}): {e}", cluster.moref)))?
+                .unwrap_or_default();
+
+            let mut out = Vec::with_capacity(morefs.len());
+            for moref in morefs {
+                let ds = VimDatastore::new(self.client.clone(), &moref.value);
+                let name = ds
+                    .name()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("Datastore.name({}): {e}", moref.value)))?;
+                // A datastore in an SDRS datastore cluster has a StoragePod parent;
+                // record that name so `target.datastoreCluster` can be matched.
+                // The parent is narrowed to a pod moref before the next await:
+                // a `vim_rs` result held across an await makes rustc prove its
+                // error type `Send`, which costs minutes of compile time.
+                let pod_moref = ds
+                    .parent()
+                    .await
+                    .ok()
+                    .flatten()
+                    .filter(|parent| parent.r#type == MoTypesEnum::StoragePod)
+                    .map(|parent| parent.value);
+                let datastore_cluster = match pod_moref {
+                    Some(moref) => VimStoragePod::new(self.client.clone(), &moref)
+                        .name()
+                        .await
+                        .ok(),
+                    None => None,
+                };
+                // Free space and size (summary.freeSpace, summary.capacity),
+                // best effort: None if the summary read fails, so datastore-cluster
+                // selection can still fall back to a deterministic choice and the
+                // failure domain simply publishes no space figure (ADR-0128).
+                let summary = ds.summary().await.ok();
+                out.push(Datastore {
+                    name,
+                    moref: moref.value,
+                    datastore_cluster,
+                    free_space_bytes: summary.as_ref().map(|s| s.free_space),
+                    capacity_bytes: summary.as_ref().map(|s| s.capacity),
+                });
+            }
+            Ok(out)
+        })
     }
 
     #[instrument(name = "vsphere.cluster_capacity", skip_all, fields(cluster = %cluster.name))]
-    async fn cluster_capacity(&self, cluster: &Cluster) -> Result<ClusterCapacity> {
-        let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
-        let mut capacity = ClusterCapacity::default();
-        match ccr.summary().await {
-            Ok(summary) => {
-                capacity.cpu_threads = u32::try_from(summary.num_cpu_threads)
-                    .ok()
-                    .filter(|n| *n > 0);
-                capacity.effective_memory_mib = u64::try_from(summary.effective_memory).ok();
-            }
-            Err(e) => warn!(error = %e, "cluster summary unreadable; no CPU or memory figure"),
-        }
-        capacity.hosts_memory_used_mib = self.hosts_memory_used_mib(&ccr).await;
-        match ccr.resource_pool().await {
-            Ok(Some(pool)) => match VimResourcePool::new(self.client.clone(), &pool.value)
-                .runtime()
-                .await
-            {
-                Ok(runtime) => {
-                    capacity.pool_memory_limit_mib =
-                        positive_bytes_to_mib(runtime.memory.max_usage);
-                    capacity.pool_memory_unreserved_mib =
-                        positive_bytes_to_mib(runtime.memory.unreserved_for_vm);
+    fn cluster_capacity<'a>(
+        &'a self,
+        cluster: &'a Cluster,
+    ) -> BoxFuture<'a, Result<ClusterCapacity>> {
+        Box::pin(async move {
+            let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
+            let mut capacity = ClusterCapacity::default();
+            match ccr.summary().await {
+                Ok(summary) => {
+                    capacity.cpu_threads = u32::try_from(summary.num_cpu_threads)
+                        .ok()
+                        .filter(|n| *n > 0);
+                    capacity.effective_memory_mib = u64::try_from(summary.effective_memory).ok();
                 }
-                Err(e) => warn!(error = %e, "resource pool runtime unreadable; no pool figure"),
-            },
-            Ok(None) => {}
-            Err(e) => warn!(error = %e, "cluster resource pool unreadable; no pool figure"),
-        }
-        Ok(capacity)
+                Err(e) => warn!(error = %e, "cluster summary unreadable; no CPU or memory figure"),
+            }
+            capacity.hosts_memory_used_mib = self.hosts_memory_used_mib(&ccr).await;
+            match ccr.resource_pool().await {
+                Ok(Some(pool)) => match VimResourcePool::new(self.client.clone(), &pool.value)
+                    .runtime()
+                    .await
+                {
+                    Ok(runtime) => {
+                        capacity.pool_memory_limit_mib =
+                            positive_bytes_to_mib(runtime.memory.max_usage);
+                        capacity.pool_memory_unreserved_mib =
+                            positive_bytes_to_mib(runtime.memory.unreserved_for_vm);
+                    }
+                    Err(e) => warn!(error = %e, "resource pool runtime unreadable; no pool figure"),
+                },
+                Ok(None) => {}
+                Err(e) => warn!(error = %e, "cluster resource pool unreadable; no pool figure"),
+            }
+            Ok(capacity)
+        })
     }
 
     #[instrument(name = "vsphere.list_networks", skip_all, fields(cluster = %cluster.name))]
-    async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>> {
-        let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
-        let morefs = ccr
-            .network()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Cluster.network({}): {e}", cluster.moref)))?
-            .unwrap_or_default();
-
-        let mut out = Vec::with_capacity(morefs.len());
-        for moref in morefs {
-            // The MOR type is the authoritative distributed-vs-standard signal.
-            let distributed = moref.r#type == MoTypesEnum::DistributedVirtualPortgroup;
-            let net = VimNetwork::new(self.client.clone(), &moref.value);
-            let name = net
-                .name()
+    fn list_networks<'a>(&'a self, cluster: &'a Cluster) -> BoxFuture<'a, Result<Vec<Network>>> {
+        Box::pin(async move {
+            let ccr = ClusterComputeResource::new(self.client.clone(), &cluster.moref);
+            let morefs = ccr
+                .network()
                 .await
-                .map_err(|e| Error::Vsphere(format!("Network.name({}): {e}", moref.value)))?;
-            out.push(Network {
-                name,
-                moref: moref.value,
-                distributed,
-            });
-        }
-        Ok(out)
+                .map_err(|e| Error::Vsphere(format!("Cluster.network({}): {e}", cluster.moref)))?
+                .unwrap_or_default();
+
+            let mut out = Vec::with_capacity(morefs.len());
+            for moref in morefs {
+                // The MOR type is the authoritative distributed-vs-standard signal.
+                let distributed = moref.r#type == MoTypesEnum::DistributedVirtualPortgroup;
+                let net = VimNetwork::new(self.client.clone(), &moref.value);
+                let name = net
+                    .name()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("Network.name({}): {e}", moref.value)))?;
+                out.push(Network {
+                    name,
+                    moref: moref.value,
+                    distributed,
+                });
+            }
+            Ok(out)
+        })
     }
 
     #[instrument(name = "vsphere.import_iso_template", skip_all, fields(datacenter = %req.datacenter, cluster = %req.cluster, template = %req.template_name))]
-    async fn import_iso_template(&self, req: &crate::client::IsoImportRequest) -> Result<String> {
-        // ADR-0020: the ISO is already uploaded (`req.iso_datastore_path`). Here
-        // we `CreateVM_Task` an empty EFI VM (pvscsi + blank disk + IDE CD-ROM
-        // backed by the ISO) in the cluster's resource pool, then
-        // `MarkAsTemplate` — mirroring `~/dev/vm-build/bin/create-kairos-template.sh`.
-        // NB: the NIC is a follow-up (DVS port backing needs the port-group key
-        // + switch UUID); a disk+ISO template still boots the installer.
-        let resolved = format!("[{}] {}", req.datastore, req.template_name);
+    fn import_iso_template<'a>(
+        &'a self,
+        req: &'a crate::client::IsoImportRequest,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            // ADR-0020: the ISO is already uploaded (`req.iso_datastore_path`). Here
+            // we `CreateVM_Task` an empty EFI VM (pvscsi + blank disk + IDE CD-ROM
+            // backed by the ISO) in the cluster's resource pool, then
+            // `MarkAsTemplate` — mirroring `~/dev/vm-build/bin/create-kairos-template.sh`.
+            // NB: the NIC is a follow-up (DVS port backing needs the port-group key
+            // + switch UUID); a disk+ISO template still boots the installer.
+            let resolved = format!("[{}] {}", req.datastore, req.template_name);
 
-        // Resource pool (cluster) + VM folder (datacenter) for the create.
-        let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
-        let pool = ccr
-            .resource_pool()
-            .await
-            .map_err(|e| {
-                Error::Vsphere(format!("Cluster.resourcePool({}): {e}", req.cluster_moref))
-            })?
-            .ok_or(Error::Missing("ClusterComputeResource.resourcePool"))?;
-        let dc = VimDatacenter::new(self.client.clone(), &req.datacenter_moref);
-        let vm_folder = dc.vm_folder().await.map_err(|e| {
-            Error::Vsphere(format!(
-                "Datacenter.vmFolder({}): {e}",
-                req.datacenter_moref
-            ))
-        })?;
-
-        // Resolve (creating if missing) the zone's own template folder before
-        // any lookup-by-name: every zone shares the same template display
-        // name, so the idempotency/destroy check below must be scoped to
-        // *this* folder, never the whole datacenter (found live: a
-        // datacenter-wide search let one zone's forceCreate destroy a
-        // different zone's in-flight VM).
-        let target_folder = match req.folder.as_deref() {
-            Some(path) if !path.is_empty() => self.ensure_folder(&vm_folder.value, path).await?,
-            _ => vm_folder.value.clone(),
-        };
-
-        // Idempotency + forceCreate: an existing VM/template of this name in
-        // this zone's folder is a no-op unless forceCreate, which destroys
-        // it first.
-        if let Some(existing) = self
-            .find_vm_moref_by_name(&target_folder, &req.template_name)
-            .await?
-        {
-            if !req.force_create {
-                info!(name = %req.template_name, "template already exists; skipping create (set forceCreate to replace)");
-                return Ok(resolved);
-            }
-            info!(name = %req.template_name, "forceCreate: destroying existing VM/template before recreate");
-            let vmm = VimVirtualMachine::new(self.client.clone(), &existing);
-            let task = vmm
-                .destroy_task()
+            // Resource pool (cluster) + VM folder (datacenter) for the create.
+            let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
+            let pool = ccr
+                .resource_pool()
                 .await
-                .map_err(|e| Error::Vsphere(format!("Destroy_Task({existing}): {e}")))?;
-            self.wait_for_task(&task.value, "destroy existing template")
-                .await?;
-        }
+                .map_err(|e| {
+                    Error::Vsphere(format!("Cluster.resourcePool({}): {e}", req.cluster_moref))
+                })?
+                .ok_or(Error::Missing("ClusterComputeResource.resourcePool"))?;
+            let dc = VimDatacenter::new(self.client.clone(), &req.datacenter_moref);
+            let vm_folder = dc.vm_folder().await.map_err(|e| {
+                Error::Vsphere(format!(
+                    "Datacenter.vmFolder({}): {e}",
+                    req.datacenter_moref
+                ))
+            })?;
 
-        // NIC backings: distributed vDS port (portgroupKey + switchUuid) for
-        // a dvPortGroup, else a standard device-name backing — one per
-        // declared NIC (ADR-0031).
-        let mut nic_backings = Vec::with_capacity(req.nics.len());
-        for nic in &req.nics {
-            nic_backings.push(
-                self.build_nic_backing(&nic.network, &nic.network_moref, nic.network_distributed)
+            // Resolve (creating if missing) the zone's own template folder before
+            // any lookup-by-name: every zone shares the same template display
+            // name, so the idempotency/destroy check below must be scoped to
+            // *this* folder, never the whole datacenter (found live: a
+            // datacenter-wide search let one zone's forceCreate destroy a
+            // different zone's in-flight VM).
+            let target_folder = match req.folder.as_deref() {
+                Some(path) if !path.is_empty() => {
+                    self.ensure_folder(&vm_folder.value, path).await?
+                }
+                _ => vm_folder.value.clone(),
+            };
+
+            // Idempotency + forceCreate: an existing VM/template of this name in
+            // this zone's folder is a no-op unless forceCreate, which destroys
+            // it first.
+            if let Some(existing) = self
+                .find_vm_moref_by_name(&target_folder, &req.template_name)
+                .await?
+            {
+                if !req.force_create {
+                    info!(name = %req.template_name, "template already exists; skipping create (set forceCreate to replace)");
+                    return Ok(resolved);
+                }
+                info!(name = %req.template_name, "forceCreate: destroying existing VM/template before recreate");
+                let vmm = VimVirtualMachine::new(self.client.clone(), &existing);
+                let task = vmm
+                    .destroy_task()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("Destroy_Task({existing}): {e}")))?;
+                self.wait_for_task(&task.value, "destroy existing template")
+                    .await?;
+            }
+
+            // NIC backings: distributed vDS port (portgroupKey + switchUuid) for
+            // a dvPortGroup, else a standard device-name backing — one per
+            // declared NIC (ADR-0031).
+            let mut nic_backings = Vec::with_capacity(req.nics.len());
+            for nic in &req.nics {
+                nic_backings.push(
+                    self.build_nic_backing(
+                        &nic.network,
+                        &nic.network_moref,
+                        nic.network_distributed,
+                    )
                     .await?,
-            );
-        }
-
-        let config = build_template_config_spec(req, nic_backings);
-        let folder = Folder::new(self.client.clone(), &target_folder);
-        let task = folder
-            .create_vm_task(&config, &pool, None)
-            .await
-            .map_err(|e| Error::Vsphere(format!("CreateVM_Task({}): {e}", req.template_name)))?;
-        self.wait_for_task(&task.value, "create VM").await?;
-
-        // Find the just-created VM. When auto-managed (ADR-0021), install
-        // Kairos unattended and generalize it before marking as a template;
-        // otherwise fall straight through to MarkAsTemplate (ADR-0020's
-        // original behavior) for a build that isn't Kairos-driven or whose
-        // install/generalize is managed some other way.
-        let vm_moref = self
-            .find_vm_moref_by_name(&target_folder, &req.template_name)
-            .await?
-            .ok_or(Error::Vsphere(
-                "created VM not found after CreateVM_Task".to_string(),
-            ))?;
-        let vmm = VimVirtualMachine::new(self.client.clone(), &vm_moref);
-
-        let created_cfg = vmm
-            .config()
-            .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
-            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config after CreateVM_Task")))?;
-        let created_devices = created_cfg.hardware.device.unwrap_or_default();
-
-        // NIC PCI-slot placement is governed entirely by the
-        // `ethernetN.pciSlotNumber` ExtraConfig entries, pinned below in a
-        // *separate* post-create ReconfigVM_Task — never by the structured
-        // `VirtualDevice.slotInfo` object, and never inline in the
-        // CreateVM_Task above (`build_template_config_spec` deliberately
-        // sets neither). Two earlier attempts at this same fix didn't
-        // stick, both found live: (1) pinning `slotInfo` in a separate
-        // post-create reconfigure — vCenter silently reassigns it — and
-        // additionally clobbered the ExtraConfig value in the same call;
-        // (2) setting the ExtraConfig entry *inline* in the initial
-        // CreateVM_Task, alongside the `device_change` that creates the
-        // NIC itself — the freshly created template's own config still
-        // read back the auto-assigned slot, not the requested one, even
-        // with nothing else touching it afterward. Only a wholly separate
-        // ReconfigVM_Task, with no `device_change` at all, run after
-        // CreateVM_Task has already committed — exactly
-        // `create-kairos-template.sh`'s own two-step `govc vm.create` /
-        // `govc vm.change -e` sequence — actually sticks.
-        let created_nic_keys = find_all_nic_keys(&created_devices);
-        if created_nic_keys.len() != req.nics.len() {
-            return Err(Error::Vsphere(format!(
-                "{vm_moref}: expected {} NIC device(s) after CreateVM_Task, found {}",
-                req.nics.len(),
-                created_nic_keys.len()
-            )));
-        }
-        let pci_slots: Vec<i32> = req.nics.iter().map(|nic| nic.pci_slot).collect();
-        let pci_slot_spec = build_nic_pci_slot_extra_config_reconfigure_spec(&pci_slots);
-        let pci_slot_task = vmm.reconfig_vm_task(&pci_slot_spec).await.map_err(|e| {
-            Error::Vsphere(format!(
-                "ReconfigVM_Task({vm_moref}) [pin NIC PCI slot(s)]: {e}"
-            ))
-        })?;
-        self.wait_for_task(&pci_slot_task.value, "pin NIC PCI slot(s)")
-            .await?;
-
-        if req.install_mode == InstallMode::Immediate {
-            info!(vm_moref = %vm_moref, "entering auto-manage install phase");
-
-            // Resolve real device keys and apply the boot-order reconfigure
-            // that the initial CreateVM_Task spec deliberately omits (see
-            // build_boot_order_reconfigure_spec): connect the CD-ROM and set
-            // boot order to [cdrom, disk, ethernet], mirroring
-            // create-vm.sh's govc device.connect + device.boot -order.
-            let cdrom_placement = find_cdrom_placement(&created_devices).ok_or_else(|| {
-                Error::Vsphere(format!("{vm_moref}: no CD-ROM device after CreateVM_Task"))
-            })?;
-            let disk_key = find_disk_key(&created_devices).ok_or_else(|| {
-                Error::Vsphere(format!("{vm_moref}: no disk device after CreateVM_Task"))
-            })?;
-            // Boot order only needs the primary (first) NIC — the one
-            // that's the guest's boot-eligible ethernet device, same as
-            // the single-NIC behavior before ADR-0031.
-            let (boot_nic_key, ..) = find_first_nic_key(&created_devices).ok_or_else(|| {
-                Error::Vsphere(format!("{vm_moref}: no NIC device after CreateVM_Task"))
-            })?;
-            let boot_spec = build_boot_order_reconfigure_spec(
-                cdrom_placement,
-                &req.iso_datastore_path,
-                disk_key,
-                boot_nic_key,
-            );
-            let boot_task = vmm.reconfig_vm_task(&boot_spec).await.map_err(|e| {
-                Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [boot order]: {e}"))
-            })?;
-            self.wait_for_task(&boot_task.value, "set boot order")
-                .await?;
-
-            // Power on and confirm it actually started before settling in for
-            // the (long) install wait.
-            let power_on_task = vmm
-                .power_on_vm_task(None)
-                .await
-                .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?;
-            self.wait_for_task(&power_on_task.value, "power on").await?;
-            let runtime = vmm
-                .runtime()
-                .await
-                .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
-            if !matches!(runtime.power_state, VirtualMachinePowerStateEnum::PoweredOn) {
-                return Err(Error::Vsphere(format!(
-                    "{vm_moref} did not report poweredOn after PowerOnVM_Task (state: {:?})",
-                    runtime.power_state
-                )));
+                );
             }
 
-            // Wait for the cloud-config's unattended install to finish and the
-            // VM to power itself off (install.poweroff: true, no reboot — the
-            // disk is never booted by the build). A cloud-config missing that
-            // contract times out here rather than hanging the Job forever;
-            // the VM is left powered on for console debugging.
-            info!(
-                vm_moref = %vm_moref,
-                timeout_seconds = req.install_timeout_seconds,
-                "waiting for the unattended Kairos install to finish and the VM to power itself off"
-            );
-            self.wait_for_install_poweroff(&vmm, &vm_moref, req.install_timeout_seconds)
-                .await?;
+            let config = build_template_config_spec(req, nic_backings);
+            let folder = Folder::new(self.client.clone(), &target_folder);
+            let task = folder
+                .create_vm_task(&config, &pool, None)
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!("CreateVM_Task({}): {e}", req.template_name))
+                })?;
+            self.wait_for_task(&task.value, "create VM").await?;
 
-            // Generalized and shut down: strip the ISO-backed CD-ROM so no
-            // future clone of this template carries it.
-            let cfg = vmm
+            // Find the just-created VM. When auto-managed (ADR-0021), install
+            // Kairos unattended and generalize it before marking as a template;
+            // otherwise fall straight through to MarkAsTemplate (ADR-0020's
+            // original behavior) for a build that isn't Kairos-driven or whose
+            // install/generalize is managed some other way.
+            let vm_moref = self
+                .find_vm_moref_by_name(&target_folder, &req.template_name)
+                .await?
+                .ok_or(Error::Vsphere(
+                    "created VM not found after CreateVM_Task".to_string(),
+                ))?;
+            let vmm = VimVirtualMachine::new(self.client.clone(), &vm_moref);
+
+            let created_cfg = vmm
                 .config()
                 .await
-                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
-            let cdrom_key = cfg
-                .as_ref()
-                .and_then(|c| c.hardware.device.as_deref())
-                .and_then(find_cdrom_key);
-            match cdrom_key {
-                Some(key) => {
-                    let remove_cdrom = VirtualDeviceConfigSpec {
-                        operation: Some(VirtualDeviceConfigSpecOperationEnum::Remove),
-                        device: Box::new(VirtualCdrom {
-                            virtual_device_: VirtualDevice {
-                                key,
-                                ..Default::default()
-                            },
-                        }),
-                        ..Default::default()
-                    };
-                    let reconfig_spec = VirtualMachineConfigSpec {
-                        device_change: Some(vec![Box::new(remove_cdrom)]),
-                        ..Default::default()
-                    };
-                    let task = vmm.reconfig_vm_task(&reconfig_spec).await.map_err(|e| {
-                        Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [remove CD-ROM]: {e}"))
-                    })?;
-                    self.wait_for_task(&task.value, "remove CD-ROM").await?;
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
+                .ok_or_else(|| {
+                    Error::Vsphere(format!("{vm_moref}: no config after CreateVM_Task"))
+                })?;
+            let created_devices = created_cfg.hardware.device.unwrap_or_default();
+
+            // NIC PCI-slot placement is governed entirely by the
+            // `ethernetN.pciSlotNumber` ExtraConfig entries, pinned below in a
+            // *separate* post-create ReconfigVM_Task — never by the structured
+            // `VirtualDevice.slotInfo` object, and never inline in the
+            // CreateVM_Task above (`build_template_config_spec` deliberately
+            // sets neither). Two earlier attempts at this same fix didn't
+            // stick, both found live: (1) pinning `slotInfo` in a separate
+            // post-create reconfigure — vCenter silently reassigns it — and
+            // additionally clobbered the ExtraConfig value in the same call;
+            // (2) setting the ExtraConfig entry *inline* in the initial
+            // CreateVM_Task, alongside the `device_change` that creates the
+            // NIC itself — the freshly created template's own config still
+            // read back the auto-assigned slot, not the requested one, even
+            // with nothing else touching it afterward. Only a wholly separate
+            // ReconfigVM_Task, with no `device_change` at all, run after
+            // CreateVM_Task has already committed — exactly
+            // `create-kairos-template.sh`'s own two-step `govc vm.create` /
+            // `govc vm.change -e` sequence — actually sticks.
+            let created_nic_keys = find_all_nic_keys(&created_devices);
+            if created_nic_keys.len() != req.nics.len() {
+                return Err(Error::Vsphere(format!(
+                    "{vm_moref}: expected {} NIC device(s) after CreateVM_Task, found {}",
+                    req.nics.len(),
+                    created_nic_keys.len()
+                )));
+            }
+            let pci_slots: Vec<i32> = req.nics.iter().map(|nic| nic.pci_slot).collect();
+            let pci_slot_spec = build_nic_pci_slot_extra_config_reconfigure_spec(&pci_slots);
+            let pci_slot_task = vmm.reconfig_vm_task(&pci_slot_spec).await.map_err(|e| {
+                Error::Vsphere(format!(
+                    "ReconfigVM_Task({vm_moref}) [pin NIC PCI slot(s)]: {e}"
+                ))
+            })?;
+            self.wait_for_task(&pci_slot_task.value, "pin NIC PCI slot(s)")
+                .await?;
+
+            if req.install_mode == InstallMode::Immediate {
+                info!(vm_moref = %vm_moref, "entering auto-manage install phase");
+
+                // Resolve real device keys and apply the boot-order reconfigure
+                // that the initial CreateVM_Task spec deliberately omits (see
+                // build_boot_order_reconfigure_spec): connect the CD-ROM and set
+                // boot order to [cdrom, disk, ethernet], mirroring
+                // create-vm.sh's govc device.connect + device.boot -order.
+                let cdrom_placement = find_cdrom_placement(&created_devices).ok_or_else(|| {
+                    Error::Vsphere(format!("{vm_moref}: no CD-ROM device after CreateVM_Task"))
+                })?;
+                let disk_key = find_disk_key(&created_devices).ok_or_else(|| {
+                    Error::Vsphere(format!("{vm_moref}: no disk device after CreateVM_Task"))
+                })?;
+                // Boot order only needs the primary (first) NIC — the one
+                // that's the guest's boot-eligible ethernet device, same as
+                // the single-NIC behavior before ADR-0031.
+                let (boot_nic_key, ..) = find_first_nic_key(&created_devices).ok_or_else(|| {
+                    Error::Vsphere(format!("{vm_moref}: no NIC device after CreateVM_Task"))
+                })?;
+                let boot_spec = build_boot_order_reconfigure_spec(
+                    cdrom_placement,
+                    &req.iso_datastore_path,
+                    disk_key,
+                    boot_nic_key,
+                );
+                let boot_task = vmm.reconfig_vm_task(&boot_spec).await.map_err(|e| {
+                    Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [boot order]: {e}"))
+                })?;
+                self.wait_for_task(&boot_task.value, "set boot order")
+                    .await?;
+
+                // Power on and confirm it actually started before settling in for
+                // the (long) install wait.
+                let power_on_task = vmm
+                    .power_on_vm_task(None)
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?;
+                self.wait_for_task(&power_on_task.value, "power on").await?;
+                let runtime = vmm.runtime().await.map_err(|e| {
+                    Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}"))
+                })?;
+                if !matches!(runtime.power_state, VirtualMachinePowerStateEnum::PoweredOn) {
+                    return Err(Error::Vsphere(format!(
+                        "{vm_moref} did not report poweredOn after PowerOnVM_Task (state: {:?})",
+                        runtime.power_state
+                    )));
                 }
-                None => {
-                    tracing::warn!(
-                        moref = %vm_moref,
-                        "no CD-ROM device found to remove; template may still reference the install ISO"
-                    );
+
+                // Wait for the cloud-config's unattended install to finish and the
+                // VM to power itself off (install.poweroff: true, no reboot — the
+                // disk is never booted by the build). A cloud-config missing that
+                // contract times out here rather than hanging the Job forever;
+                // the VM is left powered on for console debugging.
+                info!(
+                    vm_moref = %vm_moref,
+                    timeout_seconds = req.install_timeout_seconds,
+                    "waiting for the unattended Kairos install to finish and the VM to power itself off"
+                );
+                self.wait_for_install_poweroff(&vmm, &vm_moref, req.install_timeout_seconds)
+                    .await?;
+
+                // Generalized and shut down: strip the ISO-backed CD-ROM so no
+                // future clone of this template carries it.
+                let cfg = vmm.config().await.map_err(|e| {
+                    Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}"))
+                })?;
+                let cdrom_key = cfg
+                    .as_ref()
+                    .and_then(|c| c.hardware.device.as_deref())
+                    .and_then(find_cdrom_key);
+                match cdrom_key {
+                    Some(key) => {
+                        let remove_cdrom = VirtualDeviceConfigSpec {
+                            operation: Some(VirtualDeviceConfigSpecOperationEnum::Remove),
+                            device: Box::new(VirtualCdrom {
+                                virtual_device_: VirtualDevice {
+                                    key,
+                                    ..Default::default()
+                                },
+                            }),
+                            ..Default::default()
+                        };
+                        let reconfig_spec = VirtualMachineConfigSpec {
+                            device_change: Some(vec![Box::new(remove_cdrom)]),
+                            ..Default::default()
+                        };
+                        let task = vmm.reconfig_vm_task(&reconfig_spec).await.map_err(|e| {
+                            Error::Vsphere(format!(
+                                "ReconfigVM_Task({vm_moref}) [remove CD-ROM]: {e}"
+                            ))
+                        })?;
+                        self.wait_for_task(&task.value, "remove CD-ROM").await?;
+                    }
+                    None => {
+                        tracing::warn!(
+                            moref = %vm_moref,
+                            "no CD-ROM device found to remove; template may still reference the install ISO"
+                        );
+                    }
                 }
             }
-        }
 
-        vmm.mark_as_template()
-            .await
-            .map_err(|e| Error::Vsphere(format!("MarkAsTemplate({vm_moref}): {e}")))?;
+            vmm.mark_as_template()
+                .await
+                .map_err(|e| Error::Vsphere(format!("MarkAsTemplate({vm_moref}): {e}")))?;
 
-        info!(template = %resolved, moref = %vm_moref, "created vSphere template");
-        Ok(resolved)
+            info!(template = %resolved, moref = %vm_moref, "created vSphere template");
+            Ok(resolved)
+        })
     }
 
     #[instrument(name = "vsphere.ensure_datastore_dir", skip_all, fields(datacenter_moref = %datacenter_moref, datastore = %datastore))]
-    async fn ensure_datastore_dir(
-        &self,
-        datacenter_moref: &str,
-        datastore: &str,
-        dir: &str,
-    ) -> Result<()> {
-        let sc = self.client.service_content();
-        let fm_moref = sc
-            .file_manager
-            .as_ref()
-            .ok_or(Error::Missing("ServiceContent.file_manager"))?;
-        let fm = FileManager::new(self.client.clone(), &fm_moref.value);
-        let dc = ManagedObjectReference {
-            r#type: MoTypesEnum::Datacenter,
-            value: datacenter_moref.to_string(),
-        };
-        let name = format!("[{datastore}] {dir}");
-        match fm.make_directory(&name, Some(&dc), Some(true)).await {
-            Ok(()) => Ok(()),
-            // Idempotent: an existing directory is success, not an error. vCenter
-            // reports this as a FileAlreadyExists fault; match on the message
-            // rather than the fault type (vim_rs surfaces faults as strings).
-            Err(e) if e.to_string().to_lowercase().contains("already exists") => Ok(()),
-            Err(e) => Err(Error::Vsphere(format!("make_directory({name}): {e}"))),
-        }
+    fn ensure_datastore_dir<'a>(
+        &'a self,
+        datacenter_moref: &'a str,
+        datastore: &'a str,
+        dir: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let sc = self.client.service_content();
+            let fm_moref = sc
+                .file_manager
+                .as_ref()
+                .ok_or(Error::Missing("ServiceContent.file_manager"))?;
+            let fm = FileManager::new(self.client.clone(), &fm_moref.value);
+            let dc = ManagedObjectReference {
+                r#type: MoTypesEnum::Datacenter,
+                value: datacenter_moref.to_string(),
+            };
+            let name = format!("[{datastore}] {dir}");
+            match fm.make_directory(&name, Some(&dc), Some(true)).await {
+                Ok(()) => Ok(()),
+                // Idempotent: an existing directory is success, not an error. vCenter
+                // reports this as a FileAlreadyExists fault; match on the message
+                // rather than the fault type (vim_rs surfaces faults as strings).
+                Err(e) if e.to_string().to_lowercase().contains("already exists") => Ok(()),
+                Err(e) => Err(Error::Vsphere(format!("make_directory({name}): {e}"))),
+            }
+        })
     }
 
     #[instrument(name = "vsphere.destroy_if_present", skip_all, fields(datacenter_moref = %datacenter_moref, vm_name = %name))]
-    async fn destroy_if_present(
-        &self,
-        datacenter_moref: &str,
-        folder: &str,
-        name: &str,
-    ) -> Result<()> {
-        // Scoped to the zone's own folder (ADR-0020 Decision #5 / the same
-        // fix as `import_iso_template`'s idempotency check) — every zone
-        // shares this display name, so a datacenter-wide lookup here would
-        // risk destroying a different zone's in-flight VM.
-        let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
-        let vm_folder = dc
-            .vm_folder()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}")))?;
-        let target_folder = self.ensure_folder(&vm_folder.value, folder).await?;
+    fn destroy_if_present<'a>(
+        &'a self,
+        datacenter_moref: &'a str,
+        folder: &'a str,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            // Scoped to the zone's own folder (ADR-0020 Decision #5 / the same
+            // fix as `import_iso_template`'s idempotency check) — every zone
+            // shares this display name, so a datacenter-wide lookup here would
+            // risk destroying a different zone's in-flight VM.
+            let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
+            let vm_folder = dc.vm_folder().await.map_err(|e| {
+                Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}"))
+            })?;
+            let target_folder = self.ensure_folder(&vm_folder.value, folder).await?;
 
-        let Some(existing) = self.find_vm_moref_by_name(&target_folder, name).await? else {
-            return Ok(());
-        };
-        info!(name, moref = %existing, "destroying existing VM/template before recreate");
-        self.power_off_and_destroy(&existing).await
+            let Some(existing) = self.find_vm_moref_by_name(&target_folder, name).await? else {
+                return Ok(());
+            };
+            info!(name, moref = %existing, "destroying existing VM/template before recreate");
+            self.power_off_and_destroy(&existing).await
+        })
     }
 
     #[instrument(name = "vsphere.clone_vm", skip_all, fields(cluster_moref = %req.cluster_moref, vm_name = %req.vm_name))]
-    async fn clone_vm(&self, req: &crate::client::CloneVmRequest) -> Result<String> {
-        // Resource pool (cluster) + VM folder (datacenter), same resolution
-        // as import_iso_template.
-        let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
-        let pool = ccr
-            .resource_pool()
-            .await
-            .map_err(|e| {
-                Error::Vsphere(format!("Cluster.resourcePool({}): {e}", req.cluster_moref))
-            })?
-            .ok_or(Error::Missing("ClusterComputeResource.resourcePool"))?;
-        let dc = VimDatacenter::new(self.client.clone(), &req.datacenter_moref);
-        let vm_folder = dc.vm_folder().await.map_err(|e| {
-            Error::Vsphere(format!(
-                "Datacenter.vmFolder({}): {e}",
-                req.datacenter_moref
-            ))
-        })?;
-        let target_folder = match req.folder.as_deref() {
-            Some(path) if !path.is_empty() => self.ensure_folder(&vm_folder.value, path).await?,
-            _ => vm_folder.value.clone(),
-        };
-
-        // Read the template's own devices to find its first NIC's device key —
-        // the clone reconfigures that same key onto interface 0's port group
-        // rather than adding a device for it. Interfaces beyond the first are
-        // added as new NICs of the same adapter type (ADR-0111).
-        let template = VimVirtualMachine::new(self.client.clone(), &req.template_moref);
-        let template_cfg = template
-            .config()
-            .await
-            .map_err(|e| {
+    fn clone_vm<'a>(
+        &'a self,
+        req: &'a crate::client::CloneVmRequest,
+    ) -> BoxFuture<'a, Result<String>> {
+        Box::pin(async move {
+            // Resource pool (cluster) + VM folder (datacenter), same resolution
+            // as import_iso_template.
+            let ccr = ClusterComputeResource::new(self.client.clone(), &req.cluster_moref);
+            let pool = ccr
+                .resource_pool()
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!("Cluster.resourcePool({}): {e}", req.cluster_moref))
+                })?
+                .ok_or(Error::Missing("ClusterComputeResource.resourcePool"))?;
+            let dc = VimDatacenter::new(self.client.clone(), &req.datacenter_moref);
+            let vm_folder = dc.vm_folder().await.map_err(|e| {
                 Error::Vsphere(format!(
-                    "VirtualMachine.config({}): {e}",
-                    req.template_moref
+                    "Datacenter.vmFolder({}): {e}",
+                    req.datacenter_moref
                 ))
-            })?
-            .ok_or_else(|| {
-                Error::Vsphere(format!("{}: no config on template", req.template_moref))
             })?;
-        let template_devices = template_cfg.hardware.device.unwrap_or_default();
-        let (nic_key, nic_adapter_type, nic_pci_slot) = find_first_nic_key(&template_devices)
-            .ok_or_else(|| {
+            let target_folder = match req.folder.as_deref() {
+                Some(path) if !path.is_empty() => {
+                    self.ensure_folder(&vm_folder.value, path).await?
+                }
+                _ => vm_folder.value.clone(),
+            };
+
+            // Read the template's own devices to find its first NIC's device key —
+            // the clone reconfigures that same key onto interface 0's port group
+            // rather than adding a device for it. Interfaces beyond the first are
+            // added as new NICs of the same adapter type (ADR-0111).
+            let template = VimVirtualMachine::new(self.client.clone(), &req.template_moref);
+            let template_cfg = template
+                .config()
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!(
+                        "VirtualMachine.config({}): {e}",
+                        req.template_moref
+                    ))
+                })?
+                .ok_or_else(|| {
+                    Error::Vsphere(format!("{}: no config on template", req.template_moref))
+                })?;
+            let template_devices = template_cfg.hardware.device.unwrap_or_default();
+            let (nic_key, nic_adapter_type, nic_pci_slot) = find_first_nic_key(&template_devices)
+                .ok_or_else(|| {
                 Error::Vsphere(format!(
                     "{}: template has no NIC to reconfigure",
                     req.template_moref
                 ))
             })?;
-        // Diagnostic (found live: a clone came up ens33 despite the template
-        // itself reportedly being pinned to 192, even with the PCI-slot
-        // re-pinning fix deployed) — logs exactly what was read off the
-        // *real* template's NIC so a live retry shows whether slot_info
-        // round-tripped through vim_rs's deserializer/downcast at all,
-        // rather than guessing further from unit-test fixtures alone.
-        info!(
-            template = %req.template_moref,
-            nic_key,
-            adapter_type = ?nic_adapter_type,
-            pci_slot = ?nic_pci_slot,
-            "template NIC resolved for clone"
-        );
-
-        let nic_backing = self
-            .build_nic_backing(&req.network, &req.network_moref, req.network_distributed)
-            .await?;
-        // ADR-0111: one NIC per declared interface. The template's own NIC is
-        // edited onto interface 0's port group (above); each further interface
-        // is added, backed by its own port group.
-        let mut extra_backings = Vec::with_capacity(req.extra_nics.len());
-        for nic in &req.extra_nics {
-            extra_backings.push(
-                self.build_nic_backing(&nic.network, &nic.network_moref, nic.network_distributed)
-                    .await?,
-            );
-        }
-        let nic_changes: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>> =
-            build_clone_nic_changes(
+            // Diagnostic (found live: a clone came up ens33 despite the template
+            // itself reportedly being pinned to 192, even with the PCI-slot
+            // re-pinning fix deployed) — logs exactly what was read off the
+            // *real* template's NIC so a live retry shows whether slot_info
+            // round-tripped through vim_rs's deserializer/downcast at all,
+            // rather than guessing further from unit-test fixtures alone.
+            info!(
+                template = %req.template_moref,
                 nic_key,
-                nic_backing,
-                nic_adapter_type,
-                nic_pci_slot,
-                extra_backings,
-            )
-            .into_iter()
-            .map(|change| {
-                Box::new(change) as Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>
-            })
-            .collect();
+                adapter_type = ?nic_adapter_type,
+                pci_slot = ?nic_pci_slot,
+                "template NIC resolved for clone"
+            );
 
-        let mut extra_config: Vec<Box<dyn vim_rs::types::traits::OptionValueTrait>> = req
-            .extra_config
-            .iter()
-            .map(|(key, value)| {
-                Box::new(OptionValue {
-                    key: key.clone(),
-                    value: Some(VimAny::Value(ValueElements::PrimitiveString(value.clone()))),
-                }) as Box<dyn vim_rs::types::traits::OptionValueTrait>
-            })
-            .collect();
-
-        // Carry the template's own `ethernet0.pciSlotNumber` ExtraConfig
-        // entry forward explicitly, rather than relying on CloneVM_Task to
-        // inherit it implicitly from the source VMX. This is the ACTUAL
-        // field governing a stable ens192 in the guest (confirmed via
-        // govc's own -e flag semantics; NOT the structured
-        // VirtualDevice.slotInfo this same function's `nic_change` edits
-        // above, which found live never controlled guest-visible PCI
-        // placement in the first place) — read from the template's own
-        // extraConfig, not re-derived from `nic_pci_slot` (that structured
-        // read can legitimately differ, e.g. if it was silently
-        // reassigned), matching "explicit over implicit" rather than
-        // assuming CloneVM_Task's inheritance behavior is what's wanted.
-        let template_pci_slot_number = template_cfg
-            .extra_config
-            .as_ref()
-            .and_then(|entries| {
-                entries
-                    .iter()
-                    .find(|ov| ov.get_option_value().key == "ethernet0.pciSlotNumber")
-            })
-            .and_then(|ov| match &ov.get_option_value().value {
-                Some(VimAny::Value(ValueElements::PrimitiveString(s))) => Some(s.clone()),
-                _ => None,
-            });
-        // Diagnostic (companion to the structured `pci_slot` log above):
-        // the structured `slotInfo` read never controlled guest-visible PCI
-        // placement, but silently logging "found" vs. "absent" here left no
-        // way to tell, on a live ens33 report, whether the template's own
-        // ExtraConfig actually carried `ethernet0.pciSlotNumber` at all
-        // versus this carry-forward step finding nothing to propagate.
-        info!(
-            template = %req.template_moref,
-            template_pci_slot_number = ?template_pci_slot_number,
-            "template ethernet0.pciSlotNumber ExtraConfig resolved for clone carry-forward"
-        );
-        if let Some(pci_slot_number) = template_pci_slot_number {
-            extra_config.push(Box::new(OptionValue {
-                key: "ethernet0.pciSlotNumber".to_string(),
-                value: Some(VimAny::Value(ValueElements::PrimitiveString(
-                    pci_slot_number,
-                ))),
-            }));
-        }
-
-        // DRS host placement (matches govc's own `-cluster` clone path,
-        // read from `cli/vm/clone.go`): govc calls
-        // `ClusterComputeResource.PlaceVm` before cloning and pins the
-        // resulting `Host` in the relocate spec; this code previously left
-        // `location.host` unset and let vCenter pick a host implicitly as
-        // part of `CloneVM_Task` itself, with no DRS placement advisory
-        // step at all — a real difference in the vCenter API call
-        // sequence, not just a config gap. `PlaceVm` is a one-time
-        // placement recommendation for this clone operation only: it
-        // creates no DRS affinity rule, so the resulting VM remains fully
-        // eligible for DRS to vMotion afterward under the cluster's normal
-        // automation level, same as any other VM. Passing `datastore` in
-        // `relocate_spec` already (rather than leaving it unset like
-        // govc's cluster path does) keeps DRS from overriding the
-        // already-resolved target datastore — per `PlacementSpec`'s own
-        // doc comment, "if a target datastore is specified, this datastore
-        // becomes the recommended datastore" — so only `host` comes back
-        // as a new recommendation.
-        let placement_datastore = ManagedObjectReference {
-            r#type: MoTypesEnum::Datastore,
-            value: req.datastore_moref.clone(),
-        };
-        let placement_folder = ManagedObjectReference {
-            r#type: MoTypesEnum::Folder,
-            value: target_folder.clone(),
-        };
-        // `VirtualMachineRelocateSpec` doesn't derive `Clone` — build a
-        // fresh one each time it's needed (here, for the placement probe's
-        // two separate fields that both want it; again below, for the
-        // actual clone) rather than trying to share one value.
-        let build_relocate_spec = || VirtualMachineRelocateSpec {
-            pool: Some(pool.clone()),
-            datastore: Some(placement_datastore.clone()),
-            folder: Some(placement_folder.clone()),
-            ..Default::default()
-        };
-        let placement_spec = PlacementSpec {
-            placement_type: Some("clone".to_string()),
-            vm: Some(ManagedObjectReference {
-                r#type: MoTypesEnum::VirtualMachine,
-                value: req.template_moref.clone(),
-            }),
-            // Found live: vCenter rejects a `"clone"`-type PlacementSpec
-            // with `InvalidArgument`/`"PlacementSpec.Clone"` unless
-            // `cloneName`/`cloneSpec` are also set, not just `relocateSpec`
-            // — matches govc's own `cli/vm/clone.go`, which always builds
-            // the full `CloneSpec` before calling `PlaceVm`. `clone_name`
-            // is never actually used to create anything (this call only
-            // recommends placement); `req.vm_name` is simply a
-            // non-empty, already-available value to satisfy it.
-            clone_name: Some(req.vm_name.clone()),
-            clone_spec: Some(VirtualMachineCloneSpec {
-                location: build_relocate_spec(),
-                power_on: false,
-                template: false,
-                ..Default::default()
-            }),
-            relocate_spec: Some(build_relocate_spec()),
-            ..Default::default()
-        };
-        let placement_result = ccr.place_vm(&placement_spec).await.map_err(|e| {
-            Error::Vsphere(format!(
-                "ClusterComputeResource.PlaceVm({}): {e}",
-                req.cluster_moref
-            ))
-        })?;
-        let recommended_host = placement_result
-            .recommendations
-            .unwrap_or_default()
-            .into_iter()
-            .find_map(|rec| {
-                rec.action?.into_iter().find_map(|action| {
-                    let action = action.as_any_ref().downcast_ref::<PlacementAction>()?;
-                    action
-                        .target_host
-                        .clone()
-                        .or_else(|| action.relocate_spec.as_ref()?.host.clone())
+            let nic_backing = self
+                .build_nic_backing(&req.network, &req.network_moref, req.network_distributed)
+                .await?;
+            // ADR-0111: one NIC per declared interface. The template's own NIC is
+            // edited onto interface 0's port group (above); each further interface
+            // is added, backed by its own port group.
+            let mut extra_backings = Vec::with_capacity(req.extra_nics.len());
+            for nic in &req.extra_nics {
+                extra_backings.push(
+                    self.build_nic_backing(
+                        &nic.network,
+                        &nic.network_moref,
+                        nic.network_distributed,
+                    )
+                    .await?,
+                );
+            }
+            let nic_changes: Vec<Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>> =
+                build_clone_nic_changes(
+                    nic_key,
+                    nic_backing,
+                    nic_adapter_type,
+                    nic_pci_slot,
+                    extra_backings,
+                )
+                .into_iter()
+                .map(|change| {
+                    Box::new(change) as Box<dyn vim_rs::types::traits::VirtualDeviceConfigSpecTrait>
                 })
-            });
-        info!(
-            template = %req.template_moref,
-            cluster = %req.cluster_moref,
-            recommended_host = ?recommended_host,
-            "DRS PlaceVm host recommendation resolved for clone"
-        );
+                .collect();
 
-        let clone_spec = VirtualMachineCloneSpec {
-            location: VirtualMachineRelocateSpec {
-                host: recommended_host,
-                pool: Some(pool),
-                datastore: Some(placement_datastore),
-                folder: Some(placement_folder),
-                ..Default::default()
-            },
-            template: false,
-            config: Some(VirtualMachineConfigSpec {
-                num_cp_us: Some(req.num_cpus),
-                memory_mb: Some(req.memory_mib),
-                device_change: Some(nic_changes),
-                extra_config: Some(extra_config),
-                ..Default::default()
-            }),
-            // Always cloned powered off — the caller drives the desired
-            // power state afterward via `set_power_state` (ADR-0024).
-            power_on: false,
-            ..Default::default()
-        };
+            let mut extra_config: Vec<Box<dyn vim_rs::types::traits::OptionValueTrait>> = req
+                .extra_config
+                .iter()
+                .map(|(key, value)| {
+                    Box::new(OptionValue {
+                        key: key.clone(),
+                        value: Some(VimAny::Value(ValueElements::PrimitiveString(value.clone()))),
+                    }) as Box<dyn vim_rs::types::traits::OptionValueTrait>
+                })
+                .collect();
 
-        let task = template
-            .clone_vm_task(
-                &ManagedObjectReference {
-                    r#type: MoTypesEnum::Folder,
-                    value: vm_folder.value.clone(),
+            // Carry the template's own `ethernet0.pciSlotNumber` ExtraConfig
+            // entry forward explicitly, rather than relying on CloneVM_Task to
+            // inherit it implicitly from the source VMX. This is the ACTUAL
+            // field governing a stable ens192 in the guest (confirmed via
+            // govc's own -e flag semantics; NOT the structured
+            // VirtualDevice.slotInfo this same function's `nic_change` edits
+            // above, which found live never controlled guest-visible PCI
+            // placement in the first place) — read from the template's own
+            // extraConfig, not re-derived from `nic_pci_slot` (that structured
+            // read can legitimately differ, e.g. if it was silently
+            // reassigned), matching "explicit over implicit" rather than
+            // assuming CloneVM_Task's inheritance behavior is what's wanted.
+            let template_pci_slot_number = template_cfg
+                .extra_config
+                .as_ref()
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .find(|ov| ov.get_option_value().key == "ethernet0.pciSlotNumber")
+                })
+                .and_then(|ov| match &ov.get_option_value().value {
+                    Some(VimAny::Value(ValueElements::PrimitiveString(s))) => Some(s.clone()),
+                    _ => None,
+                });
+            // Diagnostic (companion to the structured `pci_slot` log above):
+            // the structured `slotInfo` read never controlled guest-visible PCI
+            // placement, but silently logging "found" vs. "absent" here left no
+            // way to tell, on a live ens33 report, whether the template's own
+            // ExtraConfig actually carried `ethernet0.pciSlotNumber` at all
+            // versus this carry-forward step finding nothing to propagate.
+            info!(
+                template = %req.template_moref,
+                template_pci_slot_number = ?template_pci_slot_number,
+                "template ethernet0.pciSlotNumber ExtraConfig resolved for clone carry-forward"
+            );
+            if let Some(pci_slot_number) = template_pci_slot_number {
+                extra_config.push(Box::new(OptionValue {
+                    key: "ethernet0.pciSlotNumber".to_string(),
+                    value: Some(VimAny::Value(ValueElements::PrimitiveString(
+                        pci_slot_number,
+                    ))),
+                }));
+            }
+
+            // DRS host placement (matches govc's own `-cluster` clone path,
+            // read from `cli/vm/clone.go`): govc calls
+            // `ClusterComputeResource.PlaceVm` before cloning and pins the
+            // resulting `Host` in the relocate spec; this code previously left
+            // `location.host` unset and let vCenter pick a host implicitly as
+            // part of `CloneVM_Task` itself, with no DRS placement advisory
+            // step at all — a real difference in the vCenter API call
+            // sequence, not just a config gap. `PlaceVm` is a one-time
+            // placement recommendation for this clone operation only: it
+            // creates no DRS affinity rule, so the resulting VM remains fully
+            // eligible for DRS to vMotion afterward under the cluster's normal
+            // automation level, same as any other VM. Passing `datastore` in
+            // `relocate_spec` already (rather than leaving it unset like
+            // govc's cluster path does) keeps DRS from overriding the
+            // already-resolved target datastore — per `PlacementSpec`'s own
+            // doc comment, "if a target datastore is specified, this datastore
+            // becomes the recommended datastore" — so only `host` comes back
+            // as a new recommendation.
+            let placement_datastore = ManagedObjectReference {
+                r#type: MoTypesEnum::Datastore,
+                value: req.datastore_moref.clone(),
+            };
+            let placement_folder = ManagedObjectReference {
+                r#type: MoTypesEnum::Folder,
+                value: target_folder.clone(),
+            };
+            // `VirtualMachineRelocateSpec` doesn't derive `Clone` — build a
+            // fresh one each time it's needed (here, for the placement probe's
+            // two separate fields that both want it; again below, for the
+            // actual clone) rather than trying to share one value.
+            let build_relocate_spec = || VirtualMachineRelocateSpec {
+                pool: Some(pool.clone()),
+                datastore: Some(placement_datastore.clone()),
+                folder: Some(placement_folder.clone()),
+                ..Default::default()
+            };
+            let placement_spec = PlacementSpec {
+                placement_type: Some("clone".to_string()),
+                vm: Some(ManagedObjectReference {
+                    r#type: MoTypesEnum::VirtualMachine,
+                    value: req.template_moref.clone(),
+                }),
+                // Found live: vCenter rejects a `"clone"`-type PlacementSpec
+                // with `InvalidArgument`/`"PlacementSpec.Clone"` unless
+                // `cloneName`/`cloneSpec` are also set, not just `relocateSpec`
+                // — matches govc's own `cli/vm/clone.go`, which always builds
+                // the full `CloneSpec` before calling `PlaceVm`. `clone_name`
+                // is never actually used to create anything (this call only
+                // recommends placement); `req.vm_name` is simply a
+                // non-empty, already-available value to satisfy it.
+                clone_name: Some(req.vm_name.clone()),
+                clone_spec: Some(VirtualMachineCloneSpec {
+                    location: build_relocate_spec(),
+                    power_on: false,
+                    template: false,
+                    ..Default::default()
+                }),
+                relocate_spec: Some(build_relocate_spec()),
+                ..Default::default()
+            };
+            let placement_result = ccr.place_vm(&placement_spec).await.map_err(|e| {
+                Error::Vsphere(format!(
+                    "ClusterComputeResource.PlaceVm({}): {e}",
+                    req.cluster_moref
+                ))
+            })?;
+            let recommended_host = placement_result
+                .recommendations
+                .unwrap_or_default()
+                .into_iter()
+                .find_map(|rec| {
+                    rec.action?.into_iter().find_map(|action| {
+                        let action = action.as_any_ref().downcast_ref::<PlacementAction>()?;
+                        action
+                            .target_host
+                            .clone()
+                            .or_else(|| action.relocate_spec.as_ref()?.host.clone())
+                    })
+                });
+            info!(
+                template = %req.template_moref,
+                cluster = %req.cluster_moref,
+                recommended_host = ?recommended_host,
+                "DRS PlaceVm host recommendation resolved for clone"
+            );
+
+            let clone_spec = VirtualMachineCloneSpec {
+                location: VirtualMachineRelocateSpec {
+                    host: recommended_host,
+                    pool: Some(pool),
+                    datastore: Some(placement_datastore),
+                    folder: Some(placement_folder),
+                    ..Default::default()
                 },
-                &req.vm_name,
-                &clone_spec,
-            )
-            .await
-            .map_err(|e| Error::Vsphere(format!("CloneVM_Task({}): {e}", req.template_moref)))?;
-        self.wait_for_task(&task.value, "clone VM").await?;
+                template: false,
+                config: Some(VirtualMachineConfigSpec {
+                    num_cp_us: Some(req.num_cpus),
+                    memory_mb: Some(req.memory_mib),
+                    device_change: Some(nic_changes),
+                    extra_config: Some(extra_config),
+                    ..Default::default()
+                }),
+                // Always cloned powered off — the caller drives the desired
+                // power state afterward via `set_power_state` (ADR-0024).
+                power_on: false,
+                ..Default::default()
+            };
 
-        self.find_vm_moref_by_name(&target_folder, &req.vm_name)
-            .await?
-            .ok_or_else(|| Error::Vsphere("cloned VM not found after CloneVM_Task".to_string()))
+            let task = template
+                .clone_vm_task(
+                    &ManagedObjectReference {
+                        r#type: MoTypesEnum::Folder,
+                        value: vm_folder.value.clone(),
+                    },
+                    &req.vm_name,
+                    &clone_spec,
+                )
+                .await
+                .map_err(|e| {
+                    Error::Vsphere(format!("CloneVM_Task({}): {e}", req.template_moref))
+                })?;
+            self.wait_for_task(&task.value, "clone VM").await?;
+
+            self.find_vm_moref_by_name(&target_folder, &req.vm_name)
+                .await?
+                .ok_or_else(|| Error::Vsphere("cloned VM not found after CloneVM_Task".to_string()))
+        })
     }
 
     #[instrument(name = "vsphere.set_power_state", skip_all, fields(vm_moref = %vm_moref, desired = ?desired))]
-    async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let task = match desired {
-            PowerState::PoweredOn => vmm
-                .power_on_vm_task(None)
-                .await
-                .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?,
-            PowerState::PoweredOff => vmm
-                .power_off_vm_task()
-                .await
-                .map_err(|e| Error::Vsphere(format!("PowerOffVM_Task({vm_moref}): {e}")))?,
-            PowerState::Suspended => vmm
-                .suspend_vm_task()
-                .await
-                .map_err(|e| Error::Vsphere(format!("SuspendVM_Task({vm_moref}): {e}")))?,
-        };
-        self.wait_for_task(&task.value, "set power state").await
+    fn set_power_state<'a>(
+        &'a self,
+        vm_moref: &'a str,
+        desired: PowerState,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+            let task = match desired {
+                PowerState::PoweredOn => vmm
+                    .power_on_vm_task(None)
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("PowerOnVM_Task({vm_moref}): {e}")))?,
+                PowerState::PoweredOff => vmm
+                    .power_off_vm_task()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("PowerOffVM_Task({vm_moref}): {e}")))?,
+                PowerState::Suspended => vmm
+                    .suspend_vm_task()
+                    .await
+                    .map_err(|e| Error::Vsphere(format!("SuspendVM_Task({vm_moref}): {e}")))?,
+            };
+            self.wait_for_task(&task.value, "set power state").await
+        })
     }
 
     #[instrument(name = "vsphere.add_tpm_device", skip_all, fields(vm_moref = %vm_moref))]
-    async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let spec = build_add_tpm_reconfigure_spec();
-        let task = vmm
-            .reconfig_vm_task(&spec)
-            .await
-            .map_err(|e| Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [add vTPM]: {e}")))?;
-        self.wait_for_task(&task.value, "add vTPM device").await
+    fn add_tpm_device<'a>(&'a self, vm_moref: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+            let spec = build_add_tpm_reconfigure_spec();
+            let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
+                Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [add vTPM]: {e}"))
+            })?;
+            self.wait_for_task(&task.value, "add vTPM device").await
+        })
     }
 
     #[instrument(name = "vsphere.tpm_endorsement_certificates", skip_all, fields(vm_moref = %vm_moref))]
-    async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
-        // Raw, not `VimVirtualMachine::config()`: found live, the typed
-        // `VirtualMachineConfigInfo` decode fails ("JSON property decode
-        // failed") on a VM that carries a vTPM, so every pass of a
-        // `tpmEnabled` machine failed right after `add_tpm_device`. The same
-        // family as `guest_info` below, and the same remedy: read the whole
-        // "config" as untyped JSON and pick out only what is needed.
-        let pv = self
-            .client
-            .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
-            .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
-        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
-            return Err(Error::Vsphere(format!("{vm_moref}: no config")));
-        };
-        tpm_endorsement_certificates_from_raw_config(&bytes)
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+    fn tpm_endorsement_certificates<'a>(
+        &'a self,
+        vm_moref: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<Vec<u8>>>> {
+        Box::pin(async move {
+            // Raw, not `VimVirtualMachine::config()`: found live, the typed
+            // `VirtualMachineConfigInfo` decode fails ("JSON property decode
+            // failed") on a VM that carries a vTPM, so every pass of a
+            // `tpmEnabled` machine failed right after `add_tpm_device`. The same
+            // family as `guest_info` below, and the same remedy: read the whole
+            // "config" as untyped JSON and pick out only what is needed.
+            let pv = self
+                .client
+                .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                return Err(Error::Vsphere(format!("{vm_moref}: no config")));
+            };
+            tpm_endorsement_certificates_from_raw_config(&bytes)
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+        })
     }
 
     #[instrument(name = "vsphere.grow_os_disk", skip_all, fields(vm_moref = %vm_moref, size_gi_b))]
-    async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let cfg = vmm
-            .config()
-            .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
-            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config")))?;
-        let devices = cfg.hardware.device.unwrap_or_default();
+    fn grow_os_disk<'a>(&'a self, vm_moref: &'a str, size_gi_b: u32) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+            let cfg = vmm
+                .config()
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?
+                .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no config")))?;
+            let devices = cfg.hardware.device.unwrap_or_default();
 
-        // Full-fidelity read, not just key/controllerKey/capacity — see
-        // this method's doc comment on the trait for why: an edit device
-        // built from scratch with everything else defaulted (no
-        // `unitNumber`, no `backing`) is what an earlier version of this
-        // code sent, bundled into `CloneVM_Task` itself, when the host
-        // disconnects were observed. Matches govc's `vm.disk.change`
-        // exactly: read the live device, mutate only capacity, send the
-        // whole thing back.
-        let disk = devices
-            .iter()
-            .find_map(|d| d.as_any_ref().downcast_ref::<VirtualDisk>())
-            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no disk device")))?;
+            // Full-fidelity read, not just key/controllerKey/capacity — see
+            // this method's doc comment on the trait for why: an edit device
+            // built from scratch with everything else defaulted (no
+            // `unitNumber`, no `backing`) is what an earlier version of this
+            // code sent, bundled into `CloneVM_Task` itself, when the host
+            // disconnects were observed. Matches govc's `vm.disk.change`
+            // exactly: read the live device, mutate only capacity, send the
+            // whole thing back.
+            let disk = devices
+                .iter()
+                .find_map(|d| d.as_any_ref().downcast_ref::<VirtualDisk>())
+                .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: no disk device")))?;
 
-        let requested_kb = i64::from(size_gi_b) * KIB_PER_GIB;
-        if requested_kb <= disk.capacity_in_kb {
-            // Never shrink — a floor, not a resize (VSphereDiskSpec's own
-            // doc comment). Also the common case: most clones already
-            // satisfy the requested size at the template's native
-            // capacity, and issuing a same-size ReconfigVM_Task would be
-            // pure overhead.
-            return Ok(());
-        }
+            let requested_kb = i64::from(size_gi_b) * KIB_PER_GIB;
+            if requested_kb <= disk.capacity_in_kb {
+                // Never shrink — a floor, not a resize (VSphereDiskSpec's own
+                // doc comment). Also the common case: most clones already
+                // satisfy the requested size at the template's native
+                // capacity, and issuing a same-size ReconfigVM_Task would be
+                // pure overhead.
+                return Ok(());
+            }
 
-        let file_name = disk
-            .virtual_device_
-            .backing
-            .as_deref()
-            .and_then(|b| {
-                b.as_any_ref()
-                    .downcast_ref::<VirtualDiskFlatVer2BackingInfo>()
-            })
-            .map(|b| b.virtual_device_file_backing_info_.file_name.clone())
-            .ok_or_else(|| Error::Vsphere(format!("{vm_moref}: disk has no flat-v2 backing")))?;
+            let file_name = disk
+                .virtual_device_
+                .backing
+                .as_deref()
+                .and_then(|b| {
+                    b.as_any_ref()
+                        .downcast_ref::<VirtualDiskFlatVer2BackingInfo>()
+                })
+                .map(|b| b.virtual_device_file_backing_info_.file_name.clone())
+                .ok_or_else(|| {
+                    Error::Vsphere(format!("{vm_moref}: disk has no flat-v2 backing"))
+                })?;
 
-        info!(
-            vm_moref,
-            from_kb = disk.capacity_in_kb,
-            to_kb = requested_kb,
-            "growing OS disk post-clone"
-        );
+            info!(
+                vm_moref,
+                from_kb = disk.capacity_in_kb,
+                to_kb = requested_kb,
+                "growing OS disk post-clone"
+            );
 
-        let edit_device = VirtualDisk {
-            virtual_device_: VirtualDevice {
-                key: disk.virtual_device_.key,
-                controller_key: disk.virtual_device_.controller_key,
-                unit_number: disk.virtual_device_.unit_number,
-                backing: Some(Box::new(VirtualDiskFlatVer2BackingInfo {
-                    virtual_device_file_backing_info_: VirtualDeviceFileBackingInfo {
-                        file_name,
+            let edit_device = VirtualDisk {
+                virtual_device_: VirtualDevice {
+                    key: disk.virtual_device_.key,
+                    controller_key: disk.virtual_device_.controller_key,
+                    unit_number: disk.virtual_device_.unit_number,
+                    backing: Some(Box::new(VirtualDiskFlatVer2BackingInfo {
+                        virtual_device_file_backing_info_: VirtualDeviceFileBackingInfo {
+                            file_name,
+                            ..Default::default()
+                        },
+                        disk_mode: DISK_MODE_PERSISTENT.to_string(),
                         ..Default::default()
-                    },
-                    disk_mode: DISK_MODE_PERSISTENT.to_string(),
+                    })),
                     ..Default::default()
-                })),
+                },
+                capacity_in_kb: requested_kb,
+                capacity_in_bytes: Some(requested_kb * BYTES_PER_KIB),
                 ..Default::default()
-            },
-            capacity_in_kb: requested_kb,
-            capacity_in_bytes: Some(requested_kb * BYTES_PER_KIB),
-            ..Default::default()
-        };
-        let spec = VirtualMachineConfigSpec {
-            device_change: Some(vec![Box::new(VirtualDeviceConfigSpec {
-                operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
-                device: Box::new(edit_device),
+            };
+            let spec = VirtualMachineConfigSpec {
+                device_change: Some(vec![Box::new(VirtualDeviceConfigSpec {
+                    operation: Some(VirtualDeviceConfigSpecOperationEnum::Edit),
+                    device: Box::new(edit_device),
+                    ..Default::default()
+                })]),
                 ..Default::default()
-            })]),
-            ..Default::default()
-        };
-        let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
-            Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [grow OS disk]: {e}"))
-        })?;
-        self.wait_for_task(&task.value, "grow OS disk").await
+            };
+            let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
+                Error::Vsphere(format!("ReconfigVM_Task({vm_moref}) [grow OS disk]: {e}"))
+            })?;
+            self.wait_for_task(&task.value, "grow OS disk").await
+        })
     }
 
     #[instrument(name = "vsphere.power_state", skip_all, fields(vm_moref = %vm_moref))]
-    async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let runtime = vmm
-            .runtime()
-            .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
-        map_vim_power_state(&runtime.power_state).ok_or_else(|| {
-            Error::Vsphere(format!(
-                "{vm_moref}: unrecognized power state {:?}",
-                runtime.power_state
-            ))
+    fn power_state<'a>(&'a self, vm_moref: &'a str) -> BoxFuture<'a, Result<PowerState>> {
+        Box::pin(async move {
+            let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+            let runtime = vmm
+                .runtime()
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({vm_moref}): {e}")))?;
+            map_vim_power_state(&runtime.power_state).ok_or_else(|| {
+                Error::Vsphere(format!(
+                    "{vm_moref}: unrecognized power state {:?}",
+                    runtime.power_state
+                ))
+            })
         })
     }
 
     #[instrument(name = "vsphere.find_vms_named", skip_all, fields(datacenter_moref = %datacenter_moref, name = %name))]
-    async fn find_vms_named(
-        &self,
-        datacenter_moref: &str,
-        folder: Option<&str>,
-        name: &str,
-    ) -> Result<Vec<NamedVm>> {
-        let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
-        let vm_folder = dc
-            .vm_folder()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}")))?;
-        // Resolved as clone_vm resolves it, but never created: a folder that
-        // does not exist yet holds no VM.
-        let target = match folder {
-            Some(path) if !path.is_empty() => {
-                let Some(found) = self.find_folder(&vm_folder.value, path).await? else {
-                    return Ok(Vec::new());
-                };
-                found
-            }
-            _ => vm_folder.value.clone(),
-        };
-        let children = Folder::new(self.client.clone(), &target)
-            .child_entity()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Folder.childEntity({target}): {e}")))?
-            .unwrap_or_default();
-
-        let mut found = Vec::new();
-        for child in children
-            .iter()
-            .filter(|c| c.r#type == MoTypesEnum::VirtualMachine)
-        {
-            let pv = self
-                .client
-                .fetch_property_raw("", "VirtualMachine", &child.value, "config")
-                .await
-                .map_err(|e| {
-                    Error::Vsphere(format!("VirtualMachine.config({}): {e}", child.value))
-                })?;
-            // A VM still being created may have no config yet; it cannot be
-            // matched by name, and a clone of ours always has one.
-            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
-                continue;
+    fn find_vms_named<'a>(
+        &'a self,
+        datacenter_moref: &'a str,
+        folder: Option<&'a str>,
+        name: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<NamedVm>>> {
+        Box::pin(async move {
+            let dc = VimDatacenter::new(self.client.clone(), datacenter_moref);
+            let vm_folder = dc.vm_folder().await.map_err(|e| {
+                Error::Vsphere(format!("Datacenter.vmFolder({datacenter_moref}): {e}"))
+            })?;
+            // Resolved as clone_vm resolves it, but never created: a folder that
+            // does not exist yet holds no VM.
+            let target = match folder {
+                Some(path) if !path.is_empty() => {
+                    let Some(found) = self.find_folder(&vm_folder.value, path).await? else {
+                        return Ok(Vec::new());
+                    };
+                    found
+                }
+                _ => vm_folder.value.clone(),
             };
-            let (vm_name, machine_uid) = vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY)
-                .map_err(|e| {
+            let children = Folder::new(self.client.clone(), &target)
+                .child_entity()
+                .await
+                .map_err(|e| Error::Vsphere(format!("Folder.childEntity({target}): {e}")))?
+                .unwrap_or_default();
+
+            let mut found = Vec::new();
+            for child in children
+                .iter()
+                .filter(|c| c.r#type == MoTypesEnum::VirtualMachine)
+            {
+                let pv = self
+                    .client
+                    .fetch_property_raw("", "VirtualMachine", &child.value, "config")
+                    .await
+                    .map_err(|e| {
+                        Error::Vsphere(format!("VirtualMachine.config({}): {e}", child.value))
+                    })?;
+                // A VM still being created may have no config yet; it cannot be
+                // matched by name, and a clone of ours always has one.
+                let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                    continue;
+                };
+                let (vm_name, machine_uid) = vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY)
+                    .map_err(|e| {
                     Error::Vsphere(format!("VirtualMachine.config({}): {e}", child.value))
                 })?;
-            if vm_name.as_deref() == Some(name) {
-                found.push(NamedVm {
-                    moref: child.value.clone(),
-                    machine_uid,
-                });
+                if vm_name.as_deref() == Some(name) {
+                    found.push(NamedVm {
+                        moref: child.value.clone(),
+                        machine_uid,
+                    });
+                }
             }
-        }
-        Ok(found)
+            Ok(found)
+        })
     }
 
     // ADR-0043's vSphere transport: `key` is a `guestinfo.*` name the guest
@@ -1435,138 +1523,252 @@ impl VSphereClient for VimClientImpl {
     // against a real vCenter — see ADR-0043's Notes — so treat a first live
     // run as the actual test.
     #[instrument(name = "vsphere.guest_info", skip_all, fields(vm_moref = %vm_moref))]
-    async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {
-        // Two things ruled out `VimVirtualMachine::config()` /
-        // `extract_property::<VirtualMachineConfigInfo>`, both found live
-        // against a real vCenter:
-        //
-        // 1. This JSON transport has no PropertyCollector-style dotted
-        //    paths — `fetch_property_raw(.., "config.extraConfig")` faults
-        //    with `InvalidType: "... doesn't have a 'config.extraConfig'
-        //    property"`. Only whole top-level properties ("config",
-        //    "runtime", ...) are fetchable, matching every other read in
-        //    this file (`power_state` fetches all of "runtime").
-        // 2. Fetching the whole "config" and decoding it as
-        //    `VirtualMachineConfigInfo` fails ("JSON property decode
-        //    failed") — which broke every subsequent reconcile of an
-        //    already-provisioned VSphereMachine, not just guest probing.
-        //    The cause: `vim_rs::types::vim_any::VimAny`'s `Deserialize`
-        //    only implements `Visitor::map()` — the polymorphic
-        //    `{"_typeName": ..., "value": ...}` shape — with no fallback
-        //    for a bare JSON primitive. Real vCenter's JSON API sends a
-        //    plain string for `OptionValue.value` (e.g.
-        //    `{"key": "...", "value": "installed"}`), which `VimAny` cannot
-        //    parse — and one non-decoding `extraConfig` entry sinks the
-        //    entire `VirtualMachineConfigInfo`, since miniserde has no
-        //    "skip this field" fallback either.
-        //
-        // Sidestep both: fetch the whole "config" property but read it as
-        // untyped JSON, and pick `extraConfig[].value` out by hand —
-        // accepting either shape rather than assuming vim_rs's.
-        let pv = self
-            .client
-            .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
-            .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
-        let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
-            return Ok(None);
-        };
-        extra_config_value_from_raw_json(&bytes, key)
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+    fn guest_info<'a>(
+        &'a self,
+        vm_moref: &'a str,
+        key: &'a str,
+    ) -> BoxFuture<'a, Result<Option<String>>> {
+        Box::pin(async move {
+            // Two things ruled out `VimVirtualMachine::config()` /
+            // `extract_property::<VirtualMachineConfigInfo>`, both found live
+            // against a real vCenter:
+            //
+            // 1. This JSON transport has no PropertyCollector-style dotted
+            //    paths — `fetch_property_raw(.., "config.extraConfig")` faults
+            //    with `InvalidType: "... doesn't have a 'config.extraConfig'
+            //    property"`. Only whole top-level properties ("config",
+            //    "runtime", ...) are fetchable, matching every other read in
+            //    this file (`power_state` fetches all of "runtime").
+            // 2. Fetching the whole "config" and decoding it as
+            //    `VirtualMachineConfigInfo` fails ("JSON property decode
+            //    failed") — which broke every subsequent reconcile of an
+            //    already-provisioned VSphereMachine, not just guest probing.
+            //    The cause: `vim_rs::types::vim_any::VimAny`'s `Deserialize`
+            //    only implements `Visitor::map()` — the polymorphic
+            //    `{"_typeName": ..., "value": ...}` shape — with no fallback
+            //    for a bare JSON primitive. Real vCenter's JSON API sends a
+            //    plain string for `OptionValue.value` (e.g.
+            //    `{"key": "...", "value": "installed"}`), which `VimAny` cannot
+            //    parse — and one non-decoding `extraConfig` entry sinks the
+            //    entire `VirtualMachineConfigInfo`, since miniserde has no
+            //    "skip this field" fallback either.
+            //
+            // Sidestep both: fetch the whole "config" property but read it as
+            // untyped JSON, and pick `extraConfig[].value` out by hand —
+            // accepting either shape rather than assuming vim_rs's.
+            let pv = self
+                .client
+                .fetch_property_raw("", "VirtualMachine", vm_moref, "config")
+                .await
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))?;
+            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                return Ok(None);
+            };
+            extra_config_value_from_raw_json(&bytes, key)
+                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({vm_moref}): {e}")))
+        })
     }
 
     #[instrument(name = "vsphere.eject_install_media", skip_all, fields(vm_moref = %vm_moref))]
-    async fn eject_install_media(&self, vm_moref: &str) -> Result<usize> {
-        let cdroms = self.raw_iso_cdroms(vm_moref).await?;
-        if cdroms.is_empty() {
-            return Ok(0);
-        }
-        let spec = build_eject_cdroms_reconfigure_spec(&cdroms);
-        let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
-        let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
-            Error::Vsphere(format!(
-                "ReconfigVM_Task({vm_moref}) [eject install media]: {e}"
-            ))
-        })?;
-        self.wait_for_eject_task(&task.value, vm_moref).await?;
-        info!(vm_moref, ejected = cdroms.len(), "ejected install media");
-        Ok(cdroms.len())
+    fn eject_install_media<'a>(&'a self, vm_moref: &'a str) -> BoxFuture<'a, Result<usize>> {
+        Box::pin(async move {
+            let cdroms = self.raw_iso_cdroms(vm_moref).await?;
+            if cdroms.is_empty() {
+                return Ok(0);
+            }
+            let spec = build_eject_cdroms_reconfigure_spec(&cdroms);
+            let vmm = VimVirtualMachine::new(self.client.clone(), vm_moref);
+            let task = vmm.reconfig_vm_task(&spec).await.map_err(|e| {
+                Error::Vsphere(format!(
+                    "ReconfigVM_Task({vm_moref}) [eject install media]: {e}"
+                ))
+            })?;
+            self.wait_for_eject_task(&task.value, vm_moref).await?;
+            info!(vm_moref, ejected = cdroms.len(), "ejected install media");
+            Ok(cdroms.len())
+        })
     }
 
     #[instrument(name = "vsphere.vms_holding_iso", skip_all, fields(datastore_moref = %datastore_moref, iso_path = %iso_path))]
-    async fn vms_holding_iso(&self, datastore_moref: &str, iso_path: &str) -> Result<Vec<String>> {
-        let vms = VimDatastore::new(self.client.clone(), datastore_moref)
-            .vm()
-            .await
-            .map_err(|e| Error::Vsphere(format!("Datastore.vm({datastore_moref}): {e}")))?
-            .unwrap_or_default();
-        let mut holders = Vec::new();
-        for vm in vms {
-            let pv = self
-                .client
-                .fetch_property_raw("", MO_TYPE_VIRTUAL_MACHINE, &vm.value, "config")
+    fn vms_holding_iso<'a>(
+        &'a self,
+        datastore_moref: &'a str,
+        iso_path: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<String>>> {
+        Box::pin(async move {
+            let vms = VimDatastore::new(self.client.clone(), datastore_moref)
+                .vm()
                 .await
-                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
-            // A VM still being created has no config, and so no CD-ROM yet.
-            let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
-                continue;
-            };
-            let cdroms = iso_cdroms_from_raw_config(&bytes)
-                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
-            if !holds_iso(&cdroms, iso_path) {
-                continue;
+                .map_err(|e| Error::Vsphere(format!("Datastore.vm({datastore_moref}): {e}")))?
+                .unwrap_or_default();
+            let mut holders = Vec::new();
+            for vm in vms {
+                let pv = self
+                    .client
+                    .fetch_property_raw("", MO_TYPE_VIRTUAL_MACHINE, &vm.value, "config")
+                    .await
+                    .map_err(|e| {
+                        Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value))
+                    })?;
+                // A VM still being created has no config, and so no CD-ROM yet.
+                let Some(vim_rs::core::client::PropertyValue::Json(bytes)) = pv else {
+                    continue;
+                };
+                let cdroms = iso_cdroms_from_raw_config(&bytes).map_err(|e| {
+                    Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value))
+                })?;
+                if !holds_iso(&cdroms, iso_path) {
+                    continue;
+                }
+                let (name, _) =
+                    vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY).map_err(|e| {
+                        Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value))
+                    })?;
+                holders.push(name.unwrap_or_else(|| vm.value.clone()));
             }
-            let (name, _) = vm_identity_from_raw_config(&bytes, MACHINE_UID_KEY)
-                .map_err(|e| Error::Vsphere(format!("VirtualMachine.config({}): {e}", vm.value)))?;
-            holders.push(name.unwrap_or_else(|| vm.value.clone()));
-        }
-        Ok(holders)
+            Ok(holders)
+        })
     }
 
     #[instrument(name = "vsphere.set_custom_attributes", skip_all, fields(vm_moref = %vm_moref))]
+    fn set_custom_attributes<'a>(
+        &'a self,
+        vm_moref: &'a str,
+        values: &'a [(String, String)],
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            let sc = self.client.service_content();
+            let cfm_moref = sc
+                .custom_fields_manager
+                .as_ref()
+                .ok_or(Error::Missing("ServiceContent.custom_fields_manager"))?;
+            let cfm = CustomFieldsManager::new(self.client.clone(), &cfm_moref.value);
+
+            let entity = ManagedObjectReference {
+                r#type: MoTypesEnum::VirtualMachine,
+                value: vm_moref.to_string(),
+            };
+
+            for (name, value) in values {
+                let key = self.custom_field_key(&cfm, name).await?;
+                cfm.set_field(&entity, key, value).await.map_err(|e| {
+                    Error::Vsphere(format!(
+                        "CustomFieldsManager.SetField({vm_moref}, {name}): {e}"
+                    ))
+                })?;
+            }
+            Ok(())
+        })
+    }
+
+    #[instrument(name = "vsphere.destroy_vm", skip_all, fields(vm_moref = %vm_moref))]
+    fn destroy_vm<'a>(&'a self, vm_moref: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
+            match self.power_off_and_destroy(vm_moref).await {
+                Ok(()) => Ok(()),
+                Err(e)
+                    if e.to_string()
+                        .to_lowercase()
+                        .contains("managedobjectnotfound") =>
+                {
+                    info!(moref = %vm_moref, "backend VM already gone; treating as destroyed");
+                    Ok(())
+                }
+                Err(e) => Err(e),
+            }
+        })
+    }
+}
+
+#[async_trait]
+impl VSphereClient for VimClientImpl {
+    async fn list_datacenters(&self) -> Result<Vec<Datacenter>> {
+        Self::list_datacenters(self).await
+    }
+    async fn list_clusters(&self, dc: &Datacenter) -> Result<Vec<Cluster>> {
+        Self::list_clusters(self, dc).await
+    }
+    async fn find_template(
+        &self,
+        dc: &Datacenter,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Option<Template>> {
+        Self::find_template(self, dc, folder, name).await
+    }
+    async fn list_datastores(&self, cluster: &Cluster) -> Result<Vec<Datastore>> {
+        Self::list_datastores(self, cluster).await
+    }
+    async fn cluster_capacity(&self, cluster: &Cluster) -> Result<ClusterCapacity> {
+        Self::cluster_capacity(self, cluster).await
+    }
+    async fn list_networks(&self, cluster: &Cluster) -> Result<Vec<Network>> {
+        Self::list_networks(self, cluster).await
+    }
+    async fn import_iso_template(&self, req: &crate::client::IsoImportRequest) -> Result<String> {
+        Self::import_iso_template(self, req).await
+    }
+    async fn ensure_datastore_dir(
+        &self,
+        datacenter_moref: &str,
+        datastore: &str,
+        dir: &str,
+    ) -> Result<()> {
+        Self::ensure_datastore_dir(self, datacenter_moref, datastore, dir).await
+    }
+    async fn destroy_if_present(
+        &self,
+        datacenter_moref: &str,
+        folder: &str,
+        name: &str,
+    ) -> Result<()> {
+        Self::destroy_if_present(self, datacenter_moref, folder, name).await
+    }
+    async fn clone_vm(&self, req: &crate::client::CloneVmRequest) -> Result<String> {
+        Self::clone_vm(self, req).await
+    }
+    async fn set_power_state(&self, vm_moref: &str, desired: PowerState) -> Result<()> {
+        Self::set_power_state(self, vm_moref, desired).await
+    }
+    async fn add_tpm_device(&self, vm_moref: &str) -> Result<()> {
+        Self::add_tpm_device(self, vm_moref).await
+    }
+    async fn tpm_endorsement_certificates(&self, vm_moref: &str) -> Result<Vec<Vec<u8>>> {
+        Self::tpm_endorsement_certificates(self, vm_moref).await
+    }
+    async fn grow_os_disk(&self, vm_moref: &str, size_gi_b: u32) -> Result<()> {
+        Self::grow_os_disk(self, vm_moref, size_gi_b).await
+    }
+    async fn power_state(&self, vm_moref: &str) -> Result<PowerState> {
+        Self::power_state(self, vm_moref).await
+    }
+    async fn find_vms_named(
+        &self,
+        datacenter_moref: &str,
+        folder: Option<&str>,
+        name: &str,
+    ) -> Result<Vec<NamedVm>> {
+        Self::find_vms_named(self, datacenter_moref, folder, name).await
+    }
+    async fn guest_info(&self, vm_moref: &str, key: &str) -> Result<Option<String>> {
+        Self::guest_info(self, vm_moref, key).await
+    }
+    async fn eject_install_media(&self, vm_moref: &str) -> Result<usize> {
+        Self::eject_install_media(self, vm_moref).await
+    }
+    async fn vms_holding_iso(&self, datastore_moref: &str, iso_path: &str) -> Result<Vec<String>> {
+        Self::vms_holding_iso(self, datastore_moref, iso_path).await
+    }
     async fn set_custom_attributes(
         &self,
         vm_moref: &str,
         values: &[(String, String)],
     ) -> Result<()> {
-        let sc = self.client.service_content();
-        let cfm_moref = sc
-            .custom_fields_manager
-            .as_ref()
-            .ok_or(Error::Missing("ServiceContent.custom_fields_manager"))?;
-        let cfm = CustomFieldsManager::new(self.client.clone(), &cfm_moref.value);
-
-        let entity = ManagedObjectReference {
-            r#type: MoTypesEnum::VirtualMachine,
-            value: vm_moref.to_string(),
-        };
-
-        for (name, value) in values {
-            let key = self.custom_field_key(&cfm, name).await?;
-            cfm.set_field(&entity, key, value).await.map_err(|e| {
-                Error::Vsphere(format!(
-                    "CustomFieldsManager.SetField({vm_moref}, {name}): {e}"
-                ))
-            })?;
-        }
-        Ok(())
+        Self::set_custom_attributes(self, vm_moref, values).await
     }
-
-    #[instrument(name = "vsphere.destroy_vm", skip_all, fields(vm_moref = %vm_moref))]
     async fn destroy_vm(&self, vm_moref: &str) -> Result<()> {
-        info!(moref = %vm_moref, "destroying VSphereMachine's backend VM");
-        match self.power_off_and_destroy(vm_moref).await {
-            Ok(()) => Ok(()),
-            Err(e)
-                if e.to_string()
-                    .to_lowercase()
-                    .contains("managedobjectnotfound") =>
-            {
-                info!(moref = %vm_moref, "backend VM already gone; treating as destroyed");
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
+        Self::destroy_vm(self, vm_moref).await
     }
 }
 
@@ -1813,17 +2015,18 @@ impl VimClientImpl {
         // Destroy_Task rejects a powered-on VM (InvalidPowerState) — e.g. a
         // prior run left this target stuck mid-install, still running. Power
         // it off (hard — it's about to be destroyed) before destroying.
-        let runtime = vmm
+        // Only the power state outlives this statement: the whole runtime
+        // info held across the awaits below would have to be proven `Send`,
+        // which is slow to compile for a `vim_rs` struct of that size.
+        let power_state = vmm
             .runtime()
             .await
-            .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({moref}): {e}")))?;
-        if !matches!(
-            runtime.power_state,
-            VirtualMachinePowerStateEnum::PoweredOff
-        ) {
+            .map_err(|e| Error::Vsphere(format!("VirtualMachine.runtime({moref}): {e}")))?
+            .power_state;
+        if !matches!(power_state, VirtualMachinePowerStateEnum::PoweredOff) {
             info!(
                 moref,
-                power_state = ?runtime.power_state,
+                power_state = ?power_state,
                 "powering off existing target before destroy"
             );
             let power_off_task = vmm
@@ -1860,12 +2063,17 @@ impl VimClientImpl {
             return Ok(def.key);
         }
 
-        match cfm
+        // Reduced to the key or the error text before the next await: a
+        // `vim_rs` result held across an await makes rustc prove its error
+        // type `Send`, which costs minutes of compile time.
+        let added = cfm
             .add_custom_field_def(name, Some("VirtualMachine"), None, None)
             .await
-        {
-            Ok(def) => Ok(def.key),
-            Err(e) if e.to_string().to_lowercase().contains("duplicatename") => cfm
+            .map(|def| def.key)
+            .map_err(|e| e.to_string());
+        match added {
+            Ok(key) => Ok(key),
+            Err(e) if e.to_lowercase().contains("duplicatename") => cfm
                 .field()
                 .await
                 .map_err(|e| Error::Vsphere(format!("CustomFieldsManager.field(): {e}")))?

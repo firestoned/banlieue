@@ -10,5 +10,7 @@
 
 pub mod ca_bundle;
 pub mod provider;
+#[cfg(test)]
+pub(crate) mod test_fixtures;
 pub mod vmimage;
 pub mod vspheremachine;

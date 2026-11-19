@@ -34,22 +34,18 @@
 //! contract ADR-0045 Decision 2 defines. A production image carries the same
 //! two lines in its cloud-config layer rather than in a test seed.
 
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use banlieue_api::common::{Firmware, IpamSpec, PowerState, ProviderReference};
-use banlieue_api::infrastructure::{
-    LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachineSpec,
-    LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec,
-};
-use banlieue_libvirt::{
-    AGENT_TIMEOUT_DEFAULT, DEFAULT_TLS_PORT, Session, TlsIdentity, connect_open, connect_tls,
-    domain_qemu_agent_command,
-};
+use banlieue_api::common::ProviderReference;
+use banlieue_api::infrastructure::LibvirtMachineSpec;
+use banlieue_libvirt::{AGENT_TIMEOUT_DEFAULT, Session, domain_qemu_agent_command};
 use banlieue_provider_libvirt::guest::{EK_PATH, EkProbe, expected_ek_cn, read_ek_certificate};
 use banlieue_provider_libvirt::machine_client::SessionMachineClient;
 use banlieue_provider_libvirt::reconciler::libvirtmachine::{converge, finalize_backend};
 use tokio::io::{AsyncRead, AsyncWrite};
+
+mod common;
+use common::{base_spec, load_identity, open_session, os_disk, settings};
 
 /// The agent starts late in boot; the package install and the NV read land
 /// later still.
@@ -81,72 +77,17 @@ runcmd:\n\
     )
 }
 
-fn settings() -> Option<(String, PathBuf, String, String)> {
-    let host = std::env::var("LIBVIRT_HOST").ok()?;
-    let dir = std::env::var("LIBVIRT_TLS_DIR").ok()?;
-    let pool = std::env::var("LIBVIRT_POOL").unwrap_or_else(|_| "default".to_string());
-    let source = std::env::var("LIBVIRT_SOURCE_VOLUME").ok()?;
-    let dir = match (dir.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => dir,
-    };
-    Some((host, PathBuf::from(dir), pool, source))
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
-    }
-}
-
 fn spec(domain_name: &str, pool: &str, source_volume: &str) -> LibvirtMachineSpec {
-    let firmware = match std::env::var("LIBVIRT_FIRMWARE").as_deref() {
-        Ok("bios") => Firmware::Bios,
-        _ => Firmware::Efi,
-    };
     LibvirtMachineSpec {
-        provider_id: None,
-        failure_domain: None,
         provider_ref: ProviderReference {
             name: "live-ek-test".to_string(),
             namespace: None,
         },
-        pool: pool.to_string(),
-        domain_name: domain_name.to_string(),
-        boot_source: LibvirtBootSource {
-            kind: LibvirtBootSourceKind::BackingVolume,
-            volume: source_volume.to_string(),
-        },
-        vcpus: 2,
-        memory_mi_b: 2048,
-        firmware,
-        machine_type: None,
         // The point of this test.
         tpm_enabled: true,
-        disks: vec![LibvirtDiskSpec {
-            name: "os".to_string(),
-            size_gi_b: DISK_GIB,
-            bus: LibvirtDiskBus::Virtio,
-        }],
-        network: vec![LibvirtNicSpec {
-            name: "eth0".to_string(),
-            source: LibvirtNicSource {
-                kind: LibvirtNicSourceKind::Network,
-                name: std::env::var("LIBVIRT_NETWORK").unwrap_or_else(|_| "default".to_string()),
-            },
-            model: None,
-            mac_address: None,
-            ipam: IpamSpec::default(),
-        }],
+        disks: vec![os_disk(DISK_GIB)],
         user_data: Some(seed()),
-        desired_power_state: PowerState::PoweredOn,
-        first_boot_sealing: None,
+        ..base_spec(domain_name, pool, source_volume)
     }
 }
 
@@ -160,20 +101,9 @@ async fn a_real_swtpm_certificate_is_read_and_bound_to_its_domain() {
 
     // Two sessions: a session carries one in-flight call, so sharing would
     // interleave the agent poll with whatever converge is doing.
-    let mut machine_session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (machine)");
-    connect_open(&mut machine_session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (machine)");
-    let mut client = SessionMachineClient::new(machine_session);
+    let mut client = SessionMachineClient::new(open_session(&host, &identity).await);
 
-    let mut agent_session = connect_tls(&host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS (agent)");
-    connect_open(&mut agent_session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN (agent)");
+    let mut agent_session = open_session(&host, &identity).await;
 
     let domain_name = format!(
         "ekcheck-{}",

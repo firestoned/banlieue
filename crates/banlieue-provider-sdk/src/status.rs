@@ -10,7 +10,9 @@
 //! - `observedGeneration` always reflects the controller's view at the time
 //!   the condition was set.
 
+use banlieue_api::banlieue::{ImagePerProviderStatus, Provider, ProviderStatus, VMImageStatus};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
+use kube::ResourceExt;
 
 /// Standard condition status values used across the project. Mirrors
 /// `metav1.ConditionStatus` so consumers don't have to import the upstream
@@ -101,6 +103,92 @@ pub fn declared_addresses<'a>(
             address: cfg.address.clone(),
         })
         .collect()
+}
+
+/// Condition types every provider writes onto `Provider.status.conditions`.
+pub mod provider_condition_types {
+    /// Everything declared on the `Provider` is present and usable.
+    pub const READY: &str = "Ready";
+    /// The provider reached its backend (or, for a host-resident provider,
+    /// the API server).
+    pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
+}
+
+/// The `Provider` status to publish when the backend could not be probed at
+/// all: `ProviderReachable` and `Ready` both `False` with the same reason
+/// and message.
+///
+/// `failureDomains` is left **empty** rather than stale: the scheduler reads
+/// it to place VMs, and advertising domains nobody could verify would be
+/// worse than advertising none. `workload` stays unset because it belongs to
+/// banlieue-operator's field manager (ADR-0012).
+#[must_use]
+pub fn unreachable_provider_status(
+    generation: i64,
+    reason: &str,
+    message: String,
+) -> ProviderStatus {
+    let mut conditions = Vec::new();
+    for type_ in [
+        provider_condition_types::PROVIDER_REACHABLE,
+        provider_condition_types::READY,
+    ] {
+        set_condition(
+            &mut conditions,
+            type_,
+            condition_status::FALSE,
+            reason,
+            message.clone(),
+            generation,
+        );
+    }
+    ProviderStatus {
+        failure_domains: Vec::new(),
+        conditions,
+        workload: None,
+        observed_generation: Some(generation),
+        ek_ca_certificates: Vec::new(),
+    }
+}
+
+/// One `VMImage.status.perProvider` row for `provider`, with no zones and no
+/// `resolvedRef`. A caller that has either sets it with struct update syntax.
+#[must_use]
+pub fn image_row(
+    provider: &Provider,
+    ready: bool,
+    reason: &str,
+    message: Option<String>,
+) -> ImagePerProviderStatus {
+    ImagePerProviderStatus {
+        provider_name: provider.name_any(),
+        provider_namespace: provider.namespace().unwrap_or_default(),
+        ready,
+        resolved_ref: None,
+        reason: Some(reason.to_string()),
+        message,
+        zones: Vec::new(),
+    }
+}
+
+/// The `VMImage` status a provider applies: its own `perProvider` rows and
+/// the generation it observed, and nothing else.
+///
+/// `buildArtifact` is written solely by banlieue-imagebuilder (ADR-0010) and
+/// the aggregate `Ready` condition solely by banlieue-controller (ADR-0015):
+/// a provider sees only its own rows, so it says nothing about either.
+#[must_use]
+pub fn provider_rows_status(
+    per_provider: Vec<ImagePerProviderStatus>,
+    generation: i64,
+) -> VMImageStatus {
+    VMImageStatus {
+        per_provider,
+        build_artifact: None,
+        conditions: Vec::new(),
+        observed_generation: Some(generation),
+        first_boot_sealing: None,
+    }
 }
 
 #[cfg(test)]

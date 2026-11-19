@@ -15,17 +15,15 @@ use banlieue_api::banlieue::{
     FailureDomain, FailureDomainAttributes, FailureDomainCapacity, FailureDomainNameOverride,
     Provider, ProviderCapabilities, ProviderConnection, ProviderStatus, StorageCapacity,
 };
-use banlieue_provider_sdk::capacity::{available_memory_mib, bytes_to_gib};
+use banlieue_provider_sdk::capacity::{available_memory_mib, bytes_to_gib, min_known};
 use banlieue_provider_sdk::reconciler::{requeue_long, requeue_on_error};
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_PROVIDER_VSPHERE;
-use banlieue_provider_sdk::status::{condition_status, set_condition};
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_VSPHERE, apply_status, is_not_found};
+use banlieue_provider_sdk::status::{
+    condition_status, provider_condition_types as condition_types, set_condition,
+};
 use k8s_openapi::api::core::v1::Secret;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Condition;
-use kube::{
-    Resource, ResourceExt,
-    api::{Api, Patch, PatchParams},
-    runtime::controller::Action,
-};
+use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use serde_json::json;
 use tracing::{info, warn};
 
@@ -38,14 +36,8 @@ use crate::error::{Error, Result};
 pub const PROVIDER_CLASS_NAME: &str = "vsphere";
 
 /// Standard k8s Secret keys we read from `Provider.spec.connection.credentialsRef`.
-const SECRET_KEY_USERNAME: &str = "username";
-const SECRET_KEY_PASSWORD: &str = "password";
-
-/// Condition type set on `Provider.status.conditions`.
-mod condition_types {
-    pub const READY: &str = "Ready";
-    pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
-}
+pub(crate) const SECRET_KEY_USERNAME: &str = "username";
+pub(crate) const SECRET_KEY_PASSWORD: &str = "password";
 
 /// Stable `reason` strings on the conditions. Keep these stable — operators
 /// match against them in alerts and tests.
@@ -216,14 +208,6 @@ pub async fn reconcile(provider: Arc<Provider>, ctx: Arc<Context>) -> Result<Act
     // controller default; spec/secret changes trigger immediate reconciles
     // via the kube watcher.
     Ok(requeue_long())
-}
-
-/// `error_policy` callback the controller invokes when [`reconcile`] returns
-/// `Err`. Short backoff — most errors here are transient (network blips,
-/// vCenter session expiry).
-pub fn error_policy(_provider: Arc<Provider>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "reconcile error policy fired");
-    requeue_on_error()
 }
 
 /// Walk the vCenter inventory and produce one [`FailureDomain`] per
@@ -469,14 +453,6 @@ fn cluster_guest_capacity(
     })
 }
 
-/// The smaller of two optional figures, or whichever is known.
-fn min_known(a: Option<u64>, b: Option<u64>) -> Option<u64> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    }
-}
-
 /// The datastore a disk of this storage class lands on: the named one, or
 /// the datastore-cluster member with the most free space (each disk lands on
 /// one member). Tag targets are not resolved here (ADR-0019).
@@ -553,9 +529,7 @@ pub(crate) async fn read_credentials(
     let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
     let secret = api.get(secret_name).await.map_err(|e| {
         // 404 → missing; everything else surfaces as the raw kube error.
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == 404
-        {
+        if is_not_found(&e) {
             return Error::Missing("Provider.spec.connection.credentialsRef");
         }
         Error::Kube(e)
@@ -615,7 +589,9 @@ async fn patch_status_success(
         observed_generation: Some(generation),
         ek_ca_certificates: vec![],
     };
-    patch_provider_status(ctx, namespace, name, status).await
+    let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
+    apply_status(&api, name, FIELD_MANAGER_PROVIDER_VSPHERE, &status, true).await?;
+    Ok(())
 }
 
 /// SSA-patch a failure condition (one of Ready / ProviderReachable) onto
@@ -660,43 +636,12 @@ async fn patch_status_failed(
 
     // Don't bother carrying failure_domains across error transitions — the
     // SSA merge will keep whatever the previous successful reconcile wrote.
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()).to_string(),
-        "kind": Provider::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": {
-            "conditions": conditions,
-            "observedGeneration": generation,
-        }
+    let status = json!({
+        "conditions": conditions,
+        "observedGeneration": generation,
     });
-    apply_status_patch(ctx, namespace, name, patch).await
-}
-
-async fn patch_provider_status(
-    ctx: &Context,
-    namespace: &str,
-    name: &str,
-    status: ProviderStatus,
-) -> Result<()> {
-    let patch = json!({
-        "apiVersion": Provider::api_version(&()).to_string(),
-        "kind": Provider::kind(&()).to_string(),
-        "metadata": { "name": name, "namespace": namespace },
-        "status": status,
-    });
-    apply_status_patch(ctx, namespace, name, patch).await
-}
-
-async fn apply_status_patch(
-    ctx: &Context,
-    namespace: &str,
-    name: &str,
-    patch: serde_json::Value,
-) -> Result<()> {
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
-    let params = PatchParams::apply(FIELD_MANAGER_PROVIDER_VSPHERE).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, FIELD_MANAGER_PROVIDER_VSPHERE, &status, true).await?;
     Ok(())
 }
 

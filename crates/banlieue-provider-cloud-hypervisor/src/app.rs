@@ -11,7 +11,6 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
@@ -21,21 +20,19 @@ use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
 use banlieue_provider_sdk::client::build_client_with;
+use banlieue_provider_sdk::defaults::{DEFAULT_HEALTH_PORT, DEFAULT_METRICS_PORT};
 use banlieue_provider_sdk::health::Election;
-use banlieue_provider_sdk::leader::{
-    DEFAULT_LEASE_DURATION_SECS, DEFAULT_RENEW_PERIOD_SECS, DEFAULT_RETRY_PERIOD_SECS,
-    LeaderConfig, acquire_or_wait, renew_forever,
-};
+use banlieue_provider_sdk::leader::{LeaderConfig, elect};
 use banlieue_provider_sdk::naming::workload_name;
+use banlieue_provider_sdk::reconciler::requeue_error_policy;
 use banlieue_provider_sdk::runner::run_controller;
 use banlieue_provider_sdk::scope::{
-    NamespaceGate, ProviderScope, ScopeError, SharedServing, check_selector, scope_trigger,
-    selector_to_string, spawn_namespace_gate,
+    ProviderScope, ScopeError, SharedServing, selector_to_string, start_gate,
 };
 use clap::{Args, Subcommand, ValueEnum};
 use kube::runtime::{Controller, watcher::Config as WatchConfig};
 use kube::{Api, Client};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::host::RealHost;
 use crate::host_config::HostConfig;
@@ -45,9 +42,6 @@ use crate::{provider, sys, systemd, token, vmimage};
 
 /// Where the bootstrap script writes the host config.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/banlieue/cloud-hypervisor.toml";
-const DEFAULT_HEALTH_PORT: u16 = 8081;
-/// Same metrics port as every other role (ADR-0091 Decision 1).
-const DEFAULT_METRICS_PORT: u16 = 8080;
 
 /// This role's name: the OTLP `service.name` (ADR-0092) and the `role`
 /// label of `banlieue_leader` (ADR-0091).
@@ -132,20 +126,14 @@ pub enum ChCommand {
 /// `providerClassRef`.
 #[must_use]
 pub fn leader_config(config: &HostConfig, class: &str, identity: Option<String>) -> LeaderConfig {
-    LeaderConfig {
-        namespace: config.provider.namespace.clone(),
-        lease_name: workload_name(class, &config.provider.name),
-        identity: identity.unwrap_or_else(LeaderConfig::default_identity),
-        lease_duration: Duration::from_secs(DEFAULT_LEASE_DURATION_SECS),
-        renew_period: Duration::from_secs(DEFAULT_RENEW_PERIOD_SECS),
-        retry_period: Duration::from_secs(DEFAULT_RETRY_PERIOD_SECS),
-    }
+    let lease_name = workload_name(class, &config.provider.name);
+    LeaderConfig::new(&config.provider.namespace, lease_name).with_identity(identity)
 }
 
 /// Watch only this host's `Provider`, narrowed server-side.
 #[must_use]
 pub fn provider_watch_config(config: &HostConfig) -> WatchConfig {
-    WatchConfig::default().fields(&format!("metadata.name={}", config.provider.name))
+    banlieue_provider_sdk::reconciler::provider_watch_config(Some(&config.provider.name))
 }
 
 /// The scope this host serves, from its own `Provider.spec.namespaceSelector`
@@ -269,39 +257,19 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
             .context("starting health and metrics servers")?;
 
-    if let Some(lc) = lease {
-        info!(lease = %lc.lease_name, "waiting for leader election");
-        acquire_or_wait(client.clone(), &lc, &readiness)
-            .await
-            .context("acquiring leader lease")?;
-        let renewer = client.clone();
-        let renewer_readiness = readiness.clone();
-        tokio::spawn(async move {
-            if let Err(e) = renew_forever(renewer, lc, renewer_readiness).await {
-                error!(error = %e, "leader lease renewer terminated — exiting");
-                std::process::exit(1);
-            }
-        });
-    } else {
-        info!("leader election disabled by --no-leader-elect");
-    }
+    elect(client.clone(), lease, &readiness)
+        .await
+        .context("acquiring leader lease")?;
 
     // Selector mode (ADR-0133 Decision 4): machines in every namespace, gated by
     // a Namespace reflector the API server has already filtered. An invalid
     // selector fails startup here, not later as a host that serves nothing.
-    let (scope_tx, scope_rx) = tokio::sync::watch::channel(0_u64);
-    let (gate, _scope_tx) = match scope.selector() {
-        Some(selector) => {
-            check_selector(&client, selector)
-                .await
-                .context("validating the Provider's namespaceSelector")?;
-            let gate = spawn_namespace_gate(&client, selector, scope_tx)
-                .await
-                .context("starting the namespace selector watch")?;
-            (gate, None)
-        }
-        None => (NamespaceGate::none(), Some(scope_tx)),
-    };
+    let (gate, scope_changes) = start_gate(
+        &client,
+        scope.selector(),
+        Some("the Provider's namespaceSelector"),
+    )
+    .await?;
 
     let ctx = Arc::new(Context {
         client: client.clone(),
@@ -319,7 +287,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "Provider",
         metrics.clone(),
         provider::reconcile,
-        provider::error_policy,
+        requeue_error_policy,
         ctx.clone(),
     );
 
@@ -336,11 +304,11 @@ pub async fn run(cli: Cli) -> Result<()> {
     let machine_ctrl = run_controller(
         Controller::new(machine_api, WatchConfig::default())
             .reconcile_all_on(woken)
-            .reconcile_all_on(scope_trigger(scope_rx)),
+            .reconcile_all_on(scope_changes.trigger()),
         "CloudHypervisorMachine",
         metrics.clone(),
         reconciler::reconcile,
-        reconciler::error_policy,
+        requeue_error_policy,
         ctx.clone(),
     );
 
@@ -350,7 +318,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         "VMImage",
         metrics.clone(),
         vmimage::reconcile,
-        vmimage::error_policy,
+        requeue_error_policy,
         ctx,
     );
 

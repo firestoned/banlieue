@@ -5,6 +5,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use crate::test_fixtures::config;
     use clap::Parser;
 
     #[derive(Parser)]
@@ -17,32 +18,6 @@ mod tests {
         let mut argv = vec!["cloud-hypervisor"];
         argv.extend_from_slice(args);
         Wrapper::parse_from(argv).cli
-    }
-
-    fn config() -> HostConfig {
-        HostConfig::parse(
-            r#"
-[provider]
-name = "ch-a"
-namespace = "banlieue-system"
-kubeconfig = "/etc/banlieue/kubeconfig"
-[vmm]
-binary = "/usr/local/bin/cloud-hypervisor"
-version = "v53.0"
-firmware = "/opt/banlieue/firmware/f/CLOUDHV.fd"
-[paths]
-run_root = "/run/banlieue/ch"
-state_root = "/var/lib/banlieue"
-[guests]
-uid_base = 2000000
-uid_count = 10
-[storage_classes]
-fast = "/srv/banlieue/ch"
-[network_classes]
-lan = "br0"
-"#,
-        )
-        .unwrap()
     }
 
     fn selector(labels: &[(&str, &str)]) -> LabelSelector {

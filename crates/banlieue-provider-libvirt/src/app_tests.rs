@@ -100,22 +100,6 @@ mod tests {
     // ---------- watch scoping ---------------------------------------------
 
     #[test]
-    fn provider_name_narrows_the_watch_server_side() {
-        // Server-side, so this pod's informer cache holds only its own
-        // Provider and one hung backend cannot stall the others (ADR-0003).
-        let cfg = provider_watch_config(Some("prod-kvm"));
-        assert_eq!(
-            cfg.field_selector.as_deref(),
-            Some("metadata.name=prod-kvm")
-        );
-    }
-
-    #[test]
-    fn without_a_provider_name_every_provider_is_watched() {
-        assert!(provider_watch_config(None).field_selector.is_none());
-    }
-
-    #[test]
     fn the_operator_supplied_provider_name_flag_parses() {
         // The operator passes --provider-name to every backend; a libvirt
         // provider that rejected it would crash-loop before its first

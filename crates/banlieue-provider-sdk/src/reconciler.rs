@@ -5,9 +5,14 @@
 //! Centralizing these constants keeps requeue semantics consistent across
 //! controllers and makes it cheap to tune them globally.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use banlieue_api::banlieue::Provider;
 use kube::runtime::controller::Action;
+use kube::runtime::watcher::Config;
+use kube::{Api, Client, Resource, api::ListParams};
+use tracing::warn;
 
 /// Default requeue interval when reconciliation succeeded and the resource
 /// is in a stable state. Matches Cluster API's default tick.
@@ -104,6 +109,62 @@ pub fn providers_in_scope(
             )
         })
         .collect()
+}
+
+/// Watch configuration for a `Provider` controller: narrowed server-side to
+/// the one object when the workload was started with `--provider-name`.
+///
+/// A standalone function so the scoping rule is testable without a cluster.
+#[must_use]
+pub fn provider_watch_config(provider_name: Option<&str>) -> Config {
+    match provider_name {
+        Some(name) => Config::default().fields(&format!("metadata.name={name}")),
+        None => Config::default(),
+    }
+}
+
+/// Keep the `Provider`s whose `spec.providerClassRef.name` is `class`.
+#[must_use]
+pub fn providers_of_class(providers: Vec<Provider>, class: &str) -> Vec<Provider> {
+    providers
+        .into_iter()
+        .filter(|p| p.spec.provider_class_ref.name == class)
+        .collect()
+}
+
+/// List the `Provider`s of one class: in `namespace`, or in every namespace
+/// when it is `None`.
+///
+/// No `--provider-name` scoping happens here; narrow the result with
+/// [`providers_in_scope`] where the caller did so before.
+///
+/// # Errors
+/// The LIST's [`kube::Error`].
+pub async fn list_providers_of_class(
+    client: &Client,
+    namespace: Option<&str>,
+    class: &str,
+) -> std::result::Result<Vec<Provider>, kube::Error> {
+    let api: Api<Provider> = match namespace {
+        Some(ns) => Api::namespaced(client.clone(), ns),
+        None => Api::all(client.clone()),
+    };
+    let listed = api.list(&ListParams::default()).await?;
+    Ok(providers_of_class(listed.items, class))
+}
+
+/// The error policy every provider reconciler shares: log the failure with
+/// the kind it was reconciling, and requeue on the error interval.
+///
+/// Pass it straight to `Controller::run`; the object and context are unused,
+/// so it fits any reconciler's error and context types.
+pub fn requeue_error_policy<K, E, C>(_object: Arc<K>, error: &E, _ctx: Arc<C>) -> Action
+where
+    K: Resource<DynamicType = ()>,
+    E: std::fmt::Display,
+{
+    warn!(error = %error, kind = %K::kind(&()), "reconcile error policy fired");
+    requeue_on_error()
 }
 
 #[cfg(test)]

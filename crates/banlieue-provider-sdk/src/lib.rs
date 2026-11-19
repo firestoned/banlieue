@@ -12,6 +12,10 @@
 //!
 //! Modules:
 //!
+//! - [`artifact`]: checksum and size checks on a built image before a
+//!   provider imports it.
+//! - [`defaults`]: flag defaults every binary agrees on (ports, namespaces,
+//!   the import Job's image and ServiceAccount).
 //! - [`bootstrap`]: shared process startup: `tracing` init (with opt-in
 //!   OTLP trace export, ADR-0092) and the SIGTERM / Ctrl-C shutdown future.
 //! - [`health`]: path-aware `/livez` and `/readyz`, with readiness fed by
@@ -37,11 +41,13 @@
 //! - [`osartifact`] — `ownerReference` helper binding a per-zone import
 //!   Job's lifecycle to the `OSArtifact` whose PVC it mounts (ADR-0027).
 
+pub mod artifact;
 pub mod bootstrap;
 pub mod ca_bundle;
 pub mod capacity;
 pub mod client;
 pub mod cloudinit;
+pub mod defaults;
 pub mod ek;
 pub mod error;
 pub mod finalizer;

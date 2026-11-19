@@ -5,53 +5,21 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::client::{FakeClient, Inventory, VSphereClient};
+    use crate::client::{FakeClient, Inventory};
+    use crate::reconciler::test_fixtures::{UID, as_client, base_spec, machine_ref};
 
-    use banlieue_api::common::{DiskProvisioning, Firmware, PowerState};
-    use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec};
+    use banlieue_api::infrastructure::VSphereMachineSpec;
 
-    use super::super::{MachineRef, compensate_gone, finalize_unrecorded, finalize_vm, is_gone};
+    use super::super::{compensate_gone, finalize_unrecorded, finalize_vm, is_gone};
     use crate::error::Error;
 
-    const UID: &str = "7c0d1f9e-0000-4000-8000-0000000000db";
-
-    fn machine() -> MachineRef<'static> {
-        MachineRef {
-            name: "db-01",
-            uid: UID,
-        }
-    }
-
     fn spec() -> VSphereMachineSpec {
-        VSphereMachineSpec {
-            provider_id: None,
-            failure_domain: None,
-            provider_ref: banlieue_api::common::ProviderReference {
-                name: "vc1".to_string(),
-                namespace: None,
-            },
-            template: "ubuntu-22.04-cloudinit".to_string(),
-            template_folder: None,
-            datacenter: "dc1".to_string(),
-            cluster: "cluster-a".to_string(),
-            datastore: "ds-fast-01".to_string(),
-            folder: None,
-            resource_pool: None,
-            num_cpus: 2,
-            memory_mi_b: 2048,
-            firmware: Firmware::Efi,
-            tpm_enabled: false,
-            disks: vec![VSphereDiskSpec {
-                name: "os".to_string(),
-                size_gi_b: 20,
-                provisioning: DiskProvisioning::Thin,
-            }],
-            network: Vec::new(),
-            user_data: None,
-            desired_power_state: PowerState::PoweredOn,
-            created_by: None,
-            first_boot_sealing: None,
-        }
+        let mut spec = base_spec();
+        spec.num_cpus = 2;
+        spec.memory_mi_b = 2048;
+        spec.disks[0].size_gi_b = 20;
+        spec.network.clear();
+        spec
     }
 
     fn with_dc() -> FakeClient {
@@ -64,10 +32,6 @@ mod tests {
                 .with_code(code)
                 .boxed(),
         )
-    }
-
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
     }
 
     #[tokio::test]
@@ -126,7 +90,7 @@ mod tests {
     async fn deletion_without_a_vm_ref_destroys_our_marked_vm() {
         let client = with_dc();
         let ours = client.add_vm(None, "db-01", Some(UID));
-        finalize_unrecorded(as_client(&client), &spec(), &machine())
+        finalize_unrecorded(as_client(&client), &spec(), &machine_ref())
             .await
             .unwrap();
         assert_eq!(client.destroyed_vms(), vec![ours]);
@@ -137,7 +101,7 @@ mod tests {
         for foreign_uid in [None, Some("another-machine-uid")] {
             let client = with_dc();
             client.add_vm(None, "db-01", foreign_uid);
-            finalize_unrecorded(as_client(&client), &spec(), &machine())
+            finalize_unrecorded(as_client(&client), &spec(), &machine_ref())
                 .await
                 .unwrap();
             assert!(client.destroyed_vms().is_empty(), "{foreign_uid:?}");
@@ -147,7 +111,7 @@ mod tests {
     #[tokio::test]
     async fn deletion_without_a_vm_ref_and_nothing_there_succeeds() {
         let client = with_dc();
-        finalize_unrecorded(as_client(&client), &spec(), &machine())
+        finalize_unrecorded(as_client(&client), &spec(), &machine_ref())
             .await
             .unwrap();
         assert!(client.destroyed_vms().is_empty());
@@ -158,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn deletion_without_a_vm_ref_in_a_missing_datacenter_succeeds() {
         let client = FakeClient::new(Inventory::default());
-        finalize_unrecorded(as_client(&client), &spec(), &machine())
+        finalize_unrecorded(as_client(&client), &spec(), &machine_ref())
             .await
             .unwrap();
         assert!(client.destroyed_vms().is_empty());

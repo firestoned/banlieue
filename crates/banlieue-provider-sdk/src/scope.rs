@@ -594,6 +594,96 @@ pub async fn spawn_namespace_gate(
     Ok(gate)
 }
 
+/// Why [`start_gate`] failed. `Display` is the stage alone and the
+/// [`ScopeError`] is the `source`, so wrapped in `anyhow` it reads exactly as
+/// the `.context(..)` each binary used to attach by hand.
+#[derive(Debug, thiserror::Error)]
+pub enum GateError {
+    /// The selector did not pass [`check_selector`]. `what` names the flag
+    /// or field the selector came from.
+    #[error("validating {what}")]
+    Check {
+        /// The flag or field the selector came from.
+        what: &'static str,
+        /// The probe's failure.
+        #[source]
+        source: ScopeError,
+    },
+    /// The selector-filtered `Namespace` watch did not start.
+    #[error("starting the namespace selector watch")]
+    Watch(#[source] ScopeError),
+}
+
+/// The receiving half of the "served namespaces changed" signal that
+/// [`start_gate`] sets up.
+///
+/// Without a selector nothing ever sends, and a trigger stream must then stay
+/// pending instead of ending. So this holds the otherwise unused sender, and
+/// every stream from [`ScopeChanges::trigger`] holds it too: the caller has
+/// nothing to keep alive by hand.
+#[derive(Clone, Debug)]
+pub struct ScopeChanges {
+    rx: tokio::sync::watch::Receiver<u64>,
+    idle: Option<std::sync::Arc<tokio::sync::watch::Sender<u64>>>,
+}
+
+impl ScopeChanges {
+    /// A stream for `Controller::reconcile_all_on`: one `()` each time the
+    /// served set of namespaces changes (see [`scope_trigger`]).
+    pub fn trigger(&self) -> impl futures::Stream<Item = ()> + Send + use<> {
+        let idle = self.idle.clone();
+        scope_trigger(self.rx.clone()).inspect(move |()| {
+            // Owned by the stream so the sender outlives it.
+            let _ = &idle;
+        })
+    }
+
+    /// The raw receiver, for code that already takes one.
+    #[must_use]
+    pub fn receiver(&self) -> &tokio::sync::watch::Receiver<u64> {
+        &self.rx
+    }
+}
+
+/// Set up namespace gating for a binary: the gate each reconcile asks, and
+/// the change signal that reconciles everything again.
+///
+/// With a selector this optionally validates it ([`check_selector`]) and
+/// starts the filtered `Namespace` reflector ([`spawn_namespace_gate`]).
+/// Without one the watch is already narrowed to a single namespace, so the
+/// gate passes everything and the signal never fires.
+///
+/// # Arguments
+/// * `client` - the client the `Namespace` watch runs on.
+/// * `selector` - the label selector, or `None` in single-namespace mode.
+/// * `check_as` - when set, validate the selector first and name it this way
+///   in the error (`"--watch-namespace-selector"`). `None` for a binary that
+///   has already validated it.
+///
+/// # Errors
+/// [`GateError::Check`] for a selector the API server rejects,
+/// [`GateError::Watch`] when the watch ends before its first sync.
+pub async fn start_gate(
+    client: &Client,
+    selector: Option<&str>,
+    check_as: Option<&'static str>,
+) -> Result<(NamespaceGate, ScopeChanges), GateError> {
+    let (tx, rx) = tokio::sync::watch::channel(0_u64);
+    let Some(selector) = selector else {
+        let idle = Some(std::sync::Arc::new(tx));
+        return Ok((NamespaceGate::none(), ScopeChanges { rx, idle }));
+    };
+    if let Some(what) = check_as {
+        check_selector(client, selector)
+            .await
+            .map_err(|source| GateError::Check { what, source })?;
+    }
+    let gate = spawn_namespace_gate(client, selector, tx)
+        .await
+        .map_err(GateError::Watch)?;
+    Ok((gate, ScopeChanges { rx, idle: None }))
+}
+
 #[cfg(test)]
 #[path = "scope_tests.rs"]
 mod scope_tests;

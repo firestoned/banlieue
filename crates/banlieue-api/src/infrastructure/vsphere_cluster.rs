@@ -80,7 +80,7 @@ pub struct VSphereClusterSpec {
     // ------------------------------------------------------------------
     /// Select `Provider`s (in this namespace) to aggregate failure domains
     /// from, by matching their labels. Ignored when `providerRefs` is set.
-    #[serde(default, skip_serializing_if = "label_selector_is_empty")]
+    #[serde(default, skip_serializing_if = "LabelSelector::is_empty")]
     pub provider_selector: LabelSelector,
 
     /// Explicit list of `Provider`s (in this namespace) to aggregate. Takes
@@ -140,17 +140,6 @@ pub struct VSphereClusterStatus {
     /// The generation of the spec the controller has reconciled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
-}
-
-#[inline]
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
-/// `skip_serializing_if` predicate for an empty [`LabelSelector`].
-#[inline]
-fn label_selector_is_empty(s: &LabelSelector) -> bool {
-    s.match_labels.is_empty() && s.match_expressions.is_empty()
 }
 
 #[cfg(test)]

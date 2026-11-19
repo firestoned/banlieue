@@ -40,32 +40,31 @@ use std::collections::{BTreeMap, BTreeSet};
 use banlieue_api::banlieue::{
     BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, FailureDomain,
     ImagePerProviderStatus, ImageSource, ImageSourceKind, InstallMode, Provider, VMImage,
-    VMImageStatus, VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
+    VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
 };
 use banlieue_api::common::Firmware;
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{
-    providers_in_scope, requeue_default, requeue_long, requeue_on_error, serves,
+    list_providers_of_class, providers_in_scope, requeue_default, requeue_long, serves,
 };
-use banlieue_provider_sdk::ssa::{FIELD_MANAGER_PROVIDER_VSPHERE, status_field_manager};
-use banlieue_provider_sdk::status::condition_status;
+use banlieue_provider_sdk::ssa::{
+    FIELD_MANAGER_PROVIDER_VSPHERE, apply_status, is_not_found, status_field_manager,
+};
+use banlieue_provider_sdk::status::{condition_status, image_row, provider_rows_status};
 use k8s_openapi::api::batch::v1::Job;
-use k8s_openapi::api::core::v1::{Secret, Toleration};
+use k8s_openapi::api::core::v1::Toleration;
 use kube::{
-    Resource, ResourceExt,
-    api::{Api, ListParams, Patch, PatchParams},
+    ResourceExt,
+    api::{Api, Patch, PatchParams},
     runtime::controller::Action,
 };
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::provider::PROVIDER_CLASS_NAME;
-use crate::client::{Credentials, Datacenter, VSphereClient};
+use crate::client::{Datacenter, VSphereClient};
 use crate::context::Context;
-use crate::error::{Error, Result};
-
-const SECRET_KEY_USERNAME: &str = "username";
-const SECRET_KEY_PASSWORD: &str = "password";
+use crate::error::Result;
 
 /// `FailureDomain.attributes.raw` key holding the failure domain's datacenter
 /// (written by the `provider` reconciler).
@@ -277,8 +276,6 @@ pub mod reasons {
     pub const CONNECT_FAILED: &str = "ConnectFailed";
     /// vCenter rejected the inventory walk during template lookup.
     pub const LOOKUP_FAILED: &str = "LookupFailed";
-    /// No vSphere ImageSource on this VMImage — nothing to do for this provider class.
-    pub const NO_VSPHERE_SOURCE: &str = "NoVSphereSource";
     /// `Url` source: `VMImage.status.buildArtifact` isn't `Ready` yet
     /// (missing, `Pending`, or `Building`) — waiting on `banlieue-imagebuilder`.
     pub const BUILD_PENDING: &str = "BuildPending";
@@ -346,7 +343,8 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         return Ok(requeue_long());
     };
 
-    let all_providers = list_vsphere_providers(&ctx).await?;
+    let all_providers =
+        list_providers_of_class(&ctx.client, ctx.namespace.as_deref(), PROVIDER_CLASS_NAME).await?;
     let providers = providers_in_scope(all_providers.clone(), ctx.provider_name.as_deref());
     if providers.is_empty() {
         info!("no vsphere Providers in scope; leaving status untouched");
@@ -455,12 +453,6 @@ async fn settle_force_reimport(
     Ok(())
 }
 
-/// `error_policy` invoked on `reconcile` failure.
-pub fn error_policy(_image: Arc<VMImage>, err: &Error, _ctx: Arc<Context>) -> Action {
-    warn!(error = %err, "vmimage reconcile error policy fired");
-    requeue_on_error()
-}
-
 /// Deletion path (ADR-0028): unless `spec.template.retainOnDelete`, destroy
 /// every per-zone template this provider's own `status.perProvider[]` rows
 /// report, then drop the finalizer. Errors propagate to `error_policy` and
@@ -501,7 +493,8 @@ async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<
             continue;
         };
         let namespace = provider.namespace().unwrap_or_default();
-        let creds = read_credentials(ctx, &namespace, &provider).await?;
+        let creds =
+            super::provider::read_credentials(ctx, &namespace, &provider.spec.connection).await?;
         let ca_bundle_pem = crate::reconciler::ca_bundle::resolve_ca_bundle(
             ctx,
             &namespace,
@@ -543,11 +536,12 @@ async fn finalize(api: &Api<VMImage>, image: &VMImage, ctx: &Context) -> Result<
         patch_vmimage_status(ctx, &image.name_any(), generation, mine, &field_manager).await?;
     }
 
-    let live: BTreeSet<(String, String)> = list_vsphere_providers(ctx)
-        .await?
-        .iter()
-        .map(|p| (p.namespace().unwrap_or_default(), p.name_any()))
-        .collect();
+    let live: BTreeSet<(String, String)> =
+        list_providers_of_class(&ctx.client, ctx.namespace.as_deref(), PROVIDER_CLASS_NAME)
+            .await?
+            .iter()
+            .map(|p| (p.namespace().unwrap_or_default(), p.name_any()))
+            .collect();
     if finalizer_can_go(&after, &live) {
         remove_finalizer(api, image, VM_IMAGE_FINALIZER).await?;
     } else {
@@ -717,10 +711,11 @@ pub async fn reconcile_for_provider(
             return reconcile_url_source(ctx, provider, build_artifact, image_name, force).await;
         }
         ImageSourceKind::BackingFile => {
-            return per_provider_failure(
+            return image_row(
                 provider,
+                false,
                 reasons::UNSUPPORTED_SOURCE_KIND,
-                "BackingFile sources are not supported by the vsphere provider".to_string(),
+                Some("BackingFile sources are not supported by the vsphere provider".to_string()),
             );
         }
         ImageSourceKind::Template => {}
@@ -728,12 +723,18 @@ pub async fn reconcile_for_provider(
 
     let namespace = provider.namespace().unwrap_or_default();
 
-    let creds = match read_credentials(ctx, &namespace, provider).await {
-        Ok(c) => c,
-        Err(e) => {
-            return per_provider_failure(provider, reasons::SECRET_UNAVAILABLE, e.to_string());
-        }
-    };
+    let creds =
+        match super::provider::read_credentials(ctx, &namespace, &provider.spec.connection).await {
+            Ok(c) => c,
+            Err(e) => {
+                return image_row(
+                    provider,
+                    false,
+                    reasons::SECRET_UNAVAILABLE,
+                    Some(e.to_string()),
+                );
+            }
+        };
     let ca_bundle_pem = match crate::reconciler::ca_bundle::resolve_ca_bundle(
         ctx,
         &namespace,
@@ -742,7 +743,14 @@ pub async fn reconcile_for_provider(
     .await
     {
         Ok(p) => p,
-        Err(e) => return per_provider_failure(provider, reasons::CONNECT_FAILED, e.to_string()),
+        Err(e) => {
+            return image_row(
+                provider,
+                false,
+                reasons::CONNECT_FAILED,
+                Some(e.to_string()),
+            );
+        }
     };
     let client = match ctx
         .vsphere
@@ -750,13 +758,20 @@ pub async fn reconcile_for_provider(
         .await
     {
         Ok(c) => c,
-        Err(e) => return per_provider_failure(provider, reasons::CONNECT_FAILED, e.to_string()),
+        Err(e) => {
+            return image_row(
+                provider,
+                false,
+                reasons::CONNECT_FAILED,
+                Some(e.to_string()),
+            );
+        }
     };
 
     let datacenters = match dcs_from_provider_status(provider, client.as_ref()).await {
         Ok(v) => v,
         Err(e) => {
-            return per_provider_failure(provider, reasons::LOOKUP_FAILED, e.to_string());
+            return image_row(provider, false, reasons::LOOKUP_FAILED, Some(e.to_string()));
         }
     };
 
@@ -794,10 +809,11 @@ pub async fn compute_template_status(
         .map(|s| s.failure_domains.as_slice())
         .unwrap_or_default();
     if failure_domains.is_empty() {
-        return per_provider_failure(
+        return image_row(
             provider,
+            false,
             reasons::NO_FAILURE_DOMAINS,
-            "Provider has no status.failureDomains[] published yet".to_string(),
+            Some("Provider has no status.failureDomains[] published yet".to_string()),
         );
     }
 
@@ -905,17 +921,18 @@ async fn reconcile_url_source(
     force: &ImportForce,
 ) -> ImagePerProviderStatus {
     let artifact = match gate_on_build_artifact(build_artifact) {
-        Err((reason, message)) => return per_provider_failure(provider, reason, message),
+        Err((reason, message)) => return image_row(provider, false, reason, Some(message)),
         Ok(a) => a,
     };
 
     // ADR-0020: the Content Library import path is a documented follow-up; the
     // supported path is datastore-upload + MarkAsTemplate (default, CL off).
     if provider.spec.use_content_library {
-        return per_provider_failure(
+        return image_row(
             provider,
+            false,
             reasons::CONTENT_LIBRARY_NOT_IMPLEMENTED,
-            "Provider.spec.useContentLibrary=true, but the Content Library import path is not implemented yet (ADR-0020 follow-up)".to_string(),
+            Some("Provider.spec.useContentLibrary=true, but the Content Library import path is not implemented yet (ADR-0020 follow-up)".to_string()),
         );
     }
 
@@ -925,10 +942,11 @@ async fn reconcile_url_source(
         .map(|s| s.failure_domains.as_slice())
         .unwrap_or_default();
     if failure_domains.is_empty() {
-        return per_provider_failure(
+        return image_row(
             provider,
+            false,
             reasons::NO_FAILURE_DOMAINS,
-            "Provider has no status.failureDomains[] published yet".to_string(),
+            Some("Provider has no status.failureDomains[] published yet".to_string()),
         );
     }
 
@@ -1054,7 +1072,7 @@ async fn ensure_import_jobs(
                 .await
             {
                 Ok(_) => {}
-                Err(kube::Error::Api(e)) if e.code == 404 => {}
+                Err(e) if is_not_found(&e) => {}
                 Err(e) => {
                     zones.push(zone_row(
                         &fd.name,
@@ -1083,7 +1101,7 @@ async fn ensure_import_jobs(
                     retry_failed_import_job(&api, &fd.name, &job_name).await
                 }
                 Ok(job) => zone_from_job(&fd.name, image_name, &folder, &job_name, &job),
-                Err(kube::Error::Api(e)) if e.code == 404 => {
+                Err(e) if is_not_found(&e) => {
                     create_import_job(
                         &api, ctx, provider, image_name, &fd.name, &job_name, artifact, force,
                     )
@@ -1501,58 +1519,6 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
     })
 }
 
-fn per_provider_failure(
-    provider: &Provider,
-    reason: &str,
-    message: String,
-) -> ImagePerProviderStatus {
-    ImagePerProviderStatus {
-        provider_name: provider.name_any(),
-        provider_namespace: provider.namespace().unwrap_or_default(),
-        ready: false,
-        resolved_ref: None,
-        reason: Some(reason.to_string()),
-        message: Some(message),
-        zones: vec![],
-    }
-}
-
-/// Read the Provider's credentials Secret. Mirrors `provider.rs::read_credentials`
-/// — kept local so the two reconcilers can evolve independently.
-async fn read_credentials(
-    ctx: &Context,
-    namespace: &str,
-    provider: &Provider,
-) -> Result<Credentials> {
-    let secret_name = provider
-        .spec
-        .connection
-        .credentials_secret()
-        .ok_or(Error::Missing("Provider.spec.connection.credentialsRef"))?;
-    let api: Api<Secret> = Api::namespaced(ctx.client.clone(), namespace);
-    let secret = api.get(secret_name).await.map_err(|e| {
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == 404
-        {
-            return Error::Missing("Provider.spec.connection.credentialsRef");
-        }
-        Error::Kube(e)
-    })?;
-    let data = secret.data.unwrap_or_default();
-    let username = data
-        .get(SECRET_KEY_USERNAME)
-        .ok_or(Error::Missing("secret.data.username"))?;
-    let password = data
-        .get(SECRET_KEY_PASSWORD)
-        .ok_or(Error::Missing("secret.data.password"))?;
-    Ok(Credentials {
-        username: String::from_utf8(username.0.clone())
-            .map_err(|_| Error::Missing("secret.data.username (not utf-8)"))?,
-        password: String::from_utf8(password.0.clone())
-            .map_err(|_| Error::Missing("secret.data.password (not utf-8)"))?,
-    })
-}
-
 /// Resolve the candidate datacenters for a Provider. Prefers
 /// `Provider.status.failureDomains[*].attributes.raw["datacenter"]` populated
 /// by the [`super::provider`] reconciler; falls back to a live `list_datacenters`
@@ -1584,19 +1550,6 @@ async fn dcs_from_provider_status(
         .collect())
 }
 
-/// List vsphere-class Providers in scope.
-async fn list_vsphere_providers(ctx: &Context) -> Result<Vec<Provider>> {
-    let api: Api<Provider> = match ctx.namespace.as_deref() {
-        Some(ns) => Api::namespaced(ctx.client.clone(), ns),
-        None => Api::all(ctx.client.clone()),
-    };
-    let list = api.list(&ListParams::default()).await?;
-    Ok(list
-        .into_iter()
-        .filter(|p| p.spec.provider_class_ref.name == PROVIDER_CLASS_NAME)
-        .collect())
-}
-
 async fn patch_vmimage_status(
     ctx: &Context,
     name: &str,
@@ -1604,33 +1557,12 @@ async fn patch_vmimage_status(
     per_provider: Vec<ImagePerProviderStatus>,
     field_manager: &str,
 ) -> Result<()> {
-    let status = VMImageStatus {
-        per_provider,
-        // Never set by this provider — banlieue-imagebuilder is the sole
-        // writer of buildArtifact (ADR-0010); omitting it here (rather than
-        // writing None explicitly into the SSA-applied JSON) would be
-        // equally correct since it's skip_serializing_if, but staying
-        // explicit documents the field-manager split at the call site.
-        build_artifact: None,
-        // Likewise the aggregate Ready, which belongs to banlieue-controller
-        // (ADR-0015): this provider only ever sees its own rows, so any value
-        // it computed would be an answer to a different question.
-        conditions: Vec::new(),
-        observed_generation: Some(generation),
-        first_boot_sealing: None,
-    };
-
-    let patch = json!({
-        "apiVersion": VMImage::api_version(&()).to_string(),
-        "kind": VMImage::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
-
+    // `buildArtifact` belongs to banlieue-imagebuilder (ADR-0010) and the
+    // aggregate Ready to banlieue-controller (ADR-0015): this provider only
+    // ever sees its own rows, so it writes neither.
+    let status = provider_rows_status(per_provider, generation);
     let api: Api<VMImage> = Api::all(ctx.client.clone());
-    let params = PatchParams::apply(field_manager).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, field_manager, &status, true).await?;
     Ok(())
 }
 

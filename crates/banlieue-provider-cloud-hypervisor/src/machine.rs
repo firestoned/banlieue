@@ -27,9 +27,7 @@
 
 use crate::error::{Error, Result};
 use crate::host::HostOps;
-use crate::plan::{
-    DISK_ID_INSTALL, MachinePlan, VMM_TEMPLATE, swtpm_setup_unit, swtpm_unit, vmm_unit,
-};
+use crate::plan::{DISK_ID_INSTALL, MachinePlan, swtpm_setup_unit, swtpm_unit, vmm_unit};
 use crate::systemd::UnitState;
 use banlieue_api::common::{
     InitializationStatus, MachineAddress, MachineAddressType, PowerState, condition_types,
@@ -334,13 +332,6 @@ pub async fn teardown(host: &dyn HostOps, plan: &MachinePlan) -> Result<()> {
         ))));
     }
     Ok(())
-}
-
-/// The glob that matches every unit this provider owns: VMM units, and
-/// image import units (`banlieue-ch-import-*`) while they run.
-#[must_use]
-pub fn vmm_unit_glob() -> String {
-    format!("{VMM_TEMPLATE}@*.service")
 }
 
 fn observed(phase: Phase, addresses: Vec<Ipv4Addr>) -> Observed {

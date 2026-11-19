@@ -21,8 +21,6 @@ banlieue-oci = { path = "../banlieue-oci" }
 
 kube.workspace = true
 k8s-openapi.workspace = true
-schemars.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 serde-saphyr.workspace = true
 
@@ -31,13 +29,10 @@ anyhow.workspace = true
 
 # `macros` backs `tokio::select!`; `rt-multi-thread` backs `tokio::spawn`.
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-futures.workspace = true
 
 tracing.workspace = true
 
 clap.workspace = true
-# The push Job's HTTP client, handed to banlieue-oci.
-reqwest.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

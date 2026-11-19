@@ -112,13 +112,16 @@ use banlieue_api::banlieue::{
     VirtualMachineClaim, VirtualMachinePool,
 };
 use banlieue_libvirt::{
-    DEFAULT_TLS_PORT, DEVICE_MODIFY_LIVE, TlsIdentity, connect_open, connect_tls, domain_get_state,
-    domain_get_xml_desc, domain_lookup_by_name, domain_update_device_flags, is_not_found,
+    DEVICE_MODIFY_LIVE, domain_get_state, domain_get_xml_desc, domain_lookup_by_name,
+    domain_update_device_flags, is_not_found,
 };
 use k8s_openapi::api::core::v1::ConfigMap;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Client, ResourceExt};
 use serde_json::json;
+
+mod common;
+use common::{libvirt_settings, load_identity, open_session};
 
 /// Members are real VMs: a provision is minutes on a homelab host.
 const PROVISION_TIMEOUT: Duration = Duration::from_secs(12 * 60);
@@ -169,28 +172,6 @@ fn fixture() -> Option<Fixture> {
     })
 }
 
-fn libvirt_settings() -> Option<(String, PathBuf)> {
-    let host = std::env::var("LIBVIRT_HOST").ok()?;
-    let dir = std::env::var("LIBVIRT_TLS_DIR").ok()?;
-    let dir = match (dir.strip_prefix("~/"), std::env::var("HOME")) {
-        (Some(rest), Ok(home)) => format!("{home}/{rest}"),
-        _ => dir,
-    };
-    Some((host, PathBuf::from(dir)))
-}
-
-fn load_identity(dir: &Path) -> TlsIdentity {
-    let read = |name: &str| {
-        std::fs::read(dir.join(name))
-            .unwrap_or_else(|e| panic!("reading {}/{name}: {e}", dir.display()))
-    };
-    TlsIdentity {
-        ca_pem: read("ca.pem"),
-        client_cert_pem: read("client-cert.pem"),
-        client_key_pem: read("client-key.pem"),
-    }
-}
-
 /// Whether libvirtd has a domain by this name.
 ///
 /// A lookup, not a list: "is this specific domain present" is the question,
@@ -198,12 +179,7 @@ fn load_identity(dir: &Path) -> TlsIdentity {
 /// which a `list().contains()` would quietly conflate.
 async fn domain_exists(host: &str, dir: &Path, domain: &str) -> bool {
     let identity = load_identity(dir);
-    let mut session = connect_tls(host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS to the libvirt host");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN");
+    let mut session = open_session(host, &identity).await;
     match banlieue_libvirt::domain_lookup_by_name(&mut session, domain).await {
         Ok(_) => true,
         Err(e) if is_not_found(&e) => false,
@@ -996,12 +972,7 @@ runcmd:\n\
 /// overwritten and inert.
 async fn sabotage_link_down(host: &str, dir: &Path, domain: &str) -> bool {
     let identity = load_identity(dir);
-    let mut session = connect_tls(host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS to the libvirt host");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN");
+    let mut session = open_session(host, &identity).await;
     let dom = match domain_lookup_by_name(&mut session, domain).await {
         Ok(d) => d,
         Err(e) if is_not_found(&e) => return false,
@@ -1038,12 +1009,7 @@ async fn sabotage_link_down(host: &str, dir: &Path, domain: &str) -> bool {
 /// for the same reason as [`sabotage_link_down`].
 async fn sabotage_eject_installer(host: &str, dir: &Path, domain: &str) -> bool {
     let identity = load_identity(dir);
-    let mut session = connect_tls(host, DEFAULT_TLS_PORT, &identity)
-        .await
-        .expect("TLS to the libvirt host");
-    connect_open(&mut session, Some("qemu:///system"), false)
-        .await
-        .expect("CONNECT_OPEN");
+    let mut session = open_session(host, &identity).await;
     let dom = match domain_lookup_by_name(&mut session, domain).await {
         Ok(d) => d,
         Err(e) if is_not_found(&e) => return false,

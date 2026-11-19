@@ -4,66 +4,20 @@
 
 #[cfg(test)]
 mod tests {
-    use banlieue_api::common::{DiskProvisioning, IpamSpec, StaticIpamConfig};
-    use banlieue_api::common::{Firmware, PowerState};
-    use banlieue_api::infrastructure::{VSphereDiskSpec, VSphereMachineSpec, VSphereNicSpec};
+    use banlieue_api::common::{IpamSpec, PowerState, StaticIpamConfig};
+    use banlieue_api::infrastructure::VSphereMachineSpec;
 
-    use crate::client::{FakeClient, FakeStep, Inventory, VSphereClient};
+    use crate::client::{FakeClient, FakeStep, Inventory};
+    use crate::reconciler::test_fixtures::{UID, as_client, base_spec, dhcp_nic, machine_ref};
 
-    use super::super::{MACHINE_UID_KEY, MachineRef, ensure_vm};
+    use super::super::{MACHINE_UID_KEY, ensure_vm};
     use crate::error::Error;
-
-    const UID: &str = "7c0d1f9e-0000-4000-8000-0000000000db";
-
-    fn machine() -> MachineRef<'static> {
-        MachineRef {
-            name: "db-01",
-            uid: UID,
-        }
-    }
-
-    fn as_client(c: &FakeClient) -> &dyn VSphereClient {
-        c
-    }
-
-    fn dhcp_nic(port_group: &str) -> VSphereNicSpec {
-        VSphereNicSpec {
-            name: "eth0".to_string(),
-            port_group: port_group.to_string(),
-            mac_address: None,
-            ipam: IpamSpec::default(),
-        }
-    }
 
     fn spec(datastore: &str, network: &str) -> VSphereMachineSpec {
         VSphereMachineSpec {
-            provider_id: None,
-            failure_domain: None,
-            provider_ref: banlieue_api::common::ProviderReference {
-                name: "vc1".to_string(),
-                namespace: None,
-            },
-            template: "ubuntu-22.04-cloudinit".to_string(),
-            template_folder: None,
-            datacenter: "dc1".to_string(),
-            cluster: "cluster-a".to_string(),
             datastore: datastore.to_string(),
-            folder: None,
-            resource_pool: None,
-            num_cpus: 4,
-            memory_mi_b: 8192,
-            firmware: Firmware::Efi,
-            tpm_enabled: false,
-            disks: vec![VSphereDiskSpec {
-                name: "os".to_string(),
-                size_gi_b: 40,
-                provisioning: DiskProvisioning::Thin,
-            }],
             network: vec![dhcp_nic(network)],
-            user_data: None,
-            desired_power_state: PowerState::PoweredOn,
-            created_by: None,
-            first_boot_sealing: None,
+            ..base_spec()
         }
     }
 
@@ -83,7 +37,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             Some("vm-existing-123"),
             None,
         )
@@ -105,7 +59,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -139,7 +93,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -166,7 +120,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.created_by = Some("alice".to_string());
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
 
@@ -183,7 +137,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             Some("vm-existing-123"),
             None,
         )
@@ -198,7 +152,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.tpm_enabled = true;
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
 
@@ -218,7 +172,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -237,7 +191,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &s,
-            &machine(),
+            &machine_ref(),
             Some("vm-existing-123"),
             None,
         )
@@ -257,7 +211,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -274,7 +228,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             Some("vm-existing-123"),
             None,
         )
@@ -289,7 +243,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.desired_power_state = PowerState::PoweredOff;
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -311,7 +265,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.desired_power_state = PowerState::PoweredOff;
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
 
@@ -341,7 +295,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &spec("DSC-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -372,7 +326,7 @@ mod tests {
         let outcome = ensure_vm(
             as_client(&client),
             &s,
-            &machine(),
+            &machine_ref(),
             None,
             Some("#cloud-config\nhostname: db-01\n"),
         )
@@ -396,7 +350,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.datacenter = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, &machine(), None, None)
+            ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
                 .await
                 .is_err()
         );
@@ -408,7 +362,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.cluster = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, &machine(), None, None)
+            ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
                 .await
                 .is_err()
         );
@@ -420,7 +374,7 @@ mod tests {
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.template = "does-not-exist".to_string();
         assert!(
-            ensure_vm(as_client(&client), &s, &machine(), None, None)
+            ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
                 .await
                 .is_err()
         );
@@ -431,7 +385,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let s = spec("ds-fast-01", "does-not-exist");
         assert!(
-            ensure_vm(as_client(&client), &s, &machine(), None, None)
+            ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
                 .await
                 .is_err()
         );
@@ -455,7 +409,7 @@ mod tests {
         s.template = "hadron-kairos-v0.1.0".to_string();
         s.template_folder = Some("templates/cluster-a".to_string());
 
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
         assert!(!outcome.already_provisioned);
@@ -480,7 +434,7 @@ mod tests {
         s.template = "hadron-kairos-v0.1.0".to_string();
         s.template_folder = Some("templates/cluster-a".to_string());
 
-        let err = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let err = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not found"));
@@ -493,7 +447,7 @@ mod tests {
         let client = FakeClient::new(seeded_inventory());
         let mut s = spec("ds-fast-01", "vmnet-prod");
         s.template_folder = None; // already the default; explicit for clarity
-        let outcome = ensure_vm(as_client(&client), &s, &machine(), None, None)
+        let outcome = ensure_vm(as_client(&client), &s, &machine_ref(), None, None)
             .await
             .unwrap();
         assert!(!outcome.already_provisioned);
@@ -503,7 +457,7 @@ mod tests {
         client: &FakeClient,
         spec: &VSphereMachineSpec,
     ) -> crate::error::Result<String> {
-        ensure_vm(as_client(client), spec, &machine(), None, None)
+        ensure_vm(as_client(client), spec, &machine_ref(), None, None)
             .await
             .map(|o| o.vm_ref)
     }
@@ -675,7 +629,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             Some("vm-existing-123"),
             None,
         )
@@ -708,9 +662,15 @@ mod tests {
     #[tokio::test]
     async fn every_declared_interface_is_requested_in_order() {
         let client = FakeClient::new(inventory_with_sandbox());
-        ensure_vm(as_client(&client), &two_nic_spec(), &machine(), None, None)
-            .await
-            .unwrap();
+        ensure_vm(
+            as_client(&client),
+            &two_nic_spec(),
+            &machine_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
 
         let request = client.cloned_vms().remove(0).request;
         assert_eq!(
@@ -733,7 +693,7 @@ mod tests {
         ensure_vm(
             as_client(&client),
             &spec("ds-fast-01", "vmnet-prod"),
-            &machine(),
+            &machine_ref(),
             None,
             None,
         )
@@ -746,9 +706,15 @@ mod tests {
     async fn an_unreachable_later_interface_clones_nothing_and_names_the_port_group() {
         // The second port group is not in the cluster's inventory.
         let client = FakeClient::new(seeded_inventory());
-        let err = ensure_vm(as_client(&client), &two_nic_spec(), &machine(), None, None)
-            .await
-            .unwrap_err();
+        let err = ensure_vm(
+            as_client(&client),
+            &two_nic_spec(),
+            &machine_ref(),
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("vmnet-sandbox"),

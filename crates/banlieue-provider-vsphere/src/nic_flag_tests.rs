@@ -48,27 +48,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_unknown_key() {
-        let err = parse_nic_flag("bogus=x").unwrap_err();
-        assert!(err.contains("bogus"), "{err}");
-    }
-
-    #[test]
-    fn parse_rejects_invalid_adapter() {
-        let err = parse_nic_flag("adapter=not-a-real-adapter").unwrap_err();
-        assert!(err.contains("adapter"), "{err}");
-    }
-
-    #[test]
-    fn parse_rejects_invalid_pci_slot() {
-        let err = parse_nic_flag("pciSlot=not-a-number").unwrap_err();
-        assert!(err.contains("pciSlot"), "{err}");
-    }
-
-    #[test]
-    fn parse_rejects_a_malformed_pair_with_no_equals_sign() {
-        let err = parse_nic_flag("network").unwrap_err();
-        assert!(err.contains("network"), "{err}");
+    fn parse_rejects_bad_input_and_names_it() {
+        for (case, flag, named) in [
+            ("unknown key", "bogus=x", "bogus"),
+            ("invalid adapter", "adapter=not-a-real-adapter", "adapter"),
+            ("invalid pci slot", "pciSlot=not-a-number", "pciSlot"),
+            ("malformed pair with no equals sign", "network", "network"),
+        ] {
+            let err = parse_nic_flag(flag).unwrap_err();
+            assert!(err.contains(named), "{case}: {err}");
+        }
     }
 
     #[test]

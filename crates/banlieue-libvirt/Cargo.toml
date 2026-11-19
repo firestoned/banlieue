@@ -30,7 +30,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 rustls = { workspace = true }
-rustls-pki-types = "1"
 # One span per libvirt procedure (ADR-0092).
 tracing.workspace = true
 

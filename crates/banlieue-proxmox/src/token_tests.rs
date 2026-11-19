@@ -32,39 +32,27 @@ mod tests {
     }
 
     #[test]
-    fn a_username_without_a_realm_is_rejected() {
-        assert!(ApiToken::new("banlieue!provider", "s").is_err());
-    }
-
-    #[test]
-    fn empty_parts_are_rejected() {
-        for bad in [
-            "@pve!provider",
-            "banlieue@!provider",
-            "banlieue@pve!",
-            "",
-            "!",
+    fn malformed_tokens_are_rejected() {
+        for (case, username, secret) in [
+            ("no realm", "banlieue!provider", "s"),
+            ("empty user", "@pve!provider", "s"),
+            ("empty realm", "banlieue@!provider", "s"),
+            ("empty token id", "banlieue@pve!", "s"),
+            ("empty username", "", "s"),
+            ("only a bang", "!", "s"),
+            ("blank secret", "banlieue@pve!provider", "  "),
+            (
+                "whitespace inside the secret",
+                "banlieue@pve!provider",
+                "abc def",
+            ),
+            ("second bang", "banlieue@pve!a!b", "s"),
         ] {
             assert!(
-                ApiToken::new(bad, "s").is_err(),
-                "{bad:?} should be rejected"
+                ApiToken::new(username, secret).is_err(),
+                "{case}: {username:?} / {secret:?} should be rejected"
             );
         }
-    }
-
-    #[test]
-    fn an_empty_secret_is_rejected() {
-        assert!(ApiToken::new("banlieue@pve!provider", "  ").is_err());
-    }
-
-    #[test]
-    fn whitespace_inside_a_secret_is_rejected() {
-        assert!(ApiToken::new("banlieue@pve!provider", "abc def").is_err());
-    }
-
-    #[test]
-    fn a_second_bang_is_rejected() {
-        assert!(ApiToken::new("banlieue@pve!a!b", "s").is_err());
     }
 
     #[test]

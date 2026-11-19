@@ -30,9 +30,9 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use banlieue_vex::auto_vex_presence::{
-    GrypeReport, build_document, compute_presence_vex, load_sbom_from_path,
-    load_triaged_from_vex_dir, read_file_capped,
+    build_document, compute_presence_vex, load_sbom_from_path, load_triaged_from_vex_dir,
 };
+use banlieue_vex::cli::{load_grype, timestamp_or_now, write_document};
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -90,20 +90,7 @@ fn main() -> ExitCode {
 fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    let grype_bytes = read_file_capped(&cli.grype_json).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to read --grype-json {}: {}",
-            cli.grype_json.display(),
-            e
-        )
-    })?;
-    let grype: GrypeReport = serde_json::from_slice(&grype_bytes).map_err(|e| {
-        anyhow::anyhow!(
-            "failed to parse --grype-json {}: {}",
-            cli.grype_json.display(),
-            e
-        )
-    })?;
+    let grype = load_grype(&cli.grype_json)?;
 
     let mut sboms = Vec::with_capacity(cli.sbom.len());
     for path in &cli.sbom {
@@ -116,21 +103,11 @@ fn run() -> anyhow::Result<()> {
         anyhow::anyhow!("failed to load --vex-dir {}: {}", cli.vex_dir.display(), e)
     })?;
 
-    let timestamp = cli.timestamp.unwrap_or_else(|| {
-        jiff::Timestamp::now()
-            .strftime("%Y-%m-%dT%H:%M:%SZ")
-            .to_string()
-    });
+    let timestamp = timestamp_or_now(cli.timestamp);
 
     let statements = compute_presence_vex(&grype, &sboms, &triaged, &cli.product_purl, &timestamp);
     let doc = build_document(statements, &cli.id, &cli.author, &timestamp);
-    let rendered = serde_json::to_string_pretty(&doc)? + "\n";
-
-    match &cli.output {
-        Some(path) => std::fs::write(path, &rendered)
-            .map_err(|e| anyhow::anyhow!("failed to write --output {}: {}", path.display(), e))?,
-        None => print!("{rendered}"),
-    }
+    write_document(&doc, cli.output.as_deref())?;
 
     eprintln!(
         "auto-vex-presence: {} grype match(es) -> {} statement(s) emitted ({} already triaged in {})",

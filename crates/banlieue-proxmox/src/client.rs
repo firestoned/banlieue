@@ -253,10 +253,24 @@ impl Client {
         let body = self.call(method, path, params, None).await?;
         Upid::parse(&decode_data::<String>(&body)?)
     }
+
+    /// `POST .../status/{verb}`: `start`, `stop` or `shutdown`.
+    async fn power(&self, node: &str, vmid: u32, verb: &str) -> Result<Upid> {
+        let path = format!("{}/status/{verb}", qemu(node, vmid));
+        self.task(Method::POST, &path, &Params::new()).await
+    }
 }
 
 fn qemu(node: &str, vmid: u32) -> String {
     format!("/nodes/{}/qemu/{vmid}", encode_segment(node))
+}
+
+fn storage_path(node: &str, storage: &str) -> String {
+    format!(
+        "/nodes/{}/storage/{}",
+        encode_segment(node),
+        encode_segment(storage)
+    )
 }
 
 /// Refuse a filename that could break out of a multipart header or the
@@ -341,12 +355,11 @@ impl ProxmoxApi for Client {
 
     #[instrument(name = "proxmox.storage_content", skip_all, fields(node = %node, storage = %storage))]
     async fn storage_content(&self, node: &str, storage: &str) -> Result<Vec<Volume>> {
-        let path = format!(
-            "/nodes/{}/storage/{}/content",
-            encode_segment(node),
-            encode_segment(storage)
-        );
-        self.get(&path, &Params::new()).await
+        self.get(
+            &format!("{}/content", storage_path(node, storage)),
+            &Params::new(),
+        )
+        .await
     }
 
     #[instrument(name = "proxmox.clone_vm", skip_all, fields(node = %node, template))]
@@ -402,32 +415,17 @@ impl ProxmoxApi for Client {
 
     #[instrument(name = "proxmox.start", skip_all, fields(node = %node, vmid))]
     async fn start_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
-        self.task(
-            Method::POST,
-            &format!("{}/status/start", qemu(node, vmid)),
-            &Params::new(),
-        )
-        .await
+        self.power(node, vmid, "start").await
     }
 
     #[instrument(name = "proxmox.stop", skip_all, fields(node = %node, vmid))]
     async fn stop_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
-        self.task(
-            Method::POST,
-            &format!("{}/status/stop", qemu(node, vmid)),
-            &Params::new(),
-        )
-        .await
+        self.power(node, vmid, "stop").await
     }
 
     #[instrument(name = "proxmox.shutdown", skip_all, fields(node = %node, vmid))]
     async fn shutdown_vm(&self, node: &str, vmid: u32) -> Result<Upid> {
-        self.task(
-            Method::POST,
-            &format!("{}/status/shutdown", qemu(node, vmid)),
-            &Params::new(),
-        )
-        .await
+        self.power(node, vmid, "shutdown").await
     }
 
     #[instrument(name = "proxmox.vm_status", skip_all, fields(node = %node, vmid))]
@@ -456,11 +454,7 @@ impl ProxmoxApi for Client {
         data: Vec<u8>,
     ) -> Result<Upid> {
         check_filename(filename)?;
-        let path = format!(
-            "/nodes/{}/storage/{}/upload",
-            encode_segment(node),
-            encode_segment(storage)
-        );
+        let path = format!("{}/upload", storage_path(node, storage));
         let body = self
             .call(
                 Method::POST,
@@ -475,9 +469,8 @@ impl ProxmoxApi for Client {
     #[instrument(name = "proxmox.delete_volume", skip_all, fields(node = %node, storage = %storage, volid = %volid))]
     async fn delete_volume(&self, node: &str, storage: &str, volid: &str) -> Result<Upid> {
         let path = format!(
-            "/nodes/{}/storage/{}/content/{}",
-            encode_segment(node),
-            encode_segment(storage),
+            "{}/content/{}",
+            storage_path(node, storage),
             encode_segment(volid)
         );
         self.task(Method::DELETE, &path, &Params::new()).await

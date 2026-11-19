@@ -31,6 +31,9 @@
 //!   make ch-deferred-e2e
 //! ```
 
+mod common;
+
+use common::{present_as_root as present, required, wait_for};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
@@ -68,43 +71,6 @@ const GPT_ENTRY_SIZE: usize = 84;
 const GPT_ENTRY_FIRST_LBA: usize = 32;
 /// A LUKS (1 or 2) header starts with this.
 const LUKS_MAGIC: &[u8] = b"LUKS\xba\xbe";
-
-fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set; see the module docs of tests/e2e_deferred.rs")
-    })
-}
-
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    loop {
-        if let Some(v) = check().await {
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {timeout:?} waiting for {what}"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-/// Whether anything is at `p`. Permission errors fail: this test runs as
-/// root, and one it cannot see into proves nothing.
-fn present(p: &Path) -> bool {
-    match std::fs::symlink_metadata(p) {
-        Ok(_) => true,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
-        Err(e) => panic!(
-            "stat {} (run as root: see the module docs): {e}",
-            p.display()
-        ),
-    }
-}
 
 /// The byte offsets of the GPT partitions on `disk` that start with a LUKS
 /// header. Empty when the disk has no GPT yet.
@@ -240,6 +206,7 @@ async fn a_tpm_machine_installs_itself_seals_reports_and_leaves_nothing() {
         // While installing: the guest's own copy of the installer is
         // attached, and GuestReady says it is waiting.
         let installing = wait_for(
+            POLL,
             "the installer to be attached",
             INSTALLED_TIMEOUT,
             || async {
@@ -257,6 +224,7 @@ async fn a_tpm_machine_installs_itself_seals_reports_and_leaves_nothing() {
         println!("installing as guest uid {n}");
 
         let ready = wait_for(
+            POLL,
             "GuestReady after the install",
             INSTALLED_TIMEOUT,
             || async {
@@ -284,6 +252,7 @@ async fn a_tpm_machine_installs_itself_seals_reports_and_leaves_nothing() {
         }
         // The copy goes on the pass after the eject.
         wait_for(
+            POLL,
             "the installer copy to be deleted",
             DELETE_TIMEOUT,
             || async { (!present(&machine_dir.join("install.iso"))).then_some(()) },
@@ -292,6 +261,7 @@ async fn a_tpm_machine_installs_itself_seals_reports_and_leaves_nothing() {
 
         let os_disk = machine_dir.join("os.raw");
         let sealed = wait_for(
+            POLL,
             "a LUKS partition on the OS disk",
             SEALED_TIMEOUT,
             || async {
@@ -316,7 +286,7 @@ async fn a_tpm_machine_installs_itself_seals_reports_and_leaves_nothing() {
         .delete(&name, &DeleteParams::default())
         .await
         .expect("deleting the machine");
-    wait_for("the machine to be gone", DELETE_TIMEOUT, || async {
+    wait_for(POLL, "the machine to be gone", DELETE_TIMEOUT, || async {
         machines.get_opt(&name).await.ok()?.is_none().then_some(())
     })
     .await;

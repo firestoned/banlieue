@@ -202,20 +202,6 @@ mod tests {
         assert!(compute_status(&client, &p, 1).await.is_err());
     }
 
-    #[test]
-    fn failed_status_publishes_no_failure_domains() {
-        // Advertising domains we could not verify is worse than advertising
-        // none: the scheduler reads this list to place VMs.
-        let status = failed_status(7, reasons::CONNECT_FAILED, "no route to host".into());
-        assert!(status.failure_domains.is_empty());
-        assert_eq!(status.observed_generation, Some(7));
-        for t in [condition_types::READY, condition_types::PROVIDER_REACHABLE] {
-            let c = find_condition(&status.conditions, t).unwrap();
-            assert_eq!(c.status, condition_status::FALSE);
-            assert_eq!(c.reason, reasons::CONNECT_FAILED);
-        }
-    }
-
     // ------------------------------------- capacity (ADR-0107, ADR-0128)
 
     const GIB: u64 = 1 << 30;

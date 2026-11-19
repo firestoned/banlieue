@@ -490,12 +490,6 @@ impl FakeClient {
             .push(vm_name.to_string());
     }
 
-    /// Make this fake vCenter issue `der` as the vTPM endorsement
-    /// certificate for every VM that has a vTPM attached.
-    pub fn set_tpm_endorsement_der(&self, der: Vec<Vec<u8>>) {
-        *self.tpm_endorsement_der.lock().expect("fake client lock") = der;
-    }
-
     /// Every `clone_vm` call recorded so far, in call order.
     pub fn cloned_vms(&self) -> Vec<ClonedVm> {
         self.clones.lock().expect("fake client lock").clone()

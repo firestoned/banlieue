@@ -9,6 +9,56 @@ mod tests {
     use banlieue_api::common::{CloudConfigSource, KeySelector};
     use banlieue_provider_sdk::scheduling::BuildScheduling;
 
+    /// `desired_os_artifact`'s arguments, defaulted to what most tests pass:
+    /// an amd64 `iso` build in the build namespace with nothing optional set.
+    struct OsArtifactArgs<'a> {
+        name: &'a str,
+        namespace: &'a str,
+        source: &'a ImageSource,
+        architecture: Architecture,
+        kind: BuildArtifactKind,
+        cloud_config: Option<&'a CloudConfigSource>,
+        owner: Option<OwnerRef<'a>>,
+        scheduling: BuildScheduling,
+        iso_overlay: Option<&'a IsoOverlaySource>,
+        importer_image: ImporterImage,
+        trusted_boot: Option<&'a TrustedBootSource>,
+    }
+
+    impl<'a> OsArtifactArgs<'a> {
+        fn new(source: &'a ImageSource) -> Self {
+            Self {
+                name: "kairos-rhel98-build",
+                namespace: "banlieue-imagebuild",
+                source,
+                architecture: Architecture::Amd64,
+                kind: BuildArtifactKind::Iso,
+                cloud_config: None,
+                owner: None,
+                scheduling: BuildScheduling::default(),
+                iso_overlay: None,
+                importer_image: ImporterImage::default(),
+                trusted_boot: None,
+            }
+        }
+
+        fn render(&self) -> Value {
+            desired_os_artifact(
+                self.name,
+                self.namespace,
+                self.source,
+                &self.architecture,
+                &self.kind,
+                self.cloud_config,
+                self.owner,
+                &self.scheduling,
+                self.iso_overlay,
+                &self.importer_image,
+                self.trusted_boot,
+            )
+        }
+    }
+
     /// A vSphere `Url` source (→ `iso` artifact).
     fn url_source(import_from: &str) -> ImageSource {
         ImageSource {
@@ -152,19 +202,7 @@ mod tests {
     #[test]
     fn desired_os_artifact_requests_iso_for_vsphere() {
         let source = url_source("quay.io/kairos/rhel:9.8-core-amd64-generic-v3.7.2");
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs::new(&source).render();
         assert_eq!(obj["apiVersion"], "build.kairos.io/v1alpha2");
         assert_eq!(obj["kind"], "OSArtifact");
         assert_eq!(obj["metadata"]["name"], "kairos-rhel98-build");
@@ -190,19 +228,12 @@ mod tests {
     #[test]
     fn desired_os_artifact_requests_cloud_image_for_libvirt() {
         let source = libvirt_url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
-        let obj = desired_os_artifact(
-            "kairos-ubuntu-2404-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::CloudImage,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            name: "kairos-ubuntu-2404-build",
+            kind: BuildArtifactKind::CloudImage,
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(obj["spec"]["artifacts"]["cloudImage"], true);
         assert_eq!(obj["spec"]["artifacts"]["arch"], "amd64");
         assert!(obj["spec"]["artifacts"]["iso"].is_null());
@@ -217,19 +248,11 @@ mod tests {
                 key: None,
             }),
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            Some(&cc),
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            cloud_config: Some(&cc),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(
             obj["spec"]["artifacts"]["cloudConfigRef"]["name"],
             "kairos-base-cloud-config"
@@ -250,19 +273,13 @@ mod tests {
                 key: Some("90_base.yaml".to_string()),
             }),
         };
-        let obj = desired_os_artifact(
-            "x-build",
-            "ns",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            Some(&cc),
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            name: "x-build",
+            namespace: "ns",
+            cloud_config: Some(&cc),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(
             obj["spec"]["artifacts"]["cloudConfigRef"]["key"],
             "90_base.yaml"
@@ -277,19 +294,11 @@ mod tests {
         // `.is_null()` cannot tell the two apart, so assert on the spec map's
         // keys directly.
         let source = url_source("registry.example/img:v1");
-        let obj = desired_os_artifact(
-            "img-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            name: "img-build",
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         let spec = obj["spec"].as_object().expect("spec is an object");
         assert!(
             !spec.contains_key("nodeSelector"),
@@ -317,19 +326,12 @@ mod tests {
                 .collect(),
             tolerations: Vec::new(),
         };
-        let obj = desired_os_artifact(
-            "img-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &scheduling,
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            name: "img-build",
+            scheduling: scheduling.clone(),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(
             obj["spec"]["nodeSelector"]["banlieue.io/imagebuild"], "true",
             "configured nodeSelector must be present as an object"
@@ -341,19 +343,13 @@ mod tests {
     #[test]
     fn desired_os_artifact_arm64() {
         let source = url_source("quay.io/kairos/ubuntu:24.04-arm64");
-        let obj = desired_os_artifact(
-            "x-build",
-            "ns",
-            &source,
-            &Architecture::Arm64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            name: "x-build",
+            namespace: "ns",
+            architecture: Architecture::Arm64,
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(obj["spec"]["artifacts"]["arch"], "arm64");
     }
 
@@ -376,19 +372,11 @@ mod tests {
                 path: "boot/grub2/grub.cfg".to_string(),
             }],
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            iso_overlay: Some(&overlay),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         // overlayISOVolume must point at the emptyDir, never the raw Secret
         // volume directly — kairos-io/kairos#4324: auroraboot's overlay-copy
         // step corrupts the ISO's real /boot when the overlay dir contains
@@ -427,19 +415,11 @@ mod tests {
                 path: "boot/grub2/grub.cfg".to_string(),
             }],
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            iso_overlay: Some(&overlay),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         let importer = &obj["spec"]["importers"][0];
         assert_eq!(importer["name"], "iso-overlay-materialize");
         let mounts = importer["volumeMounts"].as_array().unwrap();
@@ -476,19 +456,12 @@ mod tests {
         };
         let importer_image =
             ImporterImage::from_flags("mirror.internal/library/busybox:1.36@sha256:abc123", &[]);
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &importer_image,
-            None,
-        );
+        let obj = OsArtifactArgs {
+            iso_overlay: Some(&overlay),
+            importer_image: importer_image.clone(),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert_eq!(
             obj["spec"]["importers"][0]["image"],
             "mirror.internal/library/busybox:1.36@sha256:abc123"
@@ -502,19 +475,11 @@ mod tests {
             ISO_OVERLAY_IMPORTER_IMAGE,
             &["mirror-pull-secret".to_string(), "other-secret".to_string()],
         );
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &importer_image,
-            None,
-        );
+        let obj = OsArtifactArgs {
+            importer_image: importer_image.clone(),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         // Pod-wide, independent of iso_overlay — the main build container's
         // image may come from the same mirror.
         assert_eq!(
@@ -527,19 +492,7 @@ mod tests {
     #[test]
     fn desired_os_artifact_omits_image_pull_secrets_when_unset() {
         let source = url_source("quay.io/kairos/rhel:9.8");
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs::new(&source).render();
         assert!(
             !obj["spec"]
                 .as_object()
@@ -551,19 +504,7 @@ mod tests {
     #[test]
     fn desired_os_artifact_omits_volumes_when_no_overlay() {
         let source = url_source("quay.io/kairos/rhel:9.8");
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs::new(&source).render();
         let spec = obj["spec"].as_object().unwrap();
         assert!(!spec.contains_key("volumes"));
         assert!(
@@ -586,19 +527,11 @@ mod tests {
             },
             files: vec![],
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs {
+            iso_overlay: Some(&overlay),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert!(!obj["spec"].as_object().unwrap().contains_key("volumes"));
     }
 
@@ -617,19 +550,11 @@ mod tests {
                 name: "kairos-trusted-boot-keys".to_string(),
             },
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            Some(&trusted_boot),
-        );
+        let obj = OsArtifactArgs {
+            trusted_boot: Some(&trusted_boot),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         // Requests the UKI artifact, not the plain `iso` flag — auroraboot
         // build-uki instead of build-iso, since the base rootfs is a Unified
         // Kernel Image with no discrete initrd for build-iso to find.
@@ -654,19 +579,7 @@ mod tests {
     #[test]
     fn desired_os_artifact_requests_plain_iso_without_trusted_boot() {
         let source = url_source("quay.io/kairos/rhel:9.8");
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+        let obj = OsArtifactArgs::new(&source).render();
         assert_eq!(obj["spec"]["artifacts"]["iso"], true);
         assert!(
             !obj["spec"]["artifacts"]
@@ -697,19 +610,12 @@ mod tests {
                 name: "kairos-trusted-boot-keys".to_string(),
             },
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &ImporterImage::default(),
-            Some(&trusted_boot),
-        );
+        let obj = OsArtifactArgs {
+            iso_overlay: Some(&overlay),
+            trusted_boot: Some(&trusted_boot),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         let volumes = obj["spec"]["volumes"].as_array().unwrap();
         let names: Vec<&str> = volumes
             .iter()
@@ -736,19 +642,11 @@ mod tests {
                 name: "kairos-trusted-boot-keys".to_string(),
             },
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            Some(&trusted_boot),
-        );
+        let obj = OsArtifactArgs {
+            trusted_boot: Some(&trusted_boot),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         assert!(
             !obj["spec"]["artifacts"]
                 .as_object()
@@ -778,19 +676,12 @@ mod tests {
                 name: "kairos-trusted-boot-keys".to_string(),
             },
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            Some(&cc),
-            None,
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            Some(&trusted_boot),
-        );
+        let obj = OsArtifactArgs {
+            cloud_config: Some(&cc),
+            trusted_boot: Some(&trusted_boot),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         // kairos-operator's buildUKICommand unconditionally appends
         // `--cloud-config` whenever cloudConfigRef is set, but
         // `auroraboot build-uki` has no such flag ("flag provided but not
@@ -867,19 +758,13 @@ mod tests {
                 name: "kairos-trusted-boot-keys".to_string(),
             },
         };
-        let obj = desired_os_artifact(
-            "kairos-rhel98-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            Some(&cc),
-            None,
-            &BuildScheduling::default(),
-            Some(&overlay),
-            &ImporterImage::default(),
-            Some(&trusted_boot),
-        );
+        let obj = OsArtifactArgs {
+            cloud_config: Some(&cc),
+            iso_overlay: Some(&overlay),
+            trusted_boot: Some(&trusted_boot),
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         // Both importers must survive — a naive `spec.insert("importers", ...)`
         // per mechanism would let the second silently clobber the first. Both
         // write into the *same* shared "iso-overlay" emptyDir (only one
@@ -1169,22 +1054,15 @@ mod tests {
     #[test]
     fn desired_os_artifact_carries_the_vmimage_owner_reference() {
         let source = url_source("quay.io/kairos/ubuntu:24.04-core-amd64-generic-v3.7.2");
-        let obj = desired_os_artifact(
-            "kairos-ubuntu-2404-build",
-            "banlieue-imagebuild",
-            &source,
-            &Architecture::Amd64,
-            &BuildArtifactKind::Iso,
-            None,
-            Some(OwnerRef {
+        let obj = OsArtifactArgs {
+            name: "kairos-ubuntu-2404-build",
+            owner: Some(OwnerRef {
                 name: "kairos-ubuntu-2404",
                 uid: "9f2b1c7e-1234-4cde-9abc-def012345678",
             }),
-            &BuildScheduling::default(),
-            None,
-            &ImporterImage::default(),
-            None,
-        );
+            ..OsArtifactArgs::new(&source)
+        }
+        .render();
         let owner = &obj["metadata"]["ownerReferences"][0];
         assert_eq!(owner["apiVersion"], "banlieue.io/v1alpha1");
         assert_eq!(owner["kind"], "VMImage");

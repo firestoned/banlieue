@@ -20,35 +20,23 @@
 
 use std::collections::BTreeMap;
 
+mod common;
+
 use banlieue_api::banlieue::VirtualMachineClaim;
 use k8s_openapi::api::core::v1::ConfigMap;
-use kube::Client;
 use kube::api::{Api, Patch, PatchParams, PostParams};
 use serde_json::json;
 
+use common::{admin, as_master};
+
 const NAMESPACE: &str = "banlieue-system";
 const POLICY_CONFIGMAP: &str = "banlieue-claim-subject-policy";
-/// Lets the impersonated user past RBAC, so the verdict is admission's alone.
-const PRIVILEGED_GROUP: &str = "system:masters";
 const CLAIM_TTL_SECS: u64 = 600;
 
 const DEX: &str = "https://dex.example.com";
 const GOOGLE: &str = "https://accounts.google.com";
 const AUTH0: &str = "https://tenant.us.auth0.com/";
 const UNLISTED: &str = "https://unlisted.example.com";
-
-async fn admin() -> Client {
-    Client::try_default()
-        .await
-        .expect("no reachable cluster: set KUBECONFIG")
-}
-
-async fn as_user(user: &str) -> Client {
-    let mut config = kube::Config::infer().await.expect("kubeconfig");
-    config.auth_info.impersonate = Some(user.to_string());
-    config.auth_info.impersonate_groups = Some(vec![PRIVILEGED_GROUP.to_string()]);
-    Client::try_from(config).expect("impersonating client")
-}
 
 /// Whether admission accepts a claim created by `user` naming
 /// (`issuer`, `id`). Dry run: nothing is stored.
@@ -64,7 +52,7 @@ async fn admitted(user: &str, issuer: &str, id: &str) -> bool {
         },
     }))
     .expect("claim fixture");
-    let api: Api<VirtualMachineClaim> = Api::namespaced(as_user(user).await, NAMESPACE);
+    let api: Api<VirtualMachineClaim> = Api::namespaced(as_master(user).await, NAMESPACE);
     let params = PostParams {
         dry_run: true,
         ..PostParams::default()
@@ -225,7 +213,7 @@ async fn a_selector_claim_can_be_updated_but_not_retargeted() {
         }))
         .expect("claim fixture");
         let user: Api<VirtualMachineClaim> =
-            Api::namespaced(as_user("github:octocat").await, NAMESPACE);
+            Api::namespaced(as_master("github:octocat").await, NAMESPACE);
         let created = user
             .create(&PostParams::default(), &claim)
             .await

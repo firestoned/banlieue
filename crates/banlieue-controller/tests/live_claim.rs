@@ -34,6 +34,8 @@
 //! the flakes. Every test works in its own generated namespace and deletes
 //! it on the way out, including on failure.
 
+mod common;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +52,8 @@ use k8s_openapi::jiff::Timestamp;
 use kube::api::{Api, DeleteParams, ListParams, Patch, PatchParams, PostParams};
 use kube::{Client, Resource, ResourceExt};
 use serde_json::json;
+
+use common::nonce;
 
 /// A finalizer the test puts on a member to stand in for the provider's.
 /// Nothing removes it but the test, so a member's deletion blocks exactly
@@ -174,12 +178,6 @@ impl Scratch {
             .delete(&self.namespace, &DeleteParams::background())
             .await;
     }
-}
-
-fn nonce() -> String {
-    let mut b = [0u8; 4];
-    getrandom::fill(&mut b).unwrap();
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Create a pool. Only `spec.readiness` and the template matter here — the

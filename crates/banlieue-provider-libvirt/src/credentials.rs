@@ -16,6 +16,7 @@
 use banlieue_api::banlieue::Provider;
 use banlieue_libvirt::TlsIdentity;
 use banlieue_provider_sdk::ca_bundle;
+use banlieue_provider_sdk::ssa::is_not_found;
 use k8s_openapi::api::core::v1::Secret;
 use kube::{Api, Client};
 
@@ -35,9 +36,7 @@ pub async fn resolve(client: &Client, namespace: &str, provider: &Provider) -> R
         .ok_or(Error::Missing("Provider.spec.connection.credentialsRef"))?;
     let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     let secret = api.get(secret_name).await.map_err(|e| {
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == 404
-        {
+        if is_not_found(&e) {
             return Error::Missing("Provider.spec.connection.credentialsRef");
         }
         Error::Kube(e)

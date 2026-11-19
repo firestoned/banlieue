@@ -33,7 +33,7 @@ use banlieue_api::common::{
 };
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_long, requeue_on_error};
 use banlieue_provider_sdk::scheduling::BuildScheduling;
-use banlieue_provider_sdk::ssa::FIELD_MANAGER_IMAGEBUILDER;
+use banlieue_provider_sdk::ssa::{FIELD_MANAGER_IMAGEBUILDER, apply_status};
 use k8s_openapi::api::batch::v1::Job;
 use k8s_openapi::api::core::v1::{Node, PersistentVolume, PersistentVolumeClaim, Pod, Secret};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{OwnerReference, Time};
@@ -1080,15 +1080,12 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     // admission error or a failed build pod.
     if let Some(trusted_boot) = image.spec.trusted_boot.as_ref() {
         let secrets_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
-        let present: std::collections::BTreeSet<String> =
-            match secrets_api.get(&trusted_boot.secret_ref.name).await {
-                Ok(secret) => secret
-                    .data
-                    .map(|d| d.into_keys().collect())
-                    .unwrap_or_default(),
-                Err(kube::Error::Api(e)) if e.code == 404 => std::collections::BTreeSet::new(),
-                Err(e) => return Err(Error::Kube(e)),
-            };
+        let present: std::collections::BTreeSet<String> = secrets_api
+            .get_opt(&trusted_boot.secret_ref.name)
+            .await?
+            .and_then(|secret| secret.data)
+            .map(|d| d.into_keys().collect())
+            .unwrap_or_default();
         let missing = missing_trusted_boot_keys(&present);
         if !missing.is_empty() {
             warn!(
@@ -1125,11 +1122,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &os_artifact_api_resource(),
     );
 
-    let live = match os_api.get(&os_name).await {
-        Ok(obj) => Some(obj),
-        Err(kube::Error::Api(e)) if e.code == 404 => None,
-        Err(e) => return Err(Error::Kube(e)),
-    };
+    let live = os_api.get_opt(&os_name).await?;
 
     let pvc_api: Api<PersistentVolumeClaim> =
         Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
@@ -1314,6 +1307,60 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
 /// Label the Job controller puts on a Job's pods.
 const JOB_NAME_LABEL: &str = "batch.kubernetes.io/job-name";
 
+/// Where a build's helper Job stands after one look at it.
+enum JobState {
+    /// It did not exist and was just created.
+    Created,
+    /// A previous build's Job, not yet garbage-collected, was found and
+    /// deleted: its result is for a different artifact.
+    Replacing,
+    /// This build's Job, with its pod's termination message once it has
+    /// succeeded and the message is still readable.
+    Live(Box<Job>, Option<String>),
+}
+
+/// Make sure this build's Job `job_name` exists: create it from `desired`
+/// if absent, delete one a previous build (another `os_artifact_uid`) left,
+/// and otherwise report it with its result. `what` names the Job in the log.
+async fn ensure_job(
+    ctx: &Context,
+    job_name: &str,
+    os_artifact_uid: &str,
+    what: &str,
+    desired: impl FnOnce() -> Value,
+) -> Result<JobState> {
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    let Some(job) = jobs.get_opt(job_name).await? else {
+        jobs.patch(
+            job_name,
+            &PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force(),
+            &Patch::Apply(&desired()),
+        )
+        .await?;
+        info!(job = %job_name, "created {what} Job");
+        return Ok(JobState::Created);
+    };
+    if !owner_uid_matches(job.metadata.owner_references.as_deref(), os_artifact_uid) {
+        jobs.delete(job_name, &DeleteParams::background()).await?;
+        return Ok(JobState::Replacing);
+    }
+    let message = if job_succeeded(&job) {
+        push_termination_message(ctx, job_name).await?
+    } else {
+        None
+    };
+    Ok(JobState::Live(Box::new(job), message))
+}
+
+/// A push that has not finished, with why.
+fn pushing(message: impl Into<String>) -> OciArtifactStatus {
+    OciArtifactStatus {
+        phase: OciArtifactPhase::Pushing,
+        reference: None,
+        message: Some(message.into()),
+    }
+}
+
 /// Drive the registry push for a `Ready` artifact (ADR-0064 Decision 2) and
 /// return its status row: create the push Job if absent, and once it
 /// succeeds read and check the reference its pod reported.
@@ -1329,22 +1376,11 @@ async fn reconcile_push(
         ));
     };
     let Some(uid) = artifact.os_artifact_uid.as_deref() else {
-        return Ok(OciArtifactStatus {
-            phase: OciArtifactPhase::Pushing,
-            reference: None,
-            message: Some("waiting to observe the OSArtifact".to_string()),
-        });
+        return Ok(pushing("waiting to observe the OSArtifact"));
     };
     let job_name = push::push_job_name(&artifact.os_artifact_ref);
-    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
-
-    let existing = match jobs.get(&job_name).await {
-        Ok(job) => Some(job),
-        Err(kube::Error::Api(e)) if e.code == 404 => None,
-        Err(e) => return Err(Error::Kube(e)),
-    };
-    let Some(job) = existing else {
-        let desired = push::build_push_job(&push::PushJobInputs {
+    let desired = || {
+        push::build_push_job(&push::PushJobInputs {
             job_name: &job_name,
             namespace: &ctx.build_namespace,
             vmimage,
@@ -1353,41 +1389,18 @@ async fn reconcile_push(
             artifact,
             os_artifact_uid: uid,
             tolerations: &ctx.scheduling.tolerations,
-        });
-        jobs.patch(
-            &job_name,
-            &PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force(),
-            &Patch::Apply(&desired),
-        )
-        .await?;
-        info!(job = %job_name, "created registry push Job");
-        return Ok(OciArtifactStatus {
-            phase: OciArtifactPhase::Pushing,
-            reference: None,
-            message: Some(format!("push Job {job_name} created")),
-        });
+        })
     };
-
-    // A previous build's Job, not yet garbage-collected: its result is for
-    // a different artifact.
-    if !owner_uid_matches(job.metadata.owner_references.as_deref(), uid) {
-        jobs.delete(&job_name, &DeleteParams::background()).await?;
-        return Ok(OciArtifactStatus {
-            phase: OciArtifactPhase::Pushing,
-            reference: None,
-            message: Some("replacing a previous build's push Job".to_string()),
-        });
-    }
-
-    let message = if job_succeeded(&job) {
-        push_termination_message(ctx, &job_name).await?
-    } else {
-        None
+    let (job, message) = match ensure_job(ctx, &job_name, uid, "registry push", desired).await? {
+        JobState::Created => return Ok(pushing(format!("push Job {job_name} created"))),
+        JobState::Replacing => return Ok(pushing("replacing a previous build's push Job")),
+        JobState::Live(job, message) => (job, message),
     };
     let status = push::oci_status(registry, &job, message.as_deref());
     // Succeeded but its pod, and so its result, is gone: push again. The
     // blobs are already there, so the rerun is a manifest PUT.
     if status.phase == OciArtifactPhase::Pushing && message.is_none() && job_succeeded(&job) {
+        let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
         jobs.delete(&job_name, &DeleteParams::background()).await?;
     }
     Ok(status)
@@ -1409,14 +1422,8 @@ async fn reconcile_prelay(
         return Ok(prelay::PrelayOutcome::Running);
     };
     let job_name = prelay::prelay_job_name(&artifact.os_artifact_ref);
-    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
-    let existing = match jobs.get(&job_name).await {
-        Ok(job) => Some(job),
-        Err(kube::Error::Api(e)) if e.code == 404 => None,
-        Err(e) => return Err(Error::Kube(e)),
-    };
-    let Some(job) = existing else {
-        let desired = prelay::build_prelay_job(&prelay::PrelayJobInputs {
+    let desired = || {
+        prelay::build_prelay_job(&prelay::PrelayJobInputs {
             job_name: &job_name,
             namespace: &ctx.build_namespace,
             vmimage,
@@ -1426,27 +1433,14 @@ async fn reconcile_prelay(
             disk_size_gib,
             tolerations: &ctx.scheduling.tolerations,
             node_selector: &ctx.scheduling.node_selector,
-        });
-        jobs.patch(
-            &job_name,
-            &PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force(),
-            &Patch::Apply(&desired),
-        )
-        .await?;
-        info!(job = %job_name, "created pre-lay Job");
-        return Ok(prelay::PrelayOutcome::Running);
+        })
     };
-    // A previous build's Job, not yet garbage-collected.
-    if !owner_uid_matches(job.metadata.owner_references.as_deref(), uid) {
-        jobs.delete(&job_name, &DeleteParams::background()).await?;
-        return Ok(prelay::PrelayOutcome::Running);
-    }
-    let message = if job_succeeded(&job) {
-        push_termination_message(ctx, &job_name).await?
-    } else {
-        None
-    };
-    Ok(prelay::prelay_outcome(&job, message.as_deref()))
+    Ok(
+        match ensure_job(ctx, &job_name, uid, "pre-lay", desired).await? {
+            JobState::Created | JobState::Replacing => prelay::PrelayOutcome::Running,
+            JobState::Live(job, message) => prelay::prelay_outcome(&job, message.as_deref()),
+        },
+    )
 }
 
 fn job_succeeded(job: &Job) -> bool {
@@ -1487,18 +1481,8 @@ async fn patch_vmimage_status(
         build_artifact: Some(build_artifact),
         ..VMImageStatus::default()
     };
-
-    let patch = json!({
-        "apiVersion": VMImage::api_version(&()).to_string(),
-        "kind": VMImage::kind(&()).to_string(),
-        "metadata": { "name": name },
-        "status": status,
-    });
-
     let api: Api<VMImage> = Api::all(ctx.client.clone());
-    let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
-    api.patch_status(name, &params, &Patch::Apply(&patch))
-        .await?;
+    apply_status(&api, name, FIELD_MANAGER_IMAGEBUILDER, &status, true).await?;
     Ok(())
 }
 

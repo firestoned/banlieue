@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::Provider;
 use banlieue_provider_sdk::ca_bundle;
+use banlieue_provider_sdk::ssa::is_not_found;
 use banlieue_proxmox::ApiToken;
 use k8s_openapi::ByteString;
 use k8s_openapi::api::core::v1::Secret;
@@ -22,9 +23,6 @@ use crate::error::{Error, Result};
 pub const SECRET_KEY_USERNAME: &str = "username";
 /// Secret key holding the token's secret.
 pub const SECRET_KEY_TOKEN_VALUE: &str = "tokenValue";
-
-/// HTTP status of an absent object.
-const HTTP_NOT_FOUND: u16 = 404;
 
 /// Build [`Credentials`] from a Secret's data and an already-resolved CA.
 ///
@@ -72,9 +70,7 @@ pub async fn resolve(client: &Client, namespace: &str, provider: &Provider) -> R
         .ok_or(Error::Missing("Provider.spec.connection.credentialsRef"))?;
     let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     let secret = api.get(secret_name).await.map_err(|e| {
-        if let kube::Error::Api(api_err) = &e
-            && api_err.code == HTTP_NOT_FOUND
-        {
+        if is_not_found(&e) {
             return Error::Missing("Provider.spec.connection.credentialsRef");
         }
         Error::Kube(e)

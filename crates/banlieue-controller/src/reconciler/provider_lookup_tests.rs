@@ -193,15 +193,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn supports_shared_provider_matches_the_sdk_list() {
-        for class in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"] {
-            assert!(supports_shared_provider(class), "{class}");
-        }
-        assert!(!supports_shared_provider("firecracker"));
-        assert!(!supports_shared_provider(""));
-    }
-
     /// `{}` is Kubernetes' "every namespace", but banlieue never defaults to
     /// every namespace (ADR-0130/0131): an empty selector serves nothing, the
     /// same as on the provider, which cannot render it as a flag.

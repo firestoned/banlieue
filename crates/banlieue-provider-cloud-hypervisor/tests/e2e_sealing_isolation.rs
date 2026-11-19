@@ -73,6 +73,9 @@
 //! (and the disk copy) including after a failure, and reports anything the
 //! teardown left on the host.
 
+mod common;
+
+use common::{condition_true, required, wait_for_logged as wait_for};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -143,12 +146,6 @@ struct Settings {
     namespace: String,
 }
 
-fn required(name: &str) -> String {
-    std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set; see the module docs of tests/e2e_sealing_isolation.rs")
-    })
-}
-
 fn settings() -> Settings {
     Settings {
         provider: required("BANLIEUE_E2E_PROVIDER"),
@@ -167,33 +164,8 @@ fn settings() -> Settings {
 // Waiting and reading
 // ---------------------------------------------------------------------------
 
-async fn wait_for<T, F, Fut>(what: &str, timeout: Duration, mut check: F) -> T
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Option<T>>,
-{
-    let start = Instant::now();
-    eprintln!("  … {what}");
-    loop {
-        if let Some(v) = check().await {
-            eprintln!("  ✓ {what} ({}s)", start.elapsed().as_secs());
-            return v;
-        }
-        assert!(
-            start.elapsed() < timeout,
-            "timed out after {}s waiting for: {what}",
-            timeout.as_secs()
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
 fn condition<'a>(conditions: &'a [Condition], kind: &str) -> Option<&'a Condition> {
     conditions.iter().find(|c| c.type_ == kind)
-}
-
-fn condition_true(conditions: &[Condition], kind: &str) -> bool {
-    condition(conditions, kind).is_some_and(|c| c.status == "True")
 }
 
 /// The serial log, lossily: a console carries escape sequences.
@@ -389,6 +361,7 @@ impl Scratch {
 
     async fn wait_sealed(&self, vm: &str) {
         wait_for(
+            POLL,
             &format!("{vm} to seal and announce"),
             PROVISION_TIMEOUT,
             || async {
@@ -402,18 +375,28 @@ impl Scratch {
     }
 
     async fn wait_running(&self, vm: &str) {
-        wait_for(&format!("{vm} running"), TRANSITION_TIMEOUT, || async {
-            let st = self.machine(vm).await?.status?;
-            condition_true(&st.conditions, "Ready").then_some(())
-        })
+        wait_for(
+            POLL,
+            &format!("{vm} running"),
+            TRANSITION_TIMEOUT,
+            || async {
+                let st = self.machine(vm).await?.status?;
+                condition_true(&st.conditions, "Ready").then_some(())
+            },
+        )
         .await;
     }
 
     async fn wait_stopped(&self, vm: &str, g: &Guest) {
-        wait_for(&format!("{vm} powered off"), TRANSITION_TIMEOUT, || async {
-            let state = self.sd.state(&g.unit).await.ok()?;
-            (state != Some(UnitState::Active)).then_some(())
-        })
+        wait_for(
+            POLL,
+            &format!("{vm} powered off"),
+            TRANSITION_TIMEOUT,
+            || async {
+                let state = self.sd.state(&g.unit).await.ok()?;
+                (state != Some(UnitState::Active)).then_some(())
+            },
+        )
         .await;
     }
 
@@ -421,7 +404,7 @@ impl Scratch {
     /// bytes (the whole file if the VMM started a fresh one), and return it.
     async fn wait_probe(&self, what: &str, g: &Guest, since: usize) -> String {
         let log = g.serial_log();
-        wait_for(what, PROVISION_TIMEOUT, || {
+        wait_for(POLL, what, PROVISION_TIMEOUT, || {
             let log = log.clone();
             async move {
                 let text = console(&log);
@@ -486,6 +469,7 @@ impl Scratch {
             .await
             .unwrap_or_else(|e| panic!("create VMImage {name}: {e}"));
         wait_for(
+            POLL,
             &format!("VMImage {name} ready for {}", self.s.provider),
             TRANSITION_TIMEOUT,
             || async {
@@ -596,6 +580,7 @@ async fn isolation_case(s: &Scratch, fixture: &VMImage, a: &str, foreign: &str, 
         .expect("the copy's guest on this host");
     let deadline = Duration::from_secs(FOREIGN_VTPM_SEALING_TIMEOUT_SECS) + DEADLINE_SLACK;
     let reason = wait_for(
+        POLL,
         "the copy to time out without unlocking (FirstBootSealingTimeout)",
         deadline,
         || async {

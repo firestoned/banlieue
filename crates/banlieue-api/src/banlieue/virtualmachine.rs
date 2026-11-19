@@ -462,11 +462,6 @@ pub struct HeldAddress {
     pub address: String,
 }
 
-#[inline]
-fn is_false(b: &bool) -> bool {
-    !*b
-}
-
 #[cfg(test)]
 #[path = "virtualmachine_tests.rs"]
 mod virtualmachine_tests;

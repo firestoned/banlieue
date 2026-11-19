@@ -22,6 +22,66 @@ cgroup v1 host with a 4800% quota per VMM.
 - [ ] Breaking change
 - [x] Requires provider rollout on cgroup v1 hosts (capacity drops to the quota)
 
+## [2026-11-18 10:30] - vSphere provider compiles in 21 s instead of 12 min; duplicated code folded into the SDK
+
+**Author:** Erick Bourgeois
+
+### Changed
+- **Compile time: `crates/banlieue-provider-vsphere/src/client/vim.rs`.** A
+  cold `cargo build --workspace` on the 96-core build host took 15 min 20 s,
+  12 min of it this one crate on one core. A compiler self-profile put 98% of
+  it in `evaluate_obligation` under `check_coroutine_obligations`: proving
+  the `#[async_trait]` method futures `Send`. `async_trait` gives each method
+  `where 'life0: 'async_trait, ..` bounds, and under such bounds rustc cannot
+  use its global trait cache, so every distinct signature shape re-walked the
+  whole `vim_rs` type model. Measured in isolation: the same future takes
+  134 s to prove `Send` under those bounds and 1 s under one lifetime with no
+  where-clause. The vCenter call bodies now live in an inherent
+  `impl VimClientImpl` as `fn name<'a>(..) -> BoxFuture<'a, ..>`, and the
+  `#[async_trait] impl VSphereClient` only awaits them. The crate now
+  compiles in 21 s (check: 5 s). Behaviour is unchanged; one extra box per
+  vCenter call. Three bodies also stop holding a `vim_rs` result or struct
+  across an await (`list_datastores`, `custom_field_key`,
+  `power_off_and_destroy`).
+- **Shared helpers in `banlieue-provider-sdk`**, replacing per-crate copies in
+  the four providers, the controller, the operator and the imagebuilder:
+  `ssa::{apply_status, apply_provider_id, delete_ignoring_404, is_not_found}`,
+  `leader::{elect, LeaderConfig::with_identity}`, `scope::start_gate` with
+  `ScopeChanges`, `reconciler::{provider_watch_config, list_providers_of_class,
+  requeue_error_policy}`, `status::{provider_condition_types,
+  unreachable_provider_status, image_row, provider_rows_status}`,
+  `capacity::min_known`, new modules `artifact` (checksum verification for the
+  import subcommands) and `defaults` (ports, namespaces, import image).
+- **Per-crate folds.** Controller: one macro for the four `InfraMachineRead`
+  impls, shared fragments of the four infra builders, one failure-status
+  patcher. Operator: `rbac.rs` and `pod.rs` shared by `bootstrap` and
+  `workload`. Imagebuilder: `ensure_job` behind the push and pre-lay Jobs.
+  libvirt client: an `Io` trait alias and XDR list helpers. `banlieue-api`:
+  one `is_false`. Test fixtures shared through `tests/common/mod.rs` and
+  `test_fixtures.rs` modules; a few same-assertion tests became tables.
+- **Unused dependencies removed** (found by `cargo machete`, confirmed by the
+  build): 18 edges across 8 crates, plus `sha2` from the vSphere and libvirt
+  providers. `Cargo.lock` loses only those edges.
+- **Dead code removed**: `vmm_unit_glob`, `Session::{timeout, into_inner}`,
+  `FakeClient::set_tpm_endorsement_der`, the never-emitted reasons
+  `NoVSphereSource`, `NoLibvirtSource` and the libvirt provider's `PAUSED`,
+  and four unreferenced controller items. `docs/src/guides/vsphere-provider.md`
+  no longer lists `NoVSphereSource`.
+
+### Why
+Requested: fewer lines and a shorter build. Rust lines go from 146,001 to
+144,954; the build-time fix is the larger result.
+
+### Behaviour notes
+- Server-side-apply status bodies no longer carry `metadata.name` or
+  `metadata.namespace` (the name is in the request path).
+- Log wording is unified for leader election and for the reconcile error
+  policy (one message with a `kind` field).
+- CRDs are byte-identical (`crdgen` output compared before and after).
+
+### Impact
+- [ ] Breaking change
+
 ## [2026-11-18 08:00] - CH host install honours the host config it keeps (ADR-0067 amended)
 
 **Author:** Erick Bourgeois

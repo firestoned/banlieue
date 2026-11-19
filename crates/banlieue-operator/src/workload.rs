@@ -36,30 +36,25 @@ use std::collections::BTreeMap;
 use banlieue_api::banlieue::{ImagePullPolicy, Provider, ProviderClassSpec, ProviderDeployment};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    Capabilities, Container, ContainerPort, EnvVar, EnvVarSource, HTTPGetAction,
-    LocalObjectReference, ObjectFieldSelector, PodSecurityContext, PodSpec, PodTemplateSpec, Probe,
-    ResourceRequirements, SeccompProfile, SecurityContext, ServiceAccount,
+    Container, LocalObjectReference, PodSpec, PodTemplateSpec, ResourceRequirements, ServiceAccount,
 };
-use k8s_openapi::api::rbac::v1::{
-    ClusterRoleBinding, PolicyRule, Role, RoleBinding, RoleRef, Subject,
-};
-use k8s_openapi::apimachinery::pkg::api::resource::Quantity;
+use k8s_openapi::api::rbac::v1::{ClusterRoleBinding, PolicyRule, Role, RoleBinding, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
-use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
 use kube::Resource;
 
 use crate::naming::{
     cluster_scoped_name, component, selector_labels, workload_labels_for, workload_name,
 };
+use crate::pod::{
+    DEFAULT_CPU_REQUEST, DEFAULT_MEMORY_REQUEST, LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PATH,
+    LIVENESS_PERIOD_SECS, READINESS_INITIAL_DELAY_SECS, READINESS_PATH, READINESS_PERIOD_SECS,
+    TERMINATION_GRACE_PERIOD_SECS, container_ports, container_security_context, downward_api_env,
+    http_probe, pod_security_context, resources,
+};
+use crate::rbac::{named_rule, role_ref, rule, sa_subject};
 
 /// Container name inside every provider pod.
 const CONTAINER_NAME: &str = "provider";
-
-/// Metrics port exposed by provider workloads.
-const METRICS_PORT: i32 = 8080;
-
-/// Health (livez/readyz) port exposed by provider workloads.
-const HEALTH_PORT: i32 = 8081;
 
 /// Name of the health port, referenced by both probes.
 ///
@@ -72,33 +67,13 @@ pub const HEALTH_PORT_NAME: &str = "health";
 /// Public for the same reason as [`HEALTH_PORT_NAME`] (ADR-0094).
 pub const METRICS_PORT_NAME: &str = "metrics";
 
-/// Liveness probe timings.
-const LIVENESS_INITIAL_DELAY_SECS: i32 = 10;
-const LIVENESS_PERIOD_SECS: i32 = 30;
+/// Probe timeouts; the delays and periods are shared with `bootstrap`.
 const LIVENESS_TIMEOUT_SECS: i32 = 3;
-
-/// Readiness probe timings.
-const READINESS_INITIAL_DELAY_SECS: i32 = 2;
-const READINESS_PERIOD_SECS: i32 = 5;
 const READINESS_TIMEOUT_SECS: i32 = 2;
 
-/// Probe failure threshold shared by both probes.
-const PROBE_FAILURE_THRESHOLD: i32 = 3;
-
-/// Grace period allowing an in-flight reconcile to finish on SIGTERM.
-const TERMINATION_GRACE_PERIOD_SECS: i64 = 30;
-
-/// UID/GID provider containers run as (matches the distroless `nonroot` user).
-const RUN_AS_NONROOT_UID: i64 = 65532;
-
-/// Default CPU/memory requests and limits when the class does not set any.
-const DEFAULT_CPU_REQUEST: &str = "50m";
-const DEFAULT_MEMORY_REQUEST: &str = "128Mi";
+/// Default CPU/memory limits when the class does not set any.
 const DEFAULT_CPU_LIMIT: &str = "1000m";
 const DEFAULT_MEMORY_LIMIT: &str = "512Mi";
-
-/// Seccomp profile applied at pod and container level.
-const SECCOMP_RUNTIME_DEFAULT: &str = "RuntimeDefault";
 
 /// Everything needed to build one Provider's workload, already resolved.
 ///
@@ -251,7 +226,8 @@ pub fn build_workload(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> Wor
 /// Jobs (ADR-0011), so a workload in the privileged build namespace holding it
 /// could create further privileged pods. This identity is read-only by
 /// construction.
-pub const IMPORT_SERVICE_ACCOUNT: &str = "banlieue-import";
+pub const IMPORT_SERVICE_ACCOUNT: &str =
+    banlieue_provider_sdk::defaults::DEFAULT_IMPORT_SERVICE_ACCOUNT;
 
 /// Name of the per-Provider import Role / RoleBinding.
 #[must_use]
@@ -330,17 +306,8 @@ pub fn build_import_role_binding(
             owner_references: inputs.owner_for(true),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name: import_role_name(inputs),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: IMPORT_SERVICE_ACCOUNT.to_string(),
-            namespace: Some(build_namespace.to_string()),
-            ..Default::default()
-        }]),
+        role_ref: role_ref("Role", import_role_name(inputs)),
+        subjects: Some(vec![sa_subject(IMPORT_SERVICE_ACCOUNT, build_namespace)]),
     }
 }
 
@@ -409,12 +376,7 @@ pub fn build_role(inputs: &WorkloadInputs<'_>) -> Role {
 
     // Leader election. `create` cannot be constrained by resourceNames, so it
     // is a separate rule; everything that names the Lease stays narrowed.
-    rules.push(PolicyRule {
-        api_groups: Some(vec!["coordination.k8s.io".to_string()]),
-        resources: Some(vec!["leases".to_string()]),
-        verbs: vec!["create".to_string()],
-        ..Default::default()
-    });
+    rules.push(rule("coordination.k8s.io", "leases", &["create"]));
     rules.push(named_rule(
         "coordination.k8s.io",
         "leases",
@@ -424,12 +386,7 @@ pub fn build_role(inputs: &WorkloadInputs<'_>) -> Role {
 
     // Events for state transitions visible in `kubectl describe provider`.
     for group in ["", "events.k8s.io"] {
-        rules.push(PolicyRule {
-            api_groups: Some(vec![group.to_string()]),
-            resources: Some(vec!["events".to_string()]),
-            verbs: vec!["create".to_string(), "patch".to_string()],
-            ..Default::default()
-        });
+        rules.push(rule(group, "events", &["create", "patch"]));
     }
 
     if inputs.is_external() {
@@ -486,11 +443,7 @@ pub fn build_role_binding(inputs: &WorkloadInputs<'_>) -> RoleBinding {
             owner_references: inputs.owner_for(true),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "Role".to_string(),
-            name: inputs.name(),
-        },
+        role_ref: role_ref("Role", inputs.name()),
         subjects: Some(vec![service_account_subject(inputs)]),
     }
 }
@@ -508,11 +461,10 @@ pub fn build_cluster_role_binding(inputs: &WorkloadInputs<'_>) -> ClusterRoleBin
             labels: Some(inputs.labels()),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "ClusterRole".to_string(),
-            name: shared_cluster_role_name(&inputs.class.backend),
-        },
+        role_ref: role_ref(
+            "ClusterRole",
+            shared_cluster_role_name(&inputs.class.backend),
+        ),
         subjects: Some(vec![service_account_subject(inputs)]),
     }
 }
@@ -579,11 +531,10 @@ pub fn build_shared_cluster_role_binding(
             labels: Some(inputs.labels()),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: Some("rbac.authorization.k8s.io".to_string()),
-            kind: "ClusterRole".to_string(),
-            name: shared_scope_cluster_role_name(&inputs.class.backend),
-        },
+        role_ref: role_ref(
+            "ClusterRole",
+            shared_scope_cluster_role_name(&inputs.class.backend),
+        ),
         subjects: Some(vec![service_account_subject(inputs)]),
     })
 }
@@ -651,17 +602,7 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
                     })
                     .collect()
             }),
-        security_context: Some(PodSecurityContext {
-            run_as_non_root: Some(true),
-            run_as_user: Some(RUN_AS_NONROOT_UID),
-            run_as_group: Some(RUN_AS_NONROOT_UID),
-            fs_group: Some(RUN_AS_NONROOT_UID),
-            seccomp_profile: Some(SeccompProfile {
-                type_: SECCOMP_RUNTIME_DEFAULT.to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
+        security_context: Some(pod_security_context()),
         termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
         containers: vec![build_container(inputs)],
         ..Default::default()
@@ -680,32 +621,19 @@ fn build_container(inputs: &WorkloadInputs<'_>) -> Container {
             .and_then(|i| i.pull_policy.as_ref())
             .map(|p| pull_policy_str(p).to_string()),
         args: Some(build_args(inputs)),
-        env: Some(downward_api_env()),
-        ports: Some(vec![
-            ContainerPort {
-                name: Some(METRICS_PORT_NAME.to_string()),
-                container_port: METRICS_PORT,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-            ContainerPort {
-                name: Some(HEALTH_PORT_NAME.to_string()),
-                container_port: HEALTH_PORT,
-                protocol: Some("TCP".to_string()),
-                ..Default::default()
-            },
-        ]),
+        env: Some(downward_api_env(DOWNWARD_API_ENV)),
+        ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
-            "/livez",
+            LIVENESS_PATH,
             LIVENESS_INITIAL_DELAY_SECS,
             LIVENESS_PERIOD_SECS,
-            LIVENESS_TIMEOUT_SECS,
+            Some(LIVENESS_TIMEOUT_SECS),
         )),
         readiness_probe: Some(http_probe(
-            "/readyz",
+            READINESS_PATH,
             READINESS_INITIAL_DELAY_SECS,
             READINESS_PERIOD_SECS,
-            READINESS_TIMEOUT_SECS,
+            Some(READINESS_TIMEOUT_SECS),
         )),
         resources: Some(
             inputs
@@ -714,19 +642,7 @@ fn build_container(inputs: &WorkloadInputs<'_>) -> Container {
                 .clone()
                 .unwrap_or_else(default_resources),
         ),
-        security_context: Some(SecurityContext {
-            allow_privilege_escalation: Some(false),
-            read_only_root_filesystem: Some(true),
-            capabilities: Some(Capabilities {
-                drop: Some(vec!["ALL".to_string()]),
-                ..Default::default()
-            }),
-            seccomp_profile: Some(SeccompProfile {
-                type_: SECCOMP_RUNTIME_DEFAULT.to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
+        security_context: Some(container_security_context()),
         ..Default::default()
     }
 }
@@ -794,63 +710,20 @@ fn build_args(inputs: &WorkloadInputs<'_>) -> Vec<String> {
 /// the `resourceNames`-scoped Role built above and nothing wider. Passing the
 /// name down beats each provider re-deriving it from [`crate::naming`], which
 /// would silently break the day the naming scheme changes.
-fn downward_api_env() -> Vec<EnvVar> {
-    [
-        "metadata.name",
-        "metadata.namespace",
-        "spec.serviceAccountName",
-    ]
-    .into_iter()
-    .zip(["POD_NAME", "POD_NAMESPACE", "POD_SERVICE_ACCOUNT"])
-    .map(|(field_path, name)| EnvVar {
-        name: name.to_string(),
-        value_from: Some(EnvVarSource {
-            field_ref: Some(ObjectFieldSelector {
-                field_path: field_path.to_string(),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })
-    .collect()
-}
-
-/// Build an HTTP probe against the health port.
-fn http_probe(path: &str, initial_delay: i32, period: i32, timeout: i32) -> Probe {
-    Probe {
-        http_get: Some(HTTPGetAction {
-            path: Some(path.to_string()),
-            port: IntOrString::String(HEALTH_PORT_NAME.to_string()),
-            ..Default::default()
-        }),
-        initial_delay_seconds: Some(initial_delay),
-        period_seconds: Some(period),
-        timeout_seconds: Some(timeout),
-        failure_threshold: Some(PROBE_FAILURE_THRESHOLD),
-        ..Default::default()
-    }
-}
+const DOWNWARD_API_ENV: &[(&str, &str)] = &[
+    ("POD_NAME", "metadata.name"),
+    ("POD_NAMESPACE", "metadata.namespace"),
+    ("POD_SERVICE_ACCOUNT", "spec.serviceAccountName"),
+];
 
 /// Conservative resource requests and limits used when a class sets none.
 fn default_resources() -> ResourceRequirements {
-    ResourceRequirements {
-        requests: Some(BTreeMap::from([
-            ("cpu".to_string(), Quantity(DEFAULT_CPU_REQUEST.to_string())),
-            (
-                "memory".to_string(),
-                Quantity(DEFAULT_MEMORY_REQUEST.to_string()),
-            ),
-        ])),
-        limits: Some(BTreeMap::from([
-            ("cpu".to_string(), Quantity(DEFAULT_CPU_LIMIT.to_string())),
-            (
-                "memory".to_string(),
-                Quantity(DEFAULT_MEMORY_LIMIT.to_string()),
-            ),
-        ])),
-        ..Default::default()
-    }
+    resources(
+        DEFAULT_CPU_REQUEST,
+        DEFAULT_MEMORY_REQUEST,
+        DEFAULT_CPU_LIMIT,
+        DEFAULT_MEMORY_LIMIT,
+    )
 }
 
 /// The ServiceAccount subject shared by both bindings.
@@ -858,23 +731,7 @@ fn default_resources() -> ResourceRequirements {
 /// `namespace` names where the ServiceAccount actually lives, which is not
 /// necessarily the binding's own namespace.
 fn service_account_subject(inputs: &WorkloadInputs<'_>) -> Subject {
-    Subject {
-        kind: "ServiceAccount".to_string(),
-        name: inputs.name(),
-        namespace: Some(inputs.service_account_namespace().to_string()),
-        ..Default::default()
-    }
-}
-
-/// Build a `resourceNames`-scoped policy rule.
-fn named_rule(group: &str, resource: &str, verbs: &[&str], names: &[String]) -> PolicyRule {
-    PolicyRule {
-        api_groups: Some(vec![group.to_string()]),
-        resources: Some(vec![resource.to_string()]),
-        verbs: verbs.iter().map(|v| (*v).to_string()).collect(),
-        resource_names: Some(names.to_vec()),
-        ..Default::default()
-    }
+    sa_subject(inputs.name(), inputs.service_account_namespace())
 }
 
 /// Render an [`ImagePullPolicy`] the way Kubernetes spells it.

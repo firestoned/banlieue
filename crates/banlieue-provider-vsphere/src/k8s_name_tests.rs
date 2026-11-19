@@ -5,27 +5,26 @@ mod tests {
     use super::super::*;
 
     #[test]
-    fn joins_and_slugifies_short_parts() {
-        assert_eq!(
-            collision_safe_name(&["prod-vsphere", "DC East", "Cluster A"]),
-            "prod-vsphere-dc-east-cluster-a"
-        );
-    }
-
-    #[test]
-    fn strips_special_characters() {
-        assert_eq!(
-            collision_safe_name(&["p", "dc/east", "c.l.u_s_ter:1"]),
-            "p-dc-east-c-l-u-s-ter-1"
-        );
-    }
-
-    #[test]
-    fn collapses_consecutive_separators() {
-        assert_eq!(
-            collision_safe_name(&["p", "DC  East", "Cluster--A"]),
-            "p-dc-east-cluster-a"
-        );
+    fn parts_are_slugified_and_joined() {
+        for (case, parts, expected) in [
+            (
+                "joins and slugifies short parts",
+                ["prod-vsphere", "DC East", "Cluster A"],
+                "prod-vsphere-dc-east-cluster-a",
+            ),
+            (
+                "strips special characters",
+                ["p", "dc/east", "c.l.u_s_ter:1"],
+                "p-dc-east-c-l-u-s-ter-1",
+            ),
+            (
+                "collapses consecutive separators",
+                ["p", "DC  East", "Cluster--A"],
+                "p-dc-east-cluster-a",
+            ),
+        ] {
+            assert_eq!(collision_safe_name(&parts), expected, "{case}");
+        }
     }
 
     #[test]
