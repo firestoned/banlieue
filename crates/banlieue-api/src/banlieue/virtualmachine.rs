@@ -390,7 +390,8 @@ pub struct VirtualMachineStatus {
 
     /// Mirrored from the infra CR's `status.attestationSubject` (ADR-0143
     /// Decision 3): the exact certificate subject CN the host's signer sets
-    /// for a guest with no vTPM (the `firecracker` class). Public, carrying
+    /// for a guest that attests with `x509pop` (the `firecracker` class, and
+    /// a `cloud-hypervisor` host that opted in, ADR-0146). Public, carrying
     /// no authorization; mirrored onward onto a bound `VirtualMachineClaim`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_subject: Option<String>,

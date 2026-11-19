@@ -25,6 +25,8 @@
 //! - [`vmimage`]: this host's `VMImage.status.perProvider[]` row
 //!   (`BackingFile` and registry `Url` sources, ADR-0064).
 //! - [`import`]: the `import` subcommand an import unit runs.
+//! - [`attestation`]: the per-guest certificate signer a host offers once
+//!   it opts in (ADR-0146).
 //! - [`report`]: the guest's `phase` report over vsock (ADR-0065).
 //! - [`sys`]: tap, bridge and reflink syscalls; the crate's only `unsafe`.
 
@@ -38,6 +40,7 @@
 #![deny(unsafe_code)]
 
 pub mod app;
+pub mod attestation;
 pub mod error;
 pub mod fake;
 pub mod host;

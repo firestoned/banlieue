@@ -23,6 +23,7 @@ use crate::host_config::HostConfig;
 pub use crate::plan::VMM_MEMORY_OVERHEAD_MIB;
 use crate::reconciler::Context;
 use crate::sys;
+use banlieue_api::banlieue::provider::ProviderAttestation;
 use banlieue_api::banlieue::{
     FailureDomain, FailureDomainAttributes, FailureDomainCapacity, Provider, ProviderStatus,
     RAW_CPU_MODEL, RAW_VMM, StorageCapacity,
@@ -65,6 +66,97 @@ pub mod reasons {
     /// The Provider names a credentials Secret, which this provider must
     /// never read (ADR-0060 Decision 4).
     pub const CREDENTIALS_NOT_ALLOWED: &str = "CredentialsNotAllowed";
+    /// The host opted in to attestation but the Provider asserts no
+    /// `spec.attestation.hostCa` (ADR-0146 Decision 4).
+    pub const HOST_CA_MISSING: &str = "HostCaMissing";
+    /// `spec.attestation.hostCa` names a source this provider cannot read.
+    pub const HOST_CA_UNREADABLE: &str = "HostCaUnreadable";
+}
+
+/// The Provider field the administrator asserts the host's CA in.
+const HOST_CA_FIELD: &str = "spec.attestation.hostCa";
+
+/// Why an opted-in host holds back every guest (ADR-0146 Decision 4).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostCaHold {
+    /// No `spec.attestation.hostCa` on the Provider.
+    Missing,
+    /// `hostCa` is an inline source that is not exactly one certificate (or
+    /// carries a private key); the text is the API's own rule.
+    Unreadable(String),
+}
+
+impl HostCaHold {
+    /// The `Ready=False` reason.
+    #[must_use]
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Missing => reasons::HOST_CA_MISSING,
+            Self::Unreadable(_) => reasons::HOST_CA_UNREADABLE,
+        }
+    }
+
+    /// The condition message: names the field.
+    #[must_use]
+    pub fn message(&self) -> String {
+        match self {
+            Self::Missing => format!(
+                "this host has [attestation] but the Provider sets no {HOST_CA_FIELD}: assert \
+                 the host's ca.crt there; no guest is created until it is set (ADR-0146)"
+            ),
+            Self::Unreadable(why) => format!(
+                "{HOST_CA_FIELD} is not usable: {why}; no guest is created until it is \
+                 fixed (ADR-0146)"
+            ),
+        }
+    }
+}
+
+/// Whether `provider` holds this host's guests back: only a host whose config
+/// has `[attestation]` ever does, so every other host is untouched.
+///
+/// Decided from the Provider object alone, with no lookup. Absent `hostCa` is
+/// [`HostCaHold::Missing`]. An inline source is judged by the API's own rule
+/// (exactly one certificate, no private key). A `configMapRef` or `secretRef`
+/// source counts as set and is **not** read or checked: banlieue never
+/// verifies the anchor (ADR-0143 Decision 2), and the shared provider's role
+/// grants no ConfigMap or Secret read.
+#[must_use]
+pub fn host_ca_hold(config: &HostConfig, provider: &Provider) -> Option<HostCaHold> {
+    config.attestation.as_ref()?;
+    let Some(host_ca) = provider
+        .spec
+        .attestation
+        .as_ref()
+        .and_then(|a| a.host_ca.as_ref())
+    else {
+        return Some(HostCaHold::Missing);
+    };
+    // Judge `hostCa` alone: an invalid `ekTrustBundle` is not this host's concern.
+    let probe = ProviderAttestation {
+        ek_trust_bundle: None,
+        host_ca: Some(host_ca.clone()),
+    };
+    probe
+        .validate()
+        .err()
+        .map(|why| HostCaHold::Unreadable(why.to_string()))
+}
+
+/// The hold currently in force for this host. Reads only the host's own
+/// `Provider` (home namespace, which the provider already reads); nothing at
+/// all unless the host opted in.
+///
+/// # Errors
+/// The Kubernetes error reading the Provider.
+pub async fn current_host_ca_hold(ctx: &Context) -> Result<Option<HostCaHold>> {
+    if ctx.config.attestation.is_none() {
+        return Ok(None);
+    }
+    let namespace = &ctx.config.provider.namespace;
+    let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
+    let provider = api.get(&ctx.config.provider.name).await?;
+    Ok(host_ca_hold(&ctx.config, &provider))
 }
 
 /// What the host has right now. Gathered by [`gather_facts`]; separate so the
@@ -429,6 +521,7 @@ pub fn compute_status(
     // Checked first: a misconfigured Provider is refused whatever the host
     // looks like, and the Secret it names is never read.
     let credentials_named = provider.spec.connection.credentials_ref.is_some();
+    let hold = host_ca_hold(config, provider);
     let (status, reason, message) = if credentials_named {
         (
             condition_status::FALSE,
@@ -437,6 +530,8 @@ pub fn compute_status(
              reads no Secret (ADR-0060 Decision 4)"
                 .to_string(),
         )
+    } else if let Some(hold) = &hold {
+        (condition_status::FALSE, hold.reason(), hold.message())
     } else if !host_gaps.is_empty() {
         (
             condition_status::FALSE,
@@ -471,7 +566,7 @@ pub fn compute_status(
     ProviderStatus {
         // A host that cannot run guests advertises no failure domain, so the
         // scheduler places nothing here.
-        failure_domains: if host_gaps.is_empty() && !credentials_named {
+        failure_domains: if host_gaps.is_empty() && !credentials_named && hold.is_none() {
             vec![fd]
         } else {
             vec![]

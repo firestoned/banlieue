@@ -121,6 +121,9 @@ pub async fn converge(
     }
     // Before the VMM: a report sent on the guest's first boot is not lost.
     host.ensure_report_listener(plan).await?;
+    // Likewise the signer: the guest's helper may ask as soon as it boots
+    // (ADR-0146). A no-op unless the host opted in.
+    host.ensure_attestation_signer(plan).await?;
 
     match host.unit_state(&plan.unit).await? {
         Some(state) if state.is_running() => {}
@@ -276,6 +279,7 @@ async fn power_off(host: &dyn HostOps, plan: &MachinePlan) -> Result<Observed> {
         host.stop_unit(&plan.unit).await?;
         stop_tpm(host, plan).await?;
         host.stop_report_listener(plan).await;
+        host.stop_attestation_signer(plan).await;
         return Ok(observed(Phase::Stopped, vec![]));
     }
     // A socket that cannot be trusted does not stop a power-off: the unit
@@ -294,6 +298,7 @@ async fn power_off(host: &dyn HostOps, plan: &MachinePlan) -> Result<Observed> {
     host.stop_unit(&plan.unit).await?;
     stop_tpm(host, plan).await?;
     host.stop_report_listener(plan).await;
+    host.stop_attestation_signer(plan).await;
     Ok(observed(Phase::Stopped, vec![]))
 }
 
@@ -317,6 +322,7 @@ pub async fn teardown(host: &dyn HostOps, plan: &MachinePlan) -> Result<()> {
     host.stop_unit(&plan.unit).await?;
     stop_tpm(host, plan).await?;
     host.stop_report_listener(plan).await;
+    host.stop_attestation_signer(plan).await;
     if host.unit_state(&plan.unit).await?.is_some() {
         return Err(Error::Systemd(format!(
             "{} is still loaded after stop",
@@ -363,6 +369,13 @@ pub fn build_status(
         Phase::StartingTpm | Phase::StartingVmm | Phase::Stopped => PowerState::PoweredOff,
     });
     st.tpm_attached = Some(plan.tpm.is_some());
+    // ADR-0146: published only for a host that opted in, withdrawn when it
+    // no longer does. The subject is the machine's UID, the CN of every
+    // certificate this host signs for it.
+    st.attestation_subject = plan
+        .attestation_socket
+        .is_some()
+        .then(|| crate::attestation::signer_subject(plan).to_string());
     if !o.ek_certificates.is_empty() {
         st.tpm_endorsement_certificates = o.ek_certificates.clone();
     }

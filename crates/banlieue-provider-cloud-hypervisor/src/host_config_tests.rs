@@ -317,4 +317,83 @@ default = "br-test"
             assert!(HostConfig::parse(&text).is_err(), "{bad} accepted");
         }
     }
+
+    // ------------------------------------------------------------------
+    // [attestation] (ADR-0146): the host opts in to a signer for its guests
+    // ------------------------------------------------------------------
+
+    const ATTESTATION: &str = "\n[attestation]\nca_dir = \"/var/lib/banlieue/attestation-ca\"\ncertificate_ttl_secs = 3600\n";
+
+    #[test]
+    fn the_attestation_section_is_optional() {
+        assert!(parsed().attestation.is_none());
+    }
+
+    #[test]
+    fn an_attestation_section_is_read_back() {
+        let c = HostConfig::parse(&format!("{FROM_BOOTSTRAP}{ATTESTATION}")).unwrap();
+        let a = c.attestation.expect("opted in");
+        assert_eq!(a.ca_dir, Path::new("/var/lib/banlieue/attestation-ca"));
+        assert_eq!(a.certificate_ttl_secs, 3600);
+        assert_eq!(a.certificate_ttl(), std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn an_attestation_section_survives_a_serialize_round_trip() {
+        let c = HostConfig::parse(&format!("{FROM_BOOTSTRAP}{ATTESTATION}")).unwrap();
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("[attestation]"), "{text}");
+        assert_eq!(HostConfig::parse(&text).unwrap(), c);
+    }
+
+    #[test]
+    fn no_attestation_serializes_no_section() {
+        let text = toml::to_string(&parsed()).unwrap();
+        assert!(!text.contains("attestation"), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_attestation_key_is_refused() {
+        let text = format!("{FROM_BOOTSTRAP}{ATTESTATION}ca_name = \"x\"\n");
+        assert!(HostConfig::parse(&text).is_err());
+    }
+
+    #[test]
+    fn both_attestation_keys_are_required() {
+        let no_ttl = format!("{FROM_BOOTSTRAP}\n[attestation]\nca_dir = \"/var/lib/ca\"\n");
+        assert!(HostConfig::parse(&no_ttl).is_err());
+        let no_dir = format!("{FROM_BOOTSTRAP}\n[attestation]\ncertificate_ttl_secs = 3600\n");
+        assert!(HostConfig::parse(&no_dir).is_err());
+    }
+
+    #[test]
+    fn a_relative_ca_dir_is_refused_naming_the_key() {
+        let text = format!(
+            "{FROM_BOOTSTRAP}\n[attestation]\nca_dir = \"attestation-ca\"\ncertificate_ttl_secs = 3600\n"
+        );
+        let err = HostConfig::parse(&text).unwrap_err().to_string();
+        assert!(err.contains("attestation.ca_dir"), "{err}");
+    }
+
+    #[test]
+    fn a_ttl_outside_the_signers_bounds_is_refused() {
+        let min = banlieue_attestation_ca::MIN_CERTIFICATE_TTL.as_secs();
+        let max = banlieue_attestation_ca::MAX_CERTIFICATE_TTL.as_secs();
+        for bad in [0, min - 1, max + 1] {
+            let text = format!(
+                "{FROM_BOOTSTRAP}\n[attestation]\nca_dir = \"/var/lib/ca\"\ncertificate_ttl_secs = {bad}\n"
+            );
+            let err = HostConfig::parse(&text).unwrap_err().to_string();
+            assert!(
+                err.contains("attestation.certificate_ttl_secs"),
+                "{bad}: {err}"
+            );
+        }
+        for ok in [min, max] {
+            let text = format!(
+                "{FROM_BOOTSTRAP}\n[attestation]\nca_dir = \"/var/lib/ca\"\ncertificate_ttl_secs = {ok}\n"
+            );
+            assert!(HostConfig::parse(&text).is_ok(), "{ok} refused");
+        }
+    }
 }

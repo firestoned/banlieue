@@ -38,7 +38,7 @@ use crate::host::RealHost;
 use crate::host_config::HostConfig;
 use crate::plan::UidLedger;
 use crate::reconciler::{self, Context};
-use crate::{provider, sys, systemd, token, vmimage};
+use crate::{attestation, provider, sys, systemd, token, vmimage};
 
 /// Where the bootstrap script writes the host config.
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/banlieue/cloud-hypervisor.toml";
@@ -243,10 +243,19 @@ pub async fn run(cli: Cli) -> Result<()> {
     // A guest's report wakes the machine reconciler (ADR-0065 Decision 5):
     // publishing GuestReady must not wait for the next periodic pass.
     let (report_wake, report_woken) = tokio::sync::mpsc::unbounded_channel();
-    let host = RealHost::connect(cli.bus.into(), group)
+    let mut host = RealHost::connect(cli.bus.into(), group)
         .await
         .context("connecting to systemd")?
         .with_report_wake(report_wake);
+    // A host that opted in to attestation (ADR-0146) loads its CA once, here:
+    // a missing, insecure or foreign-owned CA is a startup failure that says
+    // what to fix, not a guest that fails later.
+    if let Some(section) = &config.attestation {
+        let signer = attestation::load_signer(section, sys::effective_uid())
+            .context("loading the attestation CA")?;
+        info!(ca = %signer.ca().common_name(), "attestation signer ready");
+        host = host.with_attestation(attestation::Signers::new(signer));
+    }
     let lease = (!cli.no_leader_elect)
         .then(|| leader_config(&config, &class, cli.leader_election_identity.clone()));
     let election = lease

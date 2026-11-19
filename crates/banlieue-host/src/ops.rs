@@ -167,6 +167,13 @@ pub trait Probe {
     /// read.
     fn systemd_version(&self) -> Option<u32>;
 
+    /// The attestation CA in `dir`, as the installer judges it: loaded with
+    /// the CA crate's own checks (ADR-0146 Decision 5).
+    ///
+    /// # Errors
+    /// A sentence saying what is wrong, or that nothing is there.
+    fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String>;
+
     /// Whether anything is at `path`.
     fn exists(&self, path: &Path) -> bool {
         self.stat(path).is_some()
@@ -214,6 +221,22 @@ pub trait Host: Probe {
     /// # Errors
     /// The I/O error.
     fn remove(&self, path: &Path) -> io::Result<()>;
+    /// Create the attestation CA named `name` in `dir`, its directory and
+    /// files owned by `owner` from birth. Never replaces a CA: it refuses
+    /// when `ca.key` or `ca.crt` is already there, and a name outside the
+    /// CA's alphabet. The parent of `dir` must exist.
+    ///
+    /// # Errors
+    /// The I/O error, or why the CA was refused.
+    fn create_attestation_ca(&self, dir: &Path, name: &str, owner: &Owner) -> io::Result<()>;
+    /// Remove the attestation CA's `ca.key` and `ca.crt` from `dir` (rotation).
+    /// Acts relative to a handle on `dir` opened without following a symlink,
+    /// so a link planted in either name is unlinked, never followed, and a
+    /// symlinked `dir` is refused. Nothing there is success.
+    ///
+    /// # Errors
+    /// The I/O error, or why `dir` was refused.
+    fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()>;
     /// Run a command that may change the host; its standard output.
     ///
     /// # Errors

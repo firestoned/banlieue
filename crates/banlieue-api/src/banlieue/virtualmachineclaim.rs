@@ -258,8 +258,9 @@ pub struct VirtualMachineClaimStatus {
     /// The certificate subject CN of the bound member's node-attestation
     /// identity, mirrored from the infra CR (ADR-0143 Decision 3), beside
     /// [`tpm_endorsement_certificates`](Self::tpm_endorsement_certificates).
-    /// Set for a member of a class with no vTPM (`firecracker`), which signs
-    /// a certificate with this subject for the guest; absent otherwise.
+    /// Set for a member whose host signs it a certificate for `x509pop`
+    /// (`firecracker`, or a `cloud-hypervisor` host that opted in, ADR-0146),
+    /// with this subject; absent otherwise.
     /// Public and carrying no authorization, so a consumer needs one GET.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_subject: Option<String>,

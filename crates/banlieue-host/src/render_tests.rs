@@ -32,6 +32,7 @@ mod tests {
             guest_accounts: crate::accounts::GuestAccounts::Userdb,
             accounts_reason: "test".into(),
             accepted_reduced: vec![],
+            attestation: None,
         }
     }
 

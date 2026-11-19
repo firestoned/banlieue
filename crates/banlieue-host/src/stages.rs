@@ -10,15 +10,17 @@
 //! nothing (invariant 2).
 
 use crate::accounts::{self, GuestAccounts};
+use crate::attestation::{self, CaInfo};
 use crate::error::Error;
 use crate::fetch::Fetch;
 use crate::hardening;
 use crate::ops::{CgroupMode, Cmd, Host, Kind, Owner, Probe};
 use crate::paths::{
-    BANLIEUE_USER, BIN_DIR, CONF_DIR, CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR, GUEST_NAME_PREFIX,
-    GUEST_SLICE_UNIT, HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE, PROVIDER_BINARY, PROVIDER_UNIT,
-    REGISTRY_CREDENTIALS_DIR, RUN_ROOT, STATE_ROOT, STATE_SUBDIRS, SWTPM_CONF_DIR,
-    SWTPM_SETUP_CONF, SYSTEMD_UNIT_DIR, TMPFILES_CONF, UNIT_GLOBS, USERDB_DIR, VMM_BINARY,
+    ATTESTATION_CA_DIR, BANLIEUE_USER, BIN_DIR, CONF_DIR, CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR,
+    GUEST_NAME_PREFIX, GUEST_SLICE_UNIT, HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE,
+    PROVIDER_BINARY, PROVIDER_UNIT, REGISTRY_CREDENTIALS_DIR, RUN_ROOT, STATE_ROOT, STATE_SUBDIRS,
+    SWTPM_CONF_DIR, SWTPM_SETUP_CONF, SYSTEMD_UNIT_DIR, TMPFILES_CONF, UNIT_GLOBS, USERDB_DIR,
+    VMM_BINARY,
 };
 use crate::pins::{self, Release};
 use crate::render;
@@ -86,6 +88,9 @@ pub enum Stage {
     Vmm,
     /// The provider's user, guest uid records, directories, host config.
     Host,
+    /// The per-host attestation CA, for hosts that opt in (ADR-0146). Runs
+    /// with `--only host` as well.
+    Attestation,
     /// The per-host EK CA.
     Tpm,
     /// The polkit rule.
@@ -104,6 +109,7 @@ impl Stage {
             Self::Preflight => "preflight",
             Self::Vmm => "vmm",
             Self::Host => "host",
+            Self::Attestation => "attestation",
             Self::Tpm => "tpm",
             Self::Polkit => "polkit",
             Self::Provider => "provider",
@@ -281,6 +287,16 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
              databases (system accounts, no login); lower --guest-uid-count to create fewer",
             s.uid_count, s.uid_count
         ));
+    }
+    if s.attestation.is_some() {
+        match attestation_state(probe) {
+            Some(Ok(ca)) => note(format!(
+                "attestation CA {} (expires {})",
+                ca.name, ca.not_after
+            )),
+            Some(Err(problems)) => bad.extend(problems),
+            None => note("attestation CA: will be created"),
+        }
     }
     bad.extend(accounts::problems(probe, s));
     bad.extend(hardening_problems(probe, s));
@@ -628,6 +644,129 @@ fn verify_guest_uids(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), E
             s.guest_accounts.name()
         )));
     }
+    Ok(())
+}
+
+// -------------------------------------------------------------- attestation
+
+/// The attestation CA on the host: `None` when there is none, its name and
+/// expiry when it is sound, and every problem when it is not (ADR-0146
+/// Decision 5). Sound is the CA crate's own `load` (key `0600`, a directory
+/// closed to group and world, no symlinks, key and certificate matching),
+/// plus ownership, which `load` cannot know: the key and the directory must
+/// belong to the provider's user, or the provider cannot read its own key or
+/// someone else can.
+fn attestation_state(probe: &dyn Probe) -> Option<Result<CaInfo, Vec<String>>> {
+    let dir = Path::new(ATTESTATION_CA_DIR);
+    let key = dir.join(attestation::CA_KEY_FILE);
+    let cert = dir.join(attestation::CA_CERT_FILE);
+    if !probe.exists(&key) && !probe.exists(&cert) {
+        return None;
+    }
+    let mut problems = Vec::new();
+    for (what, path) in [("directory", dir), ("key", key.as_path())] {
+        match probe.stat(path) {
+            Some(st) if st.owner.user != BANLIEUE_USER => problems.push(format!(
+                "attestation CA {what} {} is owned by {}, not {BANLIEUE_USER}",
+                path.display(),
+                st.owner.user
+            )),
+            _ => {}
+        }
+    }
+    match probe.attestation_ca(dir) {
+        Ok(info) if problems.is_empty() => return Some(Ok(info)),
+        Ok(_) => {}
+        Err(why) => problems.push(format!("attestation CA {}: {why}", dir.display())),
+    }
+    Some(Err(problems))
+}
+
+/// The attestation CA (ADR-0146 Decision 5): created once, as the
+/// provider's user, so its key is born with the right owner; its section
+/// written into the host config; and the administrator told what to copy
+/// where. A CA that is there is never overwritten: a re-run reports it. It
+/// is replaced only by `--rotate-attestation-ca` with a new name, and never
+/// by `--force`. A host that did not opt in is left exactly as it is,
+/// section included.
+///
+/// # Errors
+/// The I/O error, or [`Error::Config`] if the host config would not load.
+pub fn attestation_ca(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
+    log("Attestation CA");
+    let Some(plan) = &s.attestation else {
+        note("not opted in (--attestation-ca-name NAME or --attestation); nothing changed");
+        return Ok(());
+    };
+    let dir = Path::new(ATTESTATION_CA_DIR);
+    let present = host.exists(&dir.join(attestation::CA_KEY_FILE))
+        || host.exists(&dir.join(attestation::CA_CERT_FILE));
+    // A CA that is there is never overwritten, however the plan was made.
+    let create = plan
+        .new_ca_name
+        .as_ref()
+        .filter(|_| plan.rotate || !present);
+    if let Some(name) = create {
+        if plan.rotate {
+            eprintln!(
+                "!!! --rotate-attestation-ca: replacing the attestation CA with {name}; every \
+                 certificate it signed stops verifying once the new CA is asserted"
+            );
+            host.remove_attestation_ca(dir)?;
+        }
+        note(format!("creating the attestation CA {name}"));
+        host.create_attestation_ca(dir, name, &banlieue())?;
+    }
+    write_attestation_section(host, plan.ttl, o)?;
+    if o.dry_run && plan.new_ca_name.is_some() {
+        return Ok(());
+    }
+    let info = host
+        .attestation_ca(dir)
+        .map_err(|why| Error::Config(format!("attestation CA {}: {why}", dir.display())))?;
+    note(format!(
+        "attestation CA {} in {} (expires {}; kept, never overwritten)",
+        info.name,
+        dir.display(),
+        info.not_after
+    ));
+    for line in attestation::admin_action(dir, &info.name) {
+        note(line);
+    }
+    Ok(())
+}
+
+/// Set `[attestation]` in the host config to `ttl` and the CA directory,
+/// unless it already says exactly that.
+fn write_attestation_section(
+    host: &dyn Host,
+    ttl: std::time::Duration,
+    o: &Options,
+) -> Result<(), Error> {
+    let existing = match host.read(Path::new(HOST_CONFIG)) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) if o.dry_run => {
+            note(format!("{HOST_CONFIG}: {e}; [attestation] not checked"));
+            return Ok(());
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let section = attestation::section(ttl);
+    let Some(updated) = render::with_attestation(&existing, &section)? else {
+        return Ok(());
+    };
+    put(
+        host,
+        Path::new(HOST_CONFIG),
+        updated.as_bytes(),
+        MODE_HOST_CONFIG,
+        &root_banlieue(),
+    )?;
+    note(format!(
+        "[attestation] in {HOST_CONFIG}: certificate_ttl_secs {}; restart {PROVIDER_UNIT} so it \
+         reads it",
+        section.certificate_ttl_secs
+    ));
     Ok(())
 }
 
@@ -1031,6 +1170,17 @@ fn present(probe: &dyn Probe, path: &str) -> &'static str {
     }
 }
 
+/// One line for `status`: the attestation CA's name and expiry, or why it
+/// is not sound.
+fn attestation_status(probe: &dyn Probe) -> String {
+    match attestation_state(probe) {
+        None if probe.is_root() => "none (opt in with --attestation-ca-name)".into(),
+        None => "none, or unknown (run as root)".into(),
+        Some(Ok(ca)) => format!("{}, expires {}", ca.name, ca.not_after),
+        Some(Err(problems)) => format!("REFUSED: {}", problems.join("; ")),
+    }
+}
+
 /// What is installed. Changes nothing.
 pub fn status(probe: &dyn Probe) {
     let row = |k: &str, v: &str| println!("  {k:<18} {v}");
@@ -1102,6 +1252,7 @@ pub fn status(probe: &dyn Probe) {
     println!("--- config ---");
     row("host-config", present(probe, HOST_CONFIG));
     row("ek-ca", present(probe, EK_CA_CERT));
+    row("attestation-ca", &attestation_status(probe));
     row("polkit-rule", present(probe, POLKIT_RULE));
     row(
         "kubeconfig",
@@ -1143,6 +1294,7 @@ pub fn missing_prerequisites(stage: Stage, probe: &dyn Probe, release: &Release)
     let polkit = || probe.exists(Path::new(POLKIT_RULE));
     let needs: &[(Stage, &dyn Fn() -> bool)] = match stage {
         Stage::Preflight | Stage::Vmm | Stage::Host => &[],
+        Stage::Attestation => &[(Stage::Host, &host)],
         Stage::Tpm | Stage::Polkit => &[(Stage::Preflight, &commands), (Stage::Host, &host)],
         Stage::Provider => &[(Stage::Host, &host)],
         Stage::Selftest => &[
@@ -1162,6 +1314,11 @@ pub fn missing_prerequisites(stage: Stage, probe: &dyn Probe, release: &Release)
 /// The stages `install` runs, in order.
 #[must_use]
 pub fn plan(o: &Options) -> Vec<Stage> {
+    if o.only == Some(Stage::Host) {
+        // The host config is the host stage's, and so is the section in it:
+        // a host that opted in gets its CA with it.
+        return vec![Stage::Host, Stage::Attestation];
+    }
     if let Some(only) = o.only {
         return vec![only];
     }
@@ -1169,6 +1326,7 @@ pub fn plan(o: &Options) -> Vec<Stage> {
         Stage::Preflight,
         Stage::Vmm,
         Stage::Host,
+        Stage::Attestation,
         Stage::Tpm,
         Stage::Polkit,
         Stage::Provider,
@@ -1213,6 +1371,7 @@ pub async fn install(
             Stage::Preflight => preflight(host, s)?,
             Stage::Vmm => vmm(host, fetch, release, o).await?,
             Stage::Host => self::host(host, s, release, o)?,
+            Stage::Attestation => attestation_ca(host, s, o)?,
             Stage::Tpm => tpm(host, o)?,
             Stage::Polkit => polkit(host, s)?,
             Stage::Provider => provider(host, s, o)?,

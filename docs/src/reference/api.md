@@ -932,7 +932,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the infra CR's `status.addresses`. |
-| `attestationSubject` | string |  | Mirrored from the infra CR's `status.attestationSubject` (ADR-0143 Decision 3): the exact certificate subject CN the host's signer sets for a guest with no vTPM (the `firecracker` class). Public, carrying no authorization; mirrored onward onto a bound `VirtualMachineClaim`. |
+| `attestationSubject` | string |  | Mirrored from the infra CR's `status.attestationSubject` (ADR-0143 Decision 3): the exact certificate subject CN the host's signer sets for a guest that attests with `x509pop` (the `firecracker` class, and a `cloud-hypervisor` host that opted in, ADR-0146). Public, carrying no authorization; mirrored onward onto a bound `VirtualMachineClaim`. |
 | `conditions` | object[] |  | Standard Kubernetes conditions. Required types: `Ready` — overall readiness `Scheduled` — placement decision exists and is current `PlacementValid` — current placement satisfies the spec `InfrastructureReady` — mirrors the infra CR's Ready condition Optional: `Migrating` — true while a migration is in progress `Paused` — present (True) only while `spec.paused` suspends reconciliation |
 | `heldAddresses` | object[] |  | Static addresses this VM's infrastructure CR was last applied with (ADR-0083). Written by the controller **only** when it applies the infra CR, and carried forward unchanged otherwise, so it records what the guest is configured with: it survives guest reboots and is the same on every backend. A held address is never given to another VM. |
 | `infrastructureRef` | object |  | Reference to the provider-specific infrastructure CR (e.g. `infrastructure.banlieue.io/v1alpha1/VSphereMachine`). Set after scheduling, owned by this VirtualMachine. |
@@ -1480,7 +1480,7 @@ the member as annotations, and never interpreted.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the bound member so a consumer needs one GET. |
-| `attestationSubject` | string |  | The certificate subject CN of the bound member's node-attestation identity, mirrored from the infra CR (ADR-0143 Decision 3), beside `tpm_endorsement_certificates`. Set for a member of a class with no vTPM (`firecracker`), which signs a certificate with this subject for the guest; absent otherwise. Public and carrying no authorization, so a consumer needs one GET. |
+| `attestationSubject` | string |  | The certificate subject CN of the bound member's node-attestation identity, mirrored from the infra CR (ADR-0143 Decision 3), beside `tpm_endorsement_certificates`. Set for a member whose host signs it a certificate for `x509pop` (`firecracker`, or a `cloud-hypervisor` host that opted in, ADR-0146), with this subject; absent otherwise. Public and carrying no authorization, so a consumer needs one GET. |
 | `boundAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
 | `conditions` | object[] |  |  |
 | `expiresAt` | string |  | `bound_at + spec.ttlSeconds`. The member is deleted at this instant. |
@@ -2374,6 +2374,7 @@ backends alike.
 | --- | --- | --- | --- |
 | `addressSource` | string |  | Which source answered the provider's address lookup. Allowed: `static`, `neighbour`. |
 | `addresses` | object[] |  | CAPI contract field (optional): VM addresses. |
+| `attestationSubject` | string |  | The exact certificate subject CN the host's signer sets for this guest: this machine's `metadata.uid`, never a value from the guest (ADR-0146, after ADR-0143 Decision 3). Public and carrying no authorization; mirrored onto the bound claim so mediatore can compute the node entry's parent before the guest boots. Set by the provider only for a host that opted in to attestation; absent otherwise, and when the host withdraws it. |
 | `conditions` | object[] |  | Standard Kubernetes conditions. |
 | `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
 | `guestInstalled` | boolean |  | Whether the installed guest has announced itself (ADR-0043). Sticky once true. |

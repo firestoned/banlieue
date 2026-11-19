@@ -38,6 +38,9 @@ pub const SWTPM_SETUP_CONF: &str = "/etc/banlieue/swtpm/swtpm_setup.conf";
 pub const EK_CA_DIR: &str = "/var/lib/banlieue/swtpm-localca";
 /// The EK CA certificate the provider publishes.
 pub const EK_CA_CERT: &str = "/var/lib/banlieue/swtpm-localca/issuercert.pem";
+/// The per-host attestation CA's directory (ADR-0146 Decision 2): `ca.key`
+/// (0600) and `ca.crt` (0644), the provider's alone.
+pub const ATTESTATION_CA_DIR: &str = "/var/lib/banlieue/attestation-ca";
 /// Guest uid records for NSS (ADR-0063 Decision 3).
 pub const USERDB_DIR: &str = "/etc/userdb";
 /// The polkit rule (ADR-0063 Decision 6).

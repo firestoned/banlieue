@@ -828,4 +828,46 @@ mod tests {
         let next = mirror_status_from_infra(&current, &infra, 1);
         assert_eq!(next.attestation_subject, None);
     }
+
+    // ADR-0146: a Cloud Hypervisor guest may attest with x509pop too.
+
+    fn cloud_hypervisor_machine_with_subject(
+        subject: Option<&str>,
+    ) -> banlieue_api::infrastructure::CloudHypervisorMachine {
+        let mut m = cloud_hypervisor_machine();
+        if let Some(st) = m.status.as_mut() {
+            st.attestation_subject = subject.map(str::to_string);
+        }
+        m
+    }
+
+    #[test]
+    fn cloud_hypervisor_impl_reads_the_attestation_subject_from_status() {
+        assert_eq!(
+            cloud_hypervisor_machine_with_subject(Some(SUBJECT)).attestation_subject(),
+            Some(SUBJECT)
+        );
+        assert_eq!(
+            cloud_hypervisor_machine_with_subject(None).attestation_subject(),
+            None
+        );
+    }
+
+    #[test]
+    fn the_cloud_hypervisor_attestation_subject_is_mirrored_from_the_infra_cr() {
+        let infra = cloud_hypervisor_machine_with_subject(Some(SUBJECT));
+        let next = mirror_status_from_infra(&VirtualMachineStatus::default(), &infra, 1);
+        assert_eq!(next.attestation_subject.as_deref(), Some(SUBJECT));
+    }
+
+    #[test]
+    fn a_withdrawn_cloud_hypervisor_attestation_subject_is_cleared_on_the_parent() {
+        let current = VirtualMachineStatus {
+            attestation_subject: Some(SUBJECT.to_string()),
+            ..Default::default()
+        };
+        let infra = cloud_hypervisor_machine_with_subject(None);
+        let next = mirror_status_from_infra(&current, &infra, 1);
+        assert_eq!(next.attestation_subject, None);
+    }
 }

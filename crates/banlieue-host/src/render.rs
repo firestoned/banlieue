@@ -10,6 +10,7 @@
 //! back before it is written, so the installer cannot write a file the
 //! provider would refuse.
 
+use crate::attestation;
 use crate::error::Error;
 use crate::ops::Probe;
 use crate::paths::{
@@ -19,6 +20,7 @@ use crate::paths::{
 };
 use crate::pins::Release;
 use crate::settings::Settings;
+use banlieue_provider_cloud_hypervisor::host_config::AttestationSection;
 use banlieue_provider_cloud_hypervisor::host_config::{
     GuestsSection, HardeningSection, HostConfig, PathsSection, ProviderSection, RegistrySection,
     TpmSection, VmmSection,
@@ -225,6 +227,24 @@ pub fn with_managed(
     serialize(&config).map(Some)
 }
 
+/// An existing host config with its `[attestation]` section set to
+/// `section`, or `None` when it already is. Every other key keeps its
+/// value; comments an admin added are not kept.
+///
+/// # Errors
+/// [`Error::Config`] if `existing` does not parse as the provider would.
+pub fn with_attestation(
+    existing: &str,
+    section: &AttestationSection,
+) -> Result<Option<String>, Error> {
+    let mut config = HostConfig::parse(existing).map_err(|e| Error::Config(e.to_string()))?;
+    if config.attestation.as_ref() == Some(section) {
+        return Ok(None);
+    }
+    config.attestation = Some(section.clone());
+    serialize(&config).map(Some)
+}
+
 /// The host config for `s` and `release`, as the provider will load it.
 ///
 /// # Errors
@@ -260,6 +280,7 @@ pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result
         storage_classes: s.storage.iter().cloned().collect(),
         network_classes: s.network.iter().cloned().collect(),
         hardening: hardening_section(&s.accepted_reduced),
+        attestation: s.attestation.as_ref().map(|a| attestation::section(a.ttl)),
     };
     serialize(&config)
 }

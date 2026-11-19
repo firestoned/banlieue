@@ -25,6 +25,7 @@
 //! provider crate does not depend on it (`boundary_tests.rs`).
 
 pub mod accounts;
+pub mod attestation;
 pub mod dryrun;
 pub mod error;
 #[cfg(test)]

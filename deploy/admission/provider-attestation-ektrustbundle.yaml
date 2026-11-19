@@ -24,11 +24,15 @@ spec:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["providers"]
-  # Only evaluate when an attestation block is present; absence is valid (a
-  # Provider running no tpmEnabled classes has no reason to set one).
+  # Only evaluate when an ekTrustBundle is present. Absence is valid: a Provider
+  # running no tpmEnabled classes has no reason to set an attestation block, and
+  # one that sets only hostCa (ADR-0143 Decision 2) has no ekTrustBundle. The
+  # validation below reads ekTrustBundle.<source> unconditionally, which errors
+  # on a missing parent and, with failurePolicy Fail, would deny that Provider.
+  # The hostCa rule lives in provider-attestation-hostca.yaml.
   matchConditions:
-    - name: has-attestation
-      expression: "has(object.spec.attestation)"
+    - name: has-ektrustbundle
+      expression: "has(object.spec.attestation) && has(object.spec.attestation.ekTrustBundle)"
   validations:
     # Count the set sources; exactly one is required. CEL has() is true only when
     # the optional field is present, so this is a clean 0/1/many check.

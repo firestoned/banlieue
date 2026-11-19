@@ -21,6 +21,9 @@ banlieue-provider-cloud-hypervisor = { path = "../banlieue-provider-cloud-hyperv
 banlieue-cloud-hypervisor = { path = "../banlieue-cloud-hypervisor" }
 # The EK certificate CN convention the self-test checks (ADR-0045).
 banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+# The attestation CA the installer creates and inspects (ADR-0143, ADR-0146);
+# its own checks (key mode, directory mode, symlinks) are what preflight reuses.
+banlieue-attestation-ca = { path = "../banlieue-attestation-ca" }
 
 async-trait.workspace = true
 clap.workspace = true

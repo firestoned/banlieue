@@ -65,6 +65,11 @@ pub struct State {
     pub env_files: BTreeMap<std::path::PathBuf, String>,
     /// Machines (by UID) with a report listener.
     pub listening: BTreeSet<String>,
+    /// Machines (by UID) with a running attestation signer, and the subject
+    /// each signs for (ADR-0146).
+    pub signing: BTreeMap<String, String>,
+    /// How many times a signer was started per machine UID.
+    pub signer_starts: BTreeMap<String, u32>,
     /// Machines (by UID) whose guest reported `phase=installed`.
     pub reported_installed: BTreeSet<String>,
     /// Partitions each machine's guest reported sealed (ADR-0112).
@@ -137,7 +142,14 @@ impl FakeHost {
     pub fn restart_provider(&self) {
         let mut s = self.lock();
         s.listening.clear();
+        s.signing.clear();
         s.calls.clear();
+    }
+
+    /// A machine's signer died without being stopped, as a crashed serve
+    /// task would.
+    pub fn kill_signer(&self, plan: &MachinePlan) {
+        self.lock().signing.remove(&plan.uid);
     }
 
     pub fn guest_reports_installed(&self, plan: &MachinePlan) {
@@ -349,6 +361,34 @@ impl HostOps for FakeHost {
         s.listening.remove(&plan.uid);
         s.reported_installed.remove(&plan.uid);
         s.reported_sealed.remove(&plan.uid);
+    }
+
+    async fn ensure_attestation_signer(&self, plan: &MachinePlan) -> Result<()> {
+        // A host that did not opt in plans no socket, so nothing starts.
+        if plan.attestation_socket.is_none() {
+            return Ok(());
+        }
+        let mut s = self.lock();
+        s.calls.push("ensure_attestation_signer".into());
+        // The socket is bound in the guest's run directory: without it,
+        // `bind` fails with ENOENT.
+        if !s.dirs.contains(&plan.run_dir) {
+            return Err(io_err(
+                std::io::ErrorKind::NotFound,
+                "run dir missing".into(),
+            ));
+        }
+        if s.signing.contains_key(&plan.uid) {
+            return Ok(());
+        }
+        let subject = crate::attestation::signer_subject(plan).to_string();
+        s.signing.insert(plan.uid.clone(), subject);
+        *s.signer_starts.entry(plan.uid.clone()).or_default() += 1;
+        Ok(())
+    }
+
+    async fn stop_attestation_signer(&self, plan: &MachinePlan) {
+        self.lock().signing.remove(&plan.uid);
     }
 
     async fn ensure_taps(&self, plan: &MachinePlan) -> Result<()> {

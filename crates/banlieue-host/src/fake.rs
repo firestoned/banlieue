@@ -27,6 +27,13 @@ const FAKE_SYSTEMD_VERSION: u32 = 252;
 /// The kvm group's id.
 const FAKE_KVM_GID: u32 = 993;
 
+/// The attestation CA directory's mode.
+const ATTESTATION_DIR_MODE: u32 = 0o700;
+/// The attestation CA key's mode.
+const ATTESTATION_KEY_MODE: u32 = 0o600;
+/// The attestation CA certificate's mode.
+const ATTESTATION_CERT_MODE: u32 = 0o644;
+
 /// One filesystem entry.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Node {
@@ -558,6 +565,46 @@ impl Probe for FakeHost {
     fn systemd_version(&self) -> Option<u32> {
         self.env.lock().unwrap().systemd_version
     }
+
+    /// The real checks, not a lookalike: the fake's CA files are copied,
+    /// with their modes, into a scratch directory and loaded by the CA
+    /// crate's own `load`, so the fake refuses exactly what it refuses.
+    fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String> {
+        use std::os::unix::fs::PermissionsExt;
+        let s = self.state.lock().unwrap();
+        let dir_node = s.fs.get(dir).ok_or("nothing is there")?;
+        if dir_node.kind != Kind::Dir {
+            return Err("the CA directory is a symlink or not a directory".into());
+        }
+        let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let copy = scratch.path().join("ca");
+        std::fs::create_dir(&copy).map_err(|e| e.to_string())?;
+        for file in [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CERT_FILE,
+        ] {
+            let Some(n) = s.fs.get(&dir.join(file)) else {
+                continue;
+            };
+            let path = copy.join(file);
+            match &n.kind {
+                Kind::File => std::fs::write(&path, &n.data).map_err(|e| e.to_string())?,
+                _ => {
+                    std::os::unix::fs::symlink("/nonexistent", &path).map_err(|e| e.to_string())?
+                }
+            }
+            if n.kind == Kind::File {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(n.mode))
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(dir_node.mode))
+            .map_err(|e| e.to_string())?;
+        let out = crate::attestation::inspect(&copy);
+        // Let the scratch directory be removed whatever its mode.
+        let _ = std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700));
+        out
+    }
 }
 
 impl Host for FakeHost {
@@ -663,6 +710,63 @@ impl Host for FakeHost {
     fn remove(&self, path: &Path) -> io::Result<()> {
         let mut s = self.state.lock().unwrap();
         s.fs.retain(|p, _| !p.starts_with(path));
+        Ok(())
+    }
+
+    /// As the real one: a name outside the alphabet is refused (by the CA
+    /// crate itself), an existing key or certificate is never replaced, the
+    /// owner must exist and the parent directory must exist. The directory
+    /// is `0700`, the key `0600`, the certificate `0644`, all owned by
+    /// `owner`.
+    fn create_attestation_ca(&self, dir: &Path, name: &str, owner: &Owner) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        Self::check_owner(&s, owner)?;
+        Self::parent_is_dir(&s, dir)?;
+        for file in [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CERT_FILE,
+        ] {
+            if s.fs.contains_key(&dir.join(file)) {
+                return Err(io::Error::other(format!(
+                    "{}: the CA already exists",
+                    dir.display()
+                )));
+            }
+        }
+        let scratch = tempfile::tempdir()?;
+        let made = scratch.path().join("ca");
+        banlieue_attestation_ca::AttestationCa::create(&made, name, None)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let node = |kind: Kind, data: Vec<u8>, mode: u32| Node {
+            kind,
+            data,
+            mode,
+            owner: owner.clone(),
+        };
+        s.fs.insert(
+            dir.to_path_buf(),
+            node(Kind::Dir, vec![], ATTESTATION_DIR_MODE),
+        );
+        for (file, mode) in [
+            (crate::attestation::CA_KEY_FILE, ATTESTATION_KEY_MODE),
+            (crate::attestation::CA_CERT_FILE, ATTESTATION_CERT_MODE),
+        ] {
+            let data = std::fs::read(made.join(file))?;
+            s.fs.insert(dir.join(file), node(Kind::File, data, mode));
+        }
+        Ok(())
+    }
+
+    /// As the real one: both files go (a symlink in either name is removed as
+    /// an entry, its target untouched), the directory stays.
+    fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        for file in [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CERT_FILE,
+        ] {
+            s.fs.remove(&dir.join(file));
+        }
         Ok(())
     }
 

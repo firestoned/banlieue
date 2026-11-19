@@ -4,7 +4,7 @@
 //! machine spec. A test that needs a different value overrides the field at
 //! its call site, so what makes it different stays visible there.
 
-use crate::host_config::{HostConfig, TpmSection};
+use crate::host_config::{AttestationSection, HostConfig, TpmSection};
 use banlieue_api::common::{IpamSpec, PowerState, ProviderReference};
 use banlieue_api::infrastructure::{
     ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachineSpec,
@@ -85,5 +85,17 @@ pub(crate) fn spec() -> CloudHypervisorMachineSpec {
         identity: None,
         move_in: None,
         move_out: None,
+    }
+}
+
+/// `config` opted in to the guest certificate signer (ADR-0146), as on a
+/// host the installer ran `--attestation` on.
+pub(crate) fn with_attestation(config: HostConfig) -> HostConfig {
+    HostConfig {
+        attestation: Some(AttestationSection {
+            ca_dir: "/var/lib/banlieue/attestation-ca".into(),
+            certificate_ttl_secs: 3600,
+        }),
+        ..config
     }
 }

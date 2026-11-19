@@ -852,7 +852,31 @@ mod tests {
         use Stage::*;
         assert_eq!(
             plan(&Options::default()),
-            vec![Preflight, Vmm, Host, Tpm, Polkit, Provider, Selftest]
+            vec![
+                Preflight,
+                Vmm,
+                Host,
+                Attestation,
+                Tpm,
+                Polkit,
+                Provider,
+                Selftest
+            ]
+        );
+        assert_eq!(
+            plan(&Options {
+                only: Some(Host),
+                ..Options::default()
+            }),
+            vec![Host, Attestation],
+            "--only host carries the attestation stage, like the section it writes"
+        );
+        assert_eq!(
+            plan(&Options {
+                only: Some(Attestation),
+                ..Options::default()
+            }),
+            vec![Attestation]
         );
         assert!(
             !plan(&Options {
@@ -1152,5 +1176,328 @@ mod tests {
         let slice = unit_text(&h, "banlieue-guests.slice");
         assert!(slice.contains("CPUQuota=4800%"), "{slice}");
         assert!(!slice.contains("AllowedCPUs"), "{slice}");
+    }
+
+    // ------------------------------------------------- attestation (ADR-0146)
+
+    const CA_DIR: &str = "/var/lib/banlieue/attestation-ca";
+    const CA_KEY: &str = "/var/lib/banlieue/attestation-ca/ca.key";
+    const CA_CRT: &str = "/var/lib/banlieue/attestation-ca/ca.crt";
+
+    fn attest_settings(h: &FakeHost, extra: &[&str]) -> Settings {
+        let mut a = host_args();
+        for pair in extra.chunks(2) {
+            match pair[0] {
+                "name" => a.attestation_ca_name = Some(pair[1].into()),
+                "ttl" => a.attestation_certificate_ttl = Some(pair[1].into()),
+                "on" => a.attestation = true,
+                "rotate" => a.rotate_attestation_ca = true,
+                other => panic!("{other}"),
+            }
+        }
+        resolve(&a, h).unwrap()
+    }
+
+    fn config_text(h: &FakeHost) -> String {
+        String::from_utf8(h.read(Path::new(HOST_CONFIG)).unwrap()).unwrap()
+    }
+
+    fn ca_crt(h: &FakeHost) -> Vec<u8> {
+        h.read(Path::new(CA_CRT)).unwrap()
+    }
+
+    fn force() -> Options {
+        Options {
+            force: true,
+            ..Options::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ca_is_created_as_the_provider_and_the_section_written() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["name", "bar", "ttl", "2h"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(
+            mode_owner(&h, CA_DIR),
+            (0o700, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(
+            mode_owner(&h, CA_KEY),
+            (0o600, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(
+            mode_owner(&h, CA_CRT),
+            (0o644, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+        let text = config_text(&h);
+        assert!(
+            text.contains(
+                "[attestation]\nca_dir = \"/var/lib/banlieue/attestation-ca\"\ncertificate_ttl_secs = 7200\n"
+            ),
+            "{text}"
+        );
+        let loaded = HostConfig::parse(&text).unwrap().attestation.unwrap();
+        assert_eq!(loaded.certificate_ttl_secs, 7200);
+        assert!(
+            count(&h, "(as banlieue) swtpm_setup") >= 1,
+            "the vTPM path is untouched"
+        );
+    }
+
+    /// Not opted in: no section, no directory.
+    #[tokio::test]
+    async fn a_host_that_did_not_opt_in_gets_no_section_and_no_ca() {
+        let h = fake_host();
+        install_all(&h, &settings(&h), &opts()).await.unwrap();
+        assert!(!config_text(&h).contains("[attestation]"));
+        assert!(!h.exists(Path::new(CA_DIR)));
+    }
+
+    #[tokio::test]
+    async fn a_rerun_is_a_no_op_and_keeps_the_ca() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["name", "bar"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        let (cert, key) = (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap());
+        let before = without_serial(h.snapshot());
+        let again = attest_settings(&h, &["name", "bar"]);
+        install_all(&h, &again, &opts()).await.unwrap();
+        assert_eq!(without_serial(h.snapshot()), before);
+        assert_eq!(
+            (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap()),
+            (cert, key)
+        );
+    }
+
+    /// The kept-config rule: with no flag, an existing section and CA stay.
+    #[tokio::test]
+    async fn an_existing_section_is_kept_when_not_asked_about_again() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["name", "bar", "ttl", "2h"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        let before = without_serial(h.snapshot());
+        install_all(&h, &settings(&h), &opts()).await.unwrap();
+        assert_eq!(without_serial(h.snapshot()), before);
+        assert!(config_text(&h).contains("certificate_ttl_secs = 7200"));
+    }
+
+    #[tokio::test]
+    async fn a_new_ttl_changes_the_section_and_not_the_ca() {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "bar"]), &opts())
+            .await
+            .unwrap();
+        let cert = ca_crt(&h);
+        install_all(&h, &attest_settings(&h, &["ttl", "30m"]), &opts())
+            .await
+            .unwrap();
+        assert!(config_text(&h).contains("certificate_ttl_secs = 1800"));
+        assert_eq!(ca_crt(&h), cert);
+    }
+
+    /// `--force` regenerates the host config and rotates the EK CA; it must
+    /// not touch the attestation CA, and the section survives.
+    #[tokio::test]
+    async fn force_does_not_rotate_the_attestation_ca() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["name", "bar", "ttl", "2h"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        let (cert, key) = (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap());
+        let fresh = crate::settings::resolve_fresh(&host_args(), &h).unwrap();
+        install_all(&h, &fresh, &force()).await.unwrap();
+        assert_eq!(
+            (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap()),
+            (cert, key)
+        );
+        assert!(config_text(&h).contains("certificate_ttl_secs = 7200"));
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+    }
+
+    #[tokio::test]
+    async fn rotation_makes_a_new_ca_under_a_new_name() {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "bar"]), &opts())
+            .await
+            .unwrap();
+        let (cert, key) = (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap());
+        let s = attest_settings(&h, &["rotate", "", "name", "bar-2"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar-2");
+        assert_ne!(ca_crt(&h), cert);
+        assert_ne!(h.read(Path::new(CA_KEY)).unwrap(), key);
+        assert_eq!(
+            mode_owner(&h, CA_KEY),
+            (0o600, "banlieue".into(), "banlieue".into())
+        );
+    }
+
+    /// A symlink planted in place of the old key makes the current CA
+    /// unreadable, so a rotation is refused before anything is removed or
+    /// written, and the link's target is left alone. (The unlinking itself,
+    /// `remove_attestation_ca`, is tested in `attestation_tests.rs` and in the
+    /// CA crate.)
+    #[tokio::test]
+    async fn rotation_is_refused_when_a_symlink_stands_in_place_of_the_old_key() {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "bar"]), &opts())
+            .await
+            .unwrap();
+        h.put_file("/var/lib/banlieue/victim", b"victim", Kind::File);
+        h.put_file(
+            CA_KEY,
+            b"",
+            Kind::Symlink(PathBuf::from("/var/lib/banlieue/victim")),
+        );
+        let mut a = host_args();
+        a.attestation_ca_name = Some("bar-2".into());
+        a.rotate_attestation_ca = true;
+        let err = resolve(&a, &h).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+        assert_eq!(
+            h.read(Path::new("/var/lib/banlieue/victim")).unwrap(),
+            b"victim"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_host_creates_the_ca_too() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["name", "bar"]);
+        let only = Options {
+            only: Some(Stage::Host),
+            ..Options::default()
+        };
+        install_all(&h, &s, &only).await.unwrap();
+        assert!(h.exists(Path::new(CA_CRT)));
+        assert!(config_text(&h).contains("[attestation]"));
+    }
+
+    #[tokio::test]
+    async fn only_attestation_needs_the_host_stage_first() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["name", "bar"]);
+        let only = Options {
+            only: Some(Stage::Attestation),
+            ..Options::default()
+        };
+        match install_all(&h, &s, &only).await {
+            Err(Error::Prerequisite { stage, missing }) => {
+                assert_eq!(stage, "attestation");
+                assert_eq!(missing, vec!["host".to_string()]);
+            }
+            other => panic!("{other:?}"),
+        }
+        install_all(&h, &s, &Options::default()).await.unwrap();
+        install_all(&h, &s, &only).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn dry_run_shows_the_plan_and_changes_nothing() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["name", "bar"]);
+        let before = h.snapshot();
+        let dry = DryRun::new(&h);
+        let o = Options {
+            dry_run: true,
+            ..Options::default()
+        };
+        install(&dry, &Canned::good(), &release(), &s, &o, &all_present)
+            .await
+            .unwrap();
+        assert_eq!(h.snapshot(), before);
+        assert!(h.commands().is_empty());
+        assert!(!h.exists(Path::new(CA_DIR)));
+    }
+
+    // preflight and status
+
+    async fn opted_in_host() -> FakeHost {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "bar"]), &opts())
+            .await
+            .unwrap();
+        h
+    }
+
+    #[tokio::test]
+    async fn preflight_passes_with_a_sound_ca_and_reports_it() {
+        let h = opted_in_host().await;
+        preflight(&h, &attest_settings(&h, &[])).unwrap();
+        let info = attestation_state(&h).unwrap().unwrap();
+        assert_eq!(info.name, "bar");
+        assert!(!info.not_after.is_empty());
+        assert!(attestation_status(&h).contains("bar, expires"));
+    }
+
+    fn refused(h: &FakeHost) -> String {
+        let Err(Error::Preflight(problems)) = preflight(h, &attest_settings(h, &[])) else {
+            panic!("preflight passed with a bad attestation CA");
+        };
+        problems.join("\n")
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_a_key_that_is_not_0600() {
+        let h = opted_in_host().await;
+        h.set_mode(Path::new(CA_KEY), 0o640).unwrap();
+        assert!(refused(&h).contains("0600"));
+        assert!(attestation_status(&h).starts_with("REFUSED"));
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_a_directory_open_to_group_or_world() {
+        let h = opted_in_host().await;
+        h.set_mode(Path::new(CA_DIR), 0o750).unwrap();
+        assert!(refused(&h).contains("group or world"));
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_a_key_not_owned_by_the_providers_user() {
+        let h = opted_in_host().await;
+        h.state
+            .lock()
+            .unwrap()
+            .fs
+            .get_mut(Path::new(CA_KEY))
+            .unwrap()
+            .owner = crate::ops::Owner::root();
+        let problems = refused(&h);
+        assert!(
+            problems.contains("key") && problems.contains("owned by root"),
+            "{problems}"
+        );
+    }
+
+    #[tokio::test]
+    async fn preflight_refuses_a_directory_not_owned_by_the_providers_user() {
+        let h = opted_in_host().await;
+        h.state
+            .lock()
+            .unwrap()
+            .fs
+            .get_mut(Path::new(CA_DIR))
+            .unwrap()
+            .owner = crate::ops::Owner::root();
+        assert!(refused(&h).contains("directory"));
+    }
+
+    #[tokio::test]
+    async fn status_reports_no_ca_before_opting_in() {
+        let h = fake_host();
+        install_all(&h, &settings(&h), &opts()).await.unwrap();
+        assert!(attestation_status(&h).starts_with("none"));
+        assert!(attestation_state(&h).is_none());
     }
 }

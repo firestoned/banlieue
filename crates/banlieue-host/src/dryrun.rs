@@ -71,6 +71,9 @@ impl Probe for DryRun<'_> {
     fn systemd_version(&self) -> Option<u32> {
         self.inner.systemd_version()
     }
+    fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String> {
+        self.inner.attestation_ca(dir)
+    }
 }
 
 impl Host for DryRun<'_> {
@@ -103,6 +106,22 @@ impl Host for DryRun<'_> {
     }
     fn remove(&self, path: &Path) -> io::Result<()> {
         say(format!("remove {}", path.display()));
+        Ok(())
+    }
+    fn create_attestation_ca(&self, dir: &Path, name: &str, owner: &Owner) -> io::Result<()> {
+        say(format!(
+            "create the attestation CA {name} in {} (owned by {}:{}; the key is never printed)",
+            dir.display(),
+            owner.user,
+            owner.group
+        ));
+        Ok(())
+    }
+    fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()> {
+        say(format!(
+            "remove the attestation CA key and certificate in {}",
+            dir.display()
+        ));
         Ok(())
     }
     fn run(&self, cmd: &Cmd) -> io::Result<String> {

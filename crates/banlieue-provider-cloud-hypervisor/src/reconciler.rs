@@ -21,6 +21,7 @@ use crate::host::HostOps;
 use crate::host_config::HostConfig;
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
 use crate::plan::{PlanError, UidLedger, plan_machine};
+use crate::provider::{HostCaHold, current_host_ca_hold};
 use banlieue_api::capi::{
     BOOTSTRAP_DATA_READY, bootstrap_reasons, holds_guest, retain_provider_conditions,
 };
@@ -221,6 +222,20 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
         return Ok(Action::await_change());
     }
 
+    // ADR-0146 Decision 4: an opted-in host with no readable hostCa creates
+    // no guest. Checked before the uid is allocated; a host that did not opt
+    // in costs no extra API call.
+    if holds_new_guest(previous)
+        && let Some(hold) = current_host_ca_hold(&ctx).await?
+    {
+        warn!(machine = %name, reason = hold.reason(), "host CA not asserted; holding the guest");
+        let st = host_ca_held_status(previous, &hold, generation);
+        patch_status(&api, &name, &st, &field_manager).await?;
+        // Nothing wakes this machine when the Provider gains its hostCa, so
+        // look again on the default cadence.
+        return Ok(requeue_default());
+    }
+
     // Record the guest uid before anything is created on the host for it.
     let Some(host_uid) = previous.and_then(|s| s.host_uid) else {
         // Every namespace this host serves: guest uids are one pool per host.
@@ -343,6 +358,32 @@ async fn finalize(
     // Nothing is left on the host for it, so its uid is free again.
     ctx.uids.release(uid);
     Ok(Action::await_change())
+}
+
+/// Whether a machine without a running guest must wait on the host CA hold
+/// (ADR-0146 Decision 4): everything that is not already `Ready=True`. A
+/// guest that is up is left alone; the hold stops guests being *created*.
+#[must_use]
+pub fn holds_new_guest(previous: Option<&CloudHypervisorMachineStatus>) -> bool {
+    !previous.is_some_and(|s| {
+        s.conditions
+            .iter()
+            .any(|c| c.type_ == "Ready" && c.status == "True")
+    })
+}
+
+/// The status a machine reports while the host CA hold is in force:
+/// `Ready=False` with the hold's reason, nothing provisioned and no
+/// attestation subject published.
+#[must_use]
+pub fn host_ca_held_status(
+    previous: Option<&CloudHypervisorMachineStatus>,
+    hold: &HostCaHold,
+    generation: i64,
+) -> CloudHypervisorMachineStatus {
+    let mut st = failure_status(previous, &hold.message(), hold.reason(), generation);
+    st.attestation_subject = None;
+    st
 }
 
 /// Held, and banlieue-controller has reported on the machine.

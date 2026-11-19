@@ -448,6 +448,16 @@ pub struct CloudHypervisorMachineStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub move_out: Option<ChMoveOutStatus>,
 
+    /// The exact certificate subject CN the host's signer sets for this
+    /// guest: this machine's `metadata.uid`, never a value from the guest
+    /// (ADR-0146, after ADR-0143 Decision 3). Public and carrying no
+    /// authorization; mirrored onto the bound claim so mediatore can compute
+    /// the node entry's parent before the guest boots. Set by the provider
+    /// only for a host that opted in to attestation; absent otherwise, and
+    /// when the host withdraws it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_subject: Option<String>,
+
     /// Standard Kubernetes conditions.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(extend(

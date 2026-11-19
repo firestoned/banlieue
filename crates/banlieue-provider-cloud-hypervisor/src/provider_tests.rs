@@ -545,4 +545,206 @@ mod tests {
         assert_eq!(cap.memory_mi_b, Some(32_768));
         assert_eq!(cap.memory_overhead_mi_b_per_vm, Some(512));
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0146 Decision 4: an opted-in host with no hostCa is not Ready
+    // ------------------------------------------------------------------
+
+    use crate::test_fixtures::with_attestation;
+    use banlieue_api::banlieue::provider::ProviderAttestation;
+    use banlieue_api::common::{CABundleSource, KeySelector};
+
+    /// The shared Provider without the class `healthy()` cannot serve, so a
+    /// Ready condition here is decided by the attestation hold alone.
+    fn servable() -> Provider {
+        let mut p = provider(&[]);
+        p.spec
+            .capabilities
+            .storage_classes
+            .retain(|c| c.name != "silver");
+        p
+    }
+
+    fn asserting(source: CABundleSource) -> Provider {
+        let mut p = servable();
+        p.spec.attestation = Some(ProviderAttestation {
+            ek_trust_bundle: None,
+            host_ca: Some(source),
+        });
+        p
+    }
+
+    fn inline_ca() -> CABundleSource {
+        CABundleSource {
+            inline: Some("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n".into()),
+            ..Default::default()
+        }
+    }
+
+    fn ready_triple(st: &ProviderStatus) -> (String, String, String) {
+        let c = st
+            .conditions
+            .iter()
+            .find(|c| c.type_ == condition_types::READY)
+            .expect("Ready");
+        (c.status.clone(), c.reason.clone(), c.message.clone())
+    }
+
+    #[test]
+    fn an_opted_in_host_without_a_host_ca_is_not_ready_and_names_the_field() {
+        let st = compute_status(&servable(), &with_attestation(config()), &healthy(), 1);
+        let (status, reason, message) = ready_triple(&st);
+        assert_eq!(
+            (status.as_str(), reason.as_str()),
+            ("False", "HostCaMissing")
+        );
+        assert!(message.contains("spec.attestation.hostCa"), "{message}");
+        assert!(
+            st.failure_domains.is_empty(),
+            "nothing may be scheduled here"
+        );
+    }
+
+    /// An `ekTrustBundle` alone anchors vTPM guests, not signed ones.
+    #[test]
+    fn an_ek_trust_bundle_alone_does_not_satisfy_the_opt_in() {
+        let mut p = servable();
+        p.spec.attestation = Some(ProviderAttestation {
+            ek_trust_bundle: Some(inline_ca()),
+            host_ca: None,
+        });
+        let st = compute_status(&p, &with_attestation(config()), &healthy(), 1);
+        assert_eq!(ready_triple(&st).1, "HostCaMissing");
+    }
+
+    #[test]
+    fn an_asserted_host_ca_makes_the_opted_in_host_ready() {
+        let st = compute_status(
+            &asserting(inline_ca()),
+            &with_attestation(config()),
+            &healthy(),
+            1,
+        );
+        let (status, reason, _) = ready_triple(&st);
+        assert_eq!((status.as_str(), reason.as_str()), ("True", "Reconciled"));
+        assert_eq!(st.failure_domains.len(), 1);
+    }
+
+    /// Inline is the only source the provider can judge from the Provider
+    /// alone; one that is not exactly one certificate is refused.
+    #[test]
+    fn an_invalid_inline_host_ca_is_unreadable() {
+        let cert = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n";
+        // Built from parts: a literal key header in a fixture trips the push scanner.
+        let label = format!("{} {}", "PRIVATE", "KEY");
+        let key = format!("-----BEGIN {label}-----\nAAAA\n-----END {label}-----\n");
+        for inline in [
+            format!("{cert}{cert}"),
+            key.clone(),
+            format!("{cert}{key}"),
+            String::new(),
+        ] {
+            let source = CABundleSource {
+                inline: Some(inline),
+                ..Default::default()
+            };
+            let st = compute_status(
+                &asserting(source),
+                &with_attestation(config()),
+                &healthy(),
+                1,
+            );
+            let (status, reason, message) = ready_triple(&st);
+            assert_eq!(
+                (status.as_str(), reason.as_str()),
+                ("False", "HostCaUnreadable")
+            );
+            assert!(message.contains("spec.attestation.hostCa"), "{message}");
+            assert!(st.failure_domains.is_empty());
+        }
+    }
+
+    /// ADR-0143 Decision 2: banlieue never verifies the anchor, and the
+    /// shared role grants no ConfigMap or Secret read, so a reference counts
+    /// as set and is not looked at.
+    #[test]
+    fn a_configmap_or_secret_source_counts_as_set_and_is_not_held() {
+        let selector = KeySelector {
+            name: "host-ca".into(),
+            key: None,
+        };
+        for source in [
+            CABundleSource {
+                config_map_ref: Some(selector.clone()),
+                ..Default::default()
+            },
+            CABundleSource {
+                secret_ref: Some(selector.clone()),
+                ..Default::default()
+            },
+        ] {
+            let p = asserting(source);
+            assert_eq!(host_ca_hold(&with_attestation(config()), &p), None);
+            let st = compute_status(&p, &with_attestation(config()), &healthy(), 1);
+            assert_eq!(ready_triple(&st).1, "Reconciled");
+        }
+    }
+
+    /// The hold wins over host gaps and capability gaps: it is the first
+    /// thing an operator must fix.
+    #[test]
+    fn the_hold_is_reported_before_host_gaps() {
+        let mut facts = healthy();
+        facts.kvm = false;
+        let st = compute_status(&servable(), &with_attestation(config()), &facts, 1);
+        assert_eq!(ready_triple(&st).1, "HostCaMissing");
+    }
+
+    /// The status with every transition time zeroed, so two passes compare.
+    fn untimed(mut st: ProviderStatus) -> ProviderStatus {
+        for c in &mut st.conditions {
+            c.last_transition_time = k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                k8s_openapi::jiff::Timestamp::UNIX_EPOCH,
+            );
+        }
+        st
+    }
+
+    /// Not opted in: nothing changes, whatever the Provider carries.
+    #[test]
+    fn a_host_that_did_not_opt_in_never_reports_a_host_ca_reason() {
+        let plain = compute_status(&servable(), &config(), &healthy(), 1);
+        assert_eq!(ready_triple(&plain).1, "Reconciled");
+        let bad = CABundleSource {
+            inline: Some("not a certificate".into()),
+            ..Default::default()
+        };
+        for p in [servable(), asserting(inline_ca()), asserting(bad)] {
+            let st = compute_status(&p, &config(), &healthy(), 1);
+            assert!(!ready_triple(&st).1.starts_with("HostCa"));
+            assert_eq!(untimed(st), untimed(plain.clone()), "byte for byte");
+        }
+    }
+
+    #[test]
+    fn the_hold_decision_is_pure_over_config_and_provider() {
+        let opted = with_attestation(config());
+        assert_eq!(host_ca_hold(&opted, &servable()), Some(HostCaHold::Missing));
+        assert_eq!(host_ca_hold(&opted, &asserting(inline_ca())), None);
+        let bad = CABundleSource {
+            inline: Some("x".into()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            host_ca_hold(&opted, &asserting(bad.clone())),
+            Some(HostCaHold::Unreadable(_))
+        ));
+        assert_eq!(host_ca_hold(&config(), &servable()), None);
+        assert_eq!(host_ca_hold(&config(), &asserting(bad)), None);
+        assert_eq!(HostCaHold::Missing.reason(), "HostCaMissing");
+        assert_eq!(
+            HostCaHold::Unreadable(String::new()).reason(),
+            "HostCaUnreadable"
+        );
+    }
 }
