@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-19 14:00] - Roadmaps 22 to 25: public-cloud providers (Azure, EC2, Lambda MicroVMs)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/22-public-cloud-foundation.md`: new roadmap for what the cloud
+  providers share: provider shape (one account or subscription per region, zones as
+  failure domains), workload identity federation, explicit `VMClass` to instance-size
+  mapping, quota as capacity, ownership tags and an orphan sweep, the `GuestReady`
+  transport, and publishing `VMImage`s into each cloud (AMI, Azure Compute Gallery,
+  Lambda MicroVM image) with the source digest recorded per Provider.
+- `.github/community/23-azure-provider.md`, `24-ec2-provider.md`,
+  `25-lambda-microvms-provider.md`: one roadmap per provider. Lambda MicroVMs opens
+  with a go/no-go ADR because every MicroVM restores one snapshot (ADR-0052), has no
+  vTPM, and is reached through a minted token (ADR-0097).
+- `ROADMAPS.md`, `.github/community/README.md`: rows, reading order and dependency
+  graph for 22 to 25. ADR-0145 to ADR-0156 reserved across the four.
+
+### Why
+Erick asked for an Azure provider, an EC2 provider and a Lambda MicroVMs provider,
+with full `VMImage` integration so images built by banlieue can be pushed into each
+cloud.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois
