@@ -1,5 +1,169 @@
 # Changelog
 
+## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/architecture/calm/architecture.json`: models what ADR-0137 to ADR-0143
+  decide, every addition marked `DESIGNED, NOT IMPLEMENTED (ADR-NNNN)` and no new
+  control carrying an `evidence` path, because none of it exists in `crates/` or
+  `deploy/`. Nodes: `service-provider-firecracker`, `service-firecracker-guest`,
+  `network-firecracker-host`, `service-banlieue-host-firecracker-installer`,
+  `service-provider-host-layer`, `data-asset-firecracker-machine-cr`,
+  `data-asset-microvm-image-artifact`, `data-asset-firecracker-image-cache`,
+  `data-asset-firecracker-attestation-ca`, `system-banlieue-slice`,
+  `system-banlieue-guests-slice`, `system-banlieue-firecracker-slice`. Seven ADRs
+  added to `adrs`. Relationships, controls and two flows
+  (`flow-create-virtualmachine-firecracker`, `flow-import-vmimage-firecracker`)
+  as listed in the file.
+- Existing nodes amended: `network-cloud-hypervisor-host` no longer says a host is
+  one failure domain by itself (ADR-0138: a host may also be a Firecracker host,
+  separate Providers, one failure domain reported by both); the Cloud Hypervisor
+  provider, `data-asset-vmimage-cr` (new `OciArtifact` source kind),
+  `data-asset-provider-cr` (`spec.attestation.hostCa`),
+  `data-asset-infra-machine-cr`, `service-in-guest-agent` and the
+  `vm-resource-accounting` control each gain a `DESIGNED, NOT IMPLEMENTED` sentence;
+  `rel-kube-api-stores-crs` lists the new CR.
+- `docs/src/architecture/system.md`, `docs/src/architecture/flows.md`: regenerated
+  by `make calm-diagrams`.
+- `.github/community/20-firecracker-provider.md`: records the real ADRs (0137,
+  0138, 0140 to 0143, with 0139 as the installer prerequisite) and says the
+  reserved ADR-0116 to ADR-0122 were not used; phase 0 items ticked only where an
+  ADR records the measurement (host support, boot, Kairos, config file vs API,
+  stop) and annotated where only partly measured (jailer, cgroups, network, vsock,
+  overhead); "one VMM per host", the per-member disk copy, the join-token idea, the
+  imagebuilder path and the jailer-based delete are marked superseded with a
+  pointer; phase C is marked superseded for v1 by ADR-0140 (no API socket); the
+  slice and unit names follow ADR-0138 and ADR-0140.
+- `ROADMAPS.md`: roadmap 20 row says design decided and no code exists (still not
+  started).
+
+### Why
+ADD step 2 (CALM) and step 4 (roadmap artefacts) for the seven Firecracker ADRs.
+The threat-model pass is NOT done: ADD does it after implementation, and each of
+ADR-0137 to ADR-0143 says it is due then. `docs/src/security/threat-model.md` and
+its header stamp are untouched on purpose.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (`make calm-validate`: no issues; `make calm-diagrams`
+      regenerated)
+
+## [2026-11-19 12:00] - banlieue-oci: multi-layer microvm artifact (ADR-0142 Decisions 1, 3, 5, 6, 7)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-oci/src/microvm.rs` (+ `microvm_tests.rs`): the one implementation of the
+  microvm image format. Constants (artifactType, config and layer media types, the
+  `io.banlieue.layer.size` annotation), a typed `MicrovmConfig` (schema 1, `deny_unknown_fields`),
+  `build_manifest` and a strict `parse_manifest` (fixed order kernel, optional initramfs, rootfs),
+  `refuse_platform_args` (a pure function), `Client::push_microvm` (blobs by digest, gzip for kernel
+  and initramfs, rootfs as built) and `Client::pull_microvm` (into `images/sha256-<manifest hex>/`
+  through a temporary directory and one atomic rename; every digest and size verified; gzip layers
+  must decompress to exactly the annotated length; a caller-supplied per-layer ceiling with no
+  default; the architecture must equal the host's).
+- Tests run against an in-memory registry on loopback; each Decision 6 fail-closed condition has
+  its own test and asserts nothing is left in the image area.
+
+### Changed
+- `crates/banlieue-oci/src/client.rs`, `manifest.rs`: a few helpers became `pub(crate)` so the new
+  module reuses them. The single-layer disk API and its tests are unchanged.
+- `crates/banlieue-oci/src/lib.rs`: `pub mod microvm`.
+
+### Why
+ADR-0142 Decision 7: the host's pull and a later push subcommand must share one implementation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+No new dependency. No CLI subcommand yet. ADR-0142 is not fully implemented, so no threat model pass.
+
+## [2026-11-19 12:00] - Firecracker attestation signer: new crate banlieue-provider-firecracker, `attest` module
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-firecracker` (new workspace member), holding only the
+  `attest` module for now (ADR-0143 Decisions 1, 4, 5 and 6; mediatore ADR-0049),
+  pure Rust, `#![deny(unsafe_code)]`, no subprocess:
+  - `name`: CA name and subject validation (letters, digits, `.`, `-`, `_`; non-empty;
+    at most 63 bytes; `.` and `..` refused as dot segments). Refused, never replaced.
+  - `ca`: `Ca::create` (EC P-256, self-signed, CN = the name, key `0600`, certificate
+    `0644`, directory `0700`, never overwrites, removes a half-written key) and
+    `Ca::load` (refuses a directory that is not exactly `0700`, a key that is not
+    exactly `0600`, a symlink, and a key that does not match the certificate).
+  - `csr`: `parse_csr` (at most 4096 bytes, exactly one PEM request, EC P-256 only, the
+    request's own signature verified) returns only the public key.
+  - `issue`: leaf with subject CN set by the signer, `basicConstraints` CA:FALSE
+    (critical), `keyUsage` digitalSignature (critical), no SAN, no EKU, issuer = the
+    CA's subject, a random positive 128-bit serial from the OS RNG, validity
+    bounded to 5 minutes .. 7 days, `notBefore` backdated 5 minutes for guest clock skew.
+  - `limiter`: sliding-window per-guest limiter, injectable `Clock`.
+  - `serve`: `serve_one` (one request per connection, at most 4096 bytes read, one PEM
+    certificate back, close; a refusal closes with no reply) and `Counters`
+    (issued, refused_size, refused_key_type, refused_signature, refused_rate,
+    refused_parse, plus refused_timeout). No CSR or certificate body is logged or returned.
+- Root `Cargo.toml`: the crate is a workspace member. `Cargo.lock` gains only the
+  workspace package; no new external crate enters the lock.
+
+### Dependencies (reason, maintenance, licence)
+- `rcgen` 0.14 (`ring`, `pem`, `x509-parser` features; already in the lockfile as a
+  `banlieue-oci` dev-dependency): the one X.509 set chosen, over the RustCrypto set
+  (`p256` + `ecdsa` + `pkcs8` + `x509-cert` + `der` + `spki`) because it issues a CA, a
+  leaf from a bare SPKI, and PEM with one crate on `ring` (already compiled for rustls),
+  adding no crate to the build and no second elliptic-curve stack. rustls/rcgen last
+  commit 2026-11-16. Licence MIT OR Apache-2.0.
+- `x509-parser` 0.18 with `verify` (workspace pin; already used by `banlieue-host`):
+  reads the CSR with distinct failure reasons so each outcome has its own counter, and
+  verifies the CSR's signature. Tests use it as the independent verifier of every
+  issued certificate. Licence MIT OR Apache-2.0.
+- `time` 0.3 (in the lock through rcgen): rcgen's validity type. time-rs/time last
+  commit 2026-10-16. Licence MIT OR Apache-2.0.
+- `getrandom` (workspace pin), `thiserror`, `tokio` (`io-util`, `time`), and dev-only
+  `tempfile`, `base64`, tokio `test-util`: existing workspace pins.
+- `cargo-deny` is not installed on the build host, so it was not run; the licences
+  above were read from each crate's metadata.
+
+### Why
+ADR-0143: a Firecracker guest has no vTPM, so it attests with SPIRE's `x509pop` and a
+certificate its host signs for the guest's own key. This is the host-side signer, built
+first and alone so the provider can later listen on the per-guest vsock socket and call
+`serve_one`. Wiring (listener, install stage, host config, CRD fields) is not part of this entry.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-19 19:00] - Offline CEL harnesses for the two Provider attestation admission policies
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/test-provider-ektrustbundle-policy.py` and `make ektrustbundle-policy-test`: 11 fixtures
+  evaluated as CEL with cel-python, an evaluation error counting as a denial (what `failurePolicy: Fail`
+  does). Includes the hostCa-only Provider that an attestation-block guard would deny. It passes against
+  the policy on main and fails 2 of 11 against the earlier guard, so it is a regression test.
+- `scripts/test-provider-hostca-policy.py` and `make hostca-policy-test`: 8 fixtures for the
+  exactly-one-source rule. `--no-policy` passes 5 of 8, so the 3 rejection cases bite.
+
+### Why
+Both policies carried a comment saying they could not be run offline. They can. A stricter hostCa policy
+(one certificate, no private key, in CEL) was written and verified offline on branch
+`feat/firecracker-hostca-admission` but not taken: main keeps those two rules in
+`ProviderAttestation::validate`.
+
+### Impact
+- [ ] Documentation only (tests and Makefile targets)
+
 ## [2026-11-19 18:00] - A prerelease gets release notes
 
 **Author:** Erick Bourgeois

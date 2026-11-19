@@ -340,6 +340,43 @@ flowchart TD
 <sub>Source: flow `flow-assign-pci-device-cloud-hypervisor` in `architecture.json`.</sub>
 
 
+## Create a VirtualMachine on a Firecracker host, from request to GuestReady and attested
+
+DESIGNED, NOT IMPLEMENTED (ADR-0137, ADR-0140, ADR-0142, ADR-0143). The back half runs on a KVM host with no vTPM: identity comes from a certificate the host signs for the guest's own key, not from an endorsement key.
+
+```mermaid
+flowchart TD
+    t1["1. VM consumer applies a VirtualMachine whose placement selects a firecracker Provider; a request for a vTPM or hotplug is refused at admission."]
+    t2["2. banlieue-controller schedules it onto the host's failure domain, against the capacity of banlieue-firecracker.slice, and applies a FirecrackerMachine."]
+    t3["3. The host's provider sees the machine, records a guest uid on status before any host work and publishes status.attestationSubject, the machine's metadata.uid, so mediatore can compute the node entry's parent before the guest boots."]
+    t4["4. The provider prepares the tap and the uid-owned boot configuration, composes the kernel command line (platform arguments, then the image's, ip= for the static address), starts banlieue-firecracker@<uid>.service and opens its per-guest vsock listeners."]
+    t5["5. The VMM boots the cached kernel and initramfs over the shared read-only root, with a RAM overlay for writes."]
+    t6["6. The guest reports readiness on port 1024; the provider publishes GuestReady and the static address, and banlieue-controller mirrors it onto the VirtualMachine."]
+    t7["7. The guest makes its own key and sends a CSR on port 1025; the signer takes only the public key and answers with one short-lived certificate whose subject is attestationSubject."]
+    t8["8. The in-guest SPIRE agent attests with x509pop against the SPIRE server, which trusts the host CA the administrator asserted in Provider.spec.attestation.hostCa; the agent ID is x509pop/<issuer CN>/<attestationSubject>."]
+    t1 --> t2 --> t3 --> t4 --> t5 --> t6 --> t7 --> t8
+```
+
+<sub>Source: flow `flow-create-virtualmachine-firecracker` in `architecture.json`.</sub>
+
+
+## Pull a microvm image into a Firecracker host&#x27;s cache
+
+DESIGNED, NOT IMPLEMENTED (ADR-0142). The image is the consumer's own build, pushed to a registry by the consumer's pipeline; each host pulls it by digest and verifies it before it becomes visible.
+
+```mermaid
+flowchart TD
+    t1["1. A VMImage with kind OciArtifact and ref <repository>@sha256:<manifest digest> is applied for providerClass firecracker."]
+    t2["2. The host provider's VMImage watch fires; it checks the reference against its host config's pinned repository and starts the pull unit over D-Bus."]
+    t3["3. The pull unit fetches the manifest and the kernel, initramfs and root filesystem layers by digest and refuses the image on any mismatch, unknown or out-of-order layer, wrong architecture, length disagreement, over-ceiling layer, or a cmdline that sets a platform argument."]
+    t4["4. The decompressed, verified files are written to a temporary directory and renamed to images/sha256-<hex>/ only when every layer checked out."]
+    t5["5. The provider publishes its perProvider row with the resolved manifest digest, or ImportFailed and the reason, and the unit is reset so the next reconcile retries."]
+    t1 --> t2 --> t3 --> t4 --> t5
+```
+
+<sub>Source: flow `flow-import-vmimage-firecracker` in `architecture.json`.</sub>
+
+
 ## A Cloud Hypervisor guest attests with a certificate its host signs (ADR-0146, proposed)
 
 PROPOSED (ADR-0146), not yet implemented. The x509pop alternative to the vTPM path for a guest on a shared host, extending ADR-0143's Firecracker design to Cloud Hypervisor. The signing CA is banlieue's own, owned by the provider alone, and asserted by the administrator on the Provider. The certificate subject is the CloudHypervisorMachine's metadata.uid, published as status.attestationSubject and mirrored machine to VirtualMachine to claim so mediatore can compute the node entry's parent. The guest-side helper is mediatore's (ADR-0049), not decided here.

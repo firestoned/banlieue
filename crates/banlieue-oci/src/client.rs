@@ -45,7 +45,7 @@ use crate::sparse::SparseWriter;
 /// How much of an error body to keep for the message.
 const ERROR_BODY_MAX: usize = 512;
 /// Read buffer for hashing and compressing.
-const IO_BUF: usize = 1024 * 1024;
+pub(crate) const IO_BUF: usize = 1024 * 1024;
 /// Manifests are small; anything bigger is not ours.
 const MANIFEST_MAX: usize = 4 * 1024 * 1024;
 /// Suffix of in-progress files.
@@ -104,7 +104,7 @@ impl Client {
         }
     }
 
-    fn base(&self, r: &Reference) -> String {
+    pub(crate) fn base(&self, r: &Reference) -> String {
         let scheme = if self.plain_http { "http" } else { "https" };
         format!("{scheme}://{}/v2/{}", r.registry, r.repository)
     }
@@ -171,7 +171,7 @@ impl Client {
     /// Send a request built by `build`, answering one auth challenge.
     /// `build` is called again for the retry, so a streamed body is
     /// re-created rather than replayed.
-    async fn send<F>(&self, scope: &str, build: F) -> Result<Response>
+    pub(crate) async fn send<F>(&self, scope: &str, build: F) -> Result<Response>
     where
         F: Fn(&reqwest::Client) -> Result<RequestBuilder>,
     {
@@ -203,7 +203,13 @@ impl Client {
     }
 
     /// Upload one blob (`len` bytes from `open`) unless the registry has it.
-    async fn put_blob<O>(&self, r: &Reference, digest: &str, len: u64, open: O) -> Result<()>
+    pub(crate) async fn put_blob<O>(
+        &self,
+        r: &Reference,
+        digest: &str,
+        len: u64,
+        open: O,
+    ) -> Result<()>
     where
         O: Fn() -> Result<reqwest::Body>,
     {
@@ -451,7 +457,7 @@ fn percent_encode(v: &str) -> String {
 }
 
 /// Fail on a non-success status, keeping the start of the body.
-async fn check(resp: Response, url: &str) -> Result<Response> {
+pub(crate) async fn check(resp: Response, url: &str) -> Result<Response> {
     if resp.status().is_success() {
         return Ok(resp);
     }
@@ -479,7 +485,7 @@ fn with_suffix(p: &Path, suffix: &str) -> PathBuf {
 ///
 /// # Errors
 /// The OS error from creating the file.
-fn compressed_copy_in(dir: &Path, p: &Path) -> Result<tempfile::NamedTempFile> {
+pub(crate) fn compressed_copy_in(dir: &Path, p: &Path) -> Result<tempfile::NamedTempFile> {
     let name = p
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -491,7 +497,7 @@ fn compressed_copy_in(dir: &Path, p: &Path) -> Result<tempfile::NamedTempFile> {
 }
 
 /// Gzip `src` into `out`, returning the digest and size of what was written.
-fn gzip_and_hash(src: &Path, out: File) -> Result<(String, u64)> {
+pub(crate) fn gzip_and_hash(src: &Path, out: File) -> Result<(String, u64)> {
     struct Hashing<W: Write> {
         inner: W,
         hasher: Sha256,
