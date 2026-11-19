@@ -8,7 +8,6 @@
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
-    use std::io::Write as _;
     use std::os::unix::fs::PermissionsExt as _;
     use std::sync::{Arc, Mutex};
 
