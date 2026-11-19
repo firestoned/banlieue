@@ -1,5 +1,63 @@
 # Changelog
 
+## [2026-11-19 12:00] - Firecracker attestation signer: new crate banlieue-provider-firecracker, `attest` module
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-firecracker` (new workspace member), holding only the
+  `attest` module for now (ADR-0143 Decisions 1, 4, 5 and 6; mediatore ADR-0049),
+  pure Rust, `#![deny(unsafe_code)]`, no subprocess:
+  - `name`: CA name and subject validation (letters, digits, `.`, `-`, `_`; non-empty;
+    at most 63 bytes; `.` and `..` refused as dot segments). Refused, never replaced.
+  - `ca`: `Ca::create` (EC P-256, self-signed, CN = the name, key `0600`, certificate
+    `0644`, directory `0700`, never overwrites, removes a half-written key) and
+    `Ca::load` (refuses a directory that is not exactly `0700`, a key that is not
+    exactly `0600`, a symlink, and a key that does not match the certificate).
+  - `csr`: `parse_csr` (at most 4096 bytes, exactly one PEM request, EC P-256 only, the
+    request's own signature verified) returns only the public key.
+  - `issue`: leaf with subject CN set by the signer, `basicConstraints` CA:FALSE
+    (critical), `keyUsage` digitalSignature (critical), no SAN, no EKU, issuer = the
+    CA's subject, a random positive 128-bit serial from the OS RNG, validity
+    bounded to 5 minutes .. 7 days, `notBefore` backdated 5 minutes for guest clock skew.
+  - `limiter`: sliding-window per-guest limiter, injectable `Clock`.
+  - `serve`: `serve_one` (one request per connection, at most 4096 bytes read, one PEM
+    certificate back, close; a refusal closes with no reply) and `Counters`
+    (issued, refused_size, refused_key_type, refused_signature, refused_rate,
+    refused_parse, plus refused_timeout). No CSR or certificate body is logged or returned.
+- Root `Cargo.toml`: the crate is a workspace member. `Cargo.lock` gains only the
+  workspace package; no new external crate enters the lock.
+
+### Dependencies (reason, maintenance, licence)
+- `rcgen` 0.14 (`ring`, `pem`, `x509-parser` features; already in the lockfile as a
+  `banlieue-oci` dev-dependency): the one X.509 set chosen, over the RustCrypto set
+  (`p256` + `ecdsa` + `pkcs8` + `x509-cert` + `der` + `spki`) because it issues a CA, a
+  leaf from a bare SPKI, and PEM with one crate on `ring` (already compiled for rustls),
+  adding no crate to the build and no second elliptic-curve stack. rustls/rcgen last
+  commit 2026-11-16. Licence MIT OR Apache-2.0.
+- `x509-parser` 0.18 with `verify` (workspace pin; already used by `banlieue-host`):
+  reads the CSR with distinct failure reasons so each outcome has its own counter, and
+  verifies the CSR's signature. Tests use it as the independent verifier of every
+  issued certificate. Licence MIT OR Apache-2.0.
+- `time` 0.3 (in the lock through rcgen): rcgen's validity type. time-rs/time last
+  commit 2026-10-16. Licence MIT OR Apache-2.0.
+- `getrandom` (workspace pin), `thiserror`, `tokio` (`io-util`, `time`), and dev-only
+  `tempfile`, `base64`, tokio `test-util`: existing workspace pins.
+- `cargo-deny` is not installed on the build host, so it was not run; the licences
+  above were read from each crate's metadata.
+
+### Why
+ADR-0143: a Firecracker guest has no vTPM, so it attests with SPIRE's `x509pop` and a
+certificate its host signs for the guest's own key. This is the host-side signer, built
+first and alone so the provider can later listen on the per-guest vsock socket and call
+`serve_one`. Wiring (listener, install stage, host config, CRD fields) is not part of this entry.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois

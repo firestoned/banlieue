@@ -12,6 +12,7 @@ members = [
     "crates/banlieue-libvirt",
     "crates/banlieue-operator",
     "crates/banlieue-provider-cloud-hypervisor",
+    "crates/banlieue-provider-firecracker",
     "crates/banlieue-provider-libvirt",
     "crates/banlieue-provider-proxmox",
     "crates/banlieue-provider-sdk",
