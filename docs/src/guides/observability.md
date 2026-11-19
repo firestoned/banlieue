@@ -21,6 +21,7 @@ a non-zero status instead of running unobservable.
 | `banlieue_reconcile_duration_seconds` | histogram | `controller` | Wall time of one reconcile |
 | `banlieue_reconcile_errors_total` | counter | `controller`, `kind` | Reconciles that returned an error. `kind` is the error's variant name (`Kube`, `Missing`, `Vsphere`, `Libvirt`, `Proxmox`, `Vmm`, ...) |
 | `banlieue_leader` | gauge | `role` | `1` while this process holds its lease (or runs with `--no-leader-elect`), else `0` |
+| `banlieue_audit_unreconciled_objects` | gauge | `controller`, `reason` | Objects that exist in the API but that an audited controller has not reconciled past a 120 s grace ([ADR-0145](https://github.com/firestoned/banlieue/blob/main/docs/adr/0145-controllers-audit-their-own-progress-and-fail-liveness-when-objects-go-unreconciled.md)). `reason` is `missing_from_store` (the controller's cache does not have the object) or `never_reconciled` (it is cached but the controller was never invoked for it). Only the `VirtualMachine` controller is audited today. Alert on it being above `0` for more than a few minutes |
 | `banlieue_virtualmachines` | gauge | `phase` | `VirtualMachine`s per phase. Controller only |
 | `banlieue_provider_failure_domains` | gauge | `provider`, `kind` | Failure domains a `Provider` reports in its status; `kind` is its ProviderClass. Controller only |
 | `banlieue_provider_heartbeat` | gauge | `provider`, `kind`, `state` | `1` for the heartbeat the operator recorded for a `Provider` (`Alive`, `Stale`, `Absent`), `0` for the other two; no series until one is recorded (ADR-0102). Controller only |
@@ -239,7 +240,7 @@ too: with the operator down, heartbeats stop being re-evaluated.
 
 | Request | Answer |
 | --- | --- |
-| `GET /livez` | `200 ok` while the process can answer at all |
+| `GET /livez` | `200 ok` while the process can answer at all and no audited controller is stale; `503 stale` otherwise |
 | `GET /readyz` | `200 leader` or `200 standby` when ready; `503 starting` or `503 unreachable` when not |
 | any other path or method | `404` |
 | a malformed request line, or one over 1 KiB | `400`, connection closed |
@@ -257,6 +258,27 @@ too: with the operator down, heartbeats stop being re-evaluated.
 - **`unreachable`**: a standby whose last successful lease read is older than
   one lease duration. It keeps retrying; it drops out of Service endpoints
   until it reaches the API server again.
+
+### When `/livez` says `stale` (ADR-0145)
+
+The `VirtualMachine` controller audits itself. Once a minute, after its first three minutes, it
+lists the VMs from the API (metadata only) and checks that each one older than two minutes is in
+its own cache and has been handed to its reconcile at least once. VMs in a namespace the
+controller does not serve are ignored, and a reconcile that returns an error still counts as
+handed over, so a VM that fails to provision never trips it.
+
+If any VM fails that check on every pass for five minutes, `/livez` answers `503 stale` and the
+kubelet restarts the pod (the default probe fails after three 30 s checks). The pod's log then
+holds an `ERROR` that names up to 20 objects and gives the counts of VMs in the API, in the
+cache and in the ledger, and the age of the oldest. Before that, every bad pass logs a `WARN`
+with the same fields, and `banlieue_audit_unreconciled_objects` shows the count.
+
+- `missing_from_store`: the object exists but the controller's cache never received it, so the
+  watch is not delivering. Nothing downstream can act on it.
+- `never_reconciled`: the controller has the object but its reconcile was never invoked for it.
+
+`/readyz` is unaffected: a stale controller is restarted, not taken out of its Service. A
+deployment with no liveness probe gets the metric and the log lines but no restart.
 
 ### Why a standby is Ready
 

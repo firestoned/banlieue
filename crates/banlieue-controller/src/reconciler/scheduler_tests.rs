@@ -1065,6 +1065,135 @@ mod tests {
         assert!(sp.scheduled_at.is_some());
     }
 
+    // --- to_scheduled_placement_keeping: scheduledAt is when a decision was
+    // made, so an unchanged decision must not be re-stamped. The reconciler
+    // calls this on every pass; a fresh timestamp each time made every VM a
+    // write per reconcile, and each write woke the next reconcile. ---------
+
+    fn time(s: &str) -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(s.parse().expect("an RFC 3339 time"))
+    }
+
+    fn a_decision() -> Decision {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = gold_prod_class();
+        let img = image_ready_on(&["vc1"]);
+        let p = gold_prod_provider("vc1");
+        schedule(&v, &cls, &img, &[p], &[], &[]).unwrap()
+    }
+
+    #[test]
+    fn an_unchanged_placement_keeps_the_time_it_was_decided() {
+        let d = a_decision();
+        let decided = time("2026-11-19T10:00:00Z");
+        let previous = d.to_scheduled_placement(decided.clone());
+
+        let kept = d.to_scheduled_placement_keeping(Some(&previous), time("2026-11-19T18:00:00Z"));
+
+        assert_eq!(kept.scheduled_at, Some(decided));
+        assert_eq!(
+            kept, previous,
+            "the whole placement must be byte for byte the same"
+        );
+    }
+
+    #[test]
+    fn a_first_placement_is_stamped_now() {
+        let d = a_decision();
+        let now = time("2026-11-19T18:00:00Z");
+
+        let placed = d.to_scheduled_placement_keeping(None, now.clone());
+
+        assert_eq!(placed.scheduled_at, Some(now));
+    }
+
+    #[test]
+    fn a_previous_placement_with_no_recorded_time_is_stamped_once() {
+        // A status written before the field existed has no time: fill it in once, then keep it.
+        let d = a_decision();
+        let mut previous = d.to_scheduled_placement(time("2026-11-19T10:00:00Z"));
+        previous.scheduled_at = None;
+        let now = time("2026-11-19T18:00:00Z");
+
+        let placed = d.to_scheduled_placement_keeping(Some(&previous), now.clone());
+
+        assert_eq!(placed.scheduled_at, Some(now));
+    }
+
+    #[test]
+    fn a_different_provider_is_a_new_decision_stamped_now() {
+        let d = a_decision();
+        let previous = d.to_scheduled_placement(time("2026-11-19T10:00:00Z"));
+        let mut moved = d.clone();
+        moved.provider_name = "vc2".into();
+        let now = time("2026-11-19T18:00:00Z");
+
+        let placed = moved.to_scheduled_placement_keeping(Some(&previous), now.clone());
+
+        assert_eq!(placed.provider_name, "vc2");
+        assert_eq!(placed.scheduled_at, Some(now));
+    }
+
+    #[test]
+    fn a_different_failure_domain_is_a_new_decision_stamped_now() {
+        let d = a_decision();
+        let previous = d.to_scheduled_placement(time("2026-11-19T10:00:00Z"));
+        let mut moved = d.clone();
+        moved.failure_domain_name = "fd-b".into();
+        let now = time("2026-11-19T18:00:00Z");
+
+        let placed = moved.to_scheduled_placement_keeping(Some(&previous), now.clone());
+
+        assert_eq!(placed.scheduled_at, Some(now));
+    }
+
+    #[test]
+    fn a_different_resolved_storage_or_network_is_a_new_decision_stamped_now() {
+        let d = a_decision();
+        let previous = d.to_scheduled_placement(time("2026-11-19T10:00:00Z"));
+        let now = time("2026-11-19T18:00:00Z");
+
+        let mut other_storage = d.clone();
+        other_storage.resolved_storage[0].backend_id = "ds-2".into();
+        assert_eq!(
+            other_storage
+                .to_scheduled_placement_keeping(Some(&previous), now.clone())
+                .scheduled_at,
+            Some(now.clone())
+        );
+
+        let mut other_network = d.clone();
+        other_network.resolved_networks[0].backend_id = "pg-2".into();
+        assert_eq!(
+            other_network
+                .to_scheduled_placement_keeping(Some(&previous), now.clone())
+                .scheduled_at,
+            Some(now)
+        );
+    }
+
+    #[test]
+    fn repeating_the_same_decision_is_a_fixed_point_so_a_reconcile_writes_nothing_new() {
+        // The property that stops the write loop: feed each result back in as the next
+        // pass's previous placement, with a later clock each time, and nothing changes.
+        let d = a_decision();
+        let first = d.to_scheduled_placement_keeping(None, time("2026-11-19T10:00:00Z"));
+
+        let mut current = first.clone();
+        for later in [
+            "2026-11-19T10:00:04Z",
+            "2026-11-19T10:00:08Z",
+            "2026-11-19T11:30:00Z",
+            "2026-11-20T00:00:00Z",
+        ] {
+            current = d.to_scheduled_placement_keeping(Some(&current), time(later));
+            assert_eq!(
+                current, first,
+                "pass at {later} re-stamped an unchanged decision"
+            );
+        }
+    }
+
     // --- Provider liveness (ADR-0102) --------------------------------------
 
     fn with_heartbeat(mut p: Provider, heartbeat: banlieue_api::banlieue::Heartbeat) -> Provider {

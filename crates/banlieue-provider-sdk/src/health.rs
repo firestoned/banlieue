@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Path-aware liveness and readiness endpoints (ADR-0093).
 //!
-//! - `GET /livez` is `200` while the process can answer at all.
+//! - `GET /livez` is `200` while the process can answer at all, and `503` with the
+//!   body `stale` while an audited controller has gone unreconciled for the stale
+//!   threshold (ADR-0145), so the kubelet restarts the pod.
 //! - `GET /readyz` is `200` when the role can do its job, or could take over
 //!   from the replica that does, and `503` otherwise. The one-word body says
 //!   which: `leader`, `standby`, `starting` or `unreachable`.
@@ -15,6 +17,7 @@
 //! shared [`Readiness`]; [`evaluate`] turns a snapshot of it into a
 //! [`ReadyState`] as a pure function of the snapshot and the current time.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -32,8 +35,22 @@ pub const READYZ_PATH: &str = "/readyz";
 /// Body of a `200` on [`LIVEZ_PATH`].
 const LIVE_BODY: &str = "ok";
 
+/// Body of a `503` on [`LIVEZ_PATH`]. It names no controller and no object: those go to
+/// the log, where the audit writes them.
+const STALE_BODY: &str = "stale";
+
 /// Name used for the health listener in logs and errors.
 const HEALTH_SERVER: &str = "health";
+
+/// What `/livez` reports (ADR-0145).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// The process answers and no audited controller is stale. `200`.
+    Live,
+    /// An audited controller has not reconciled objects that exist for the stale
+    /// threshold. `503`, so the kubelet restarts the pod.
+    Stale,
+}
 
 /// What `/readyz` reports. The variant name, lower-cased, is the body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,6 +146,8 @@ pub fn evaluate(snapshot: &ReadinessSnapshot, now: Instant) -> ReadyState {
 pub struct Readiness {
     state: Arc<Mutex<ReadinessSnapshot>>,
     leader_gauge: Gauge,
+    /// The audited controllers currently stale (ADR-0145), by name.
+    stale: Arc<Mutex<BTreeSet<&'static str>>>,
 }
 
 impl Readiness {
@@ -148,6 +167,7 @@ impl Readiness {
                 last_lease_read: None,
             })),
             leader_gauge,
+            stale: Arc::new(Mutex::new(BTreeSet::new())),
         }
     }
 
@@ -193,6 +213,33 @@ impl Readiness {
         }
     }
 
+    /// Lock the stale set; a poisoned lock still holds a valid set.
+    fn lock_stale(&self) -> MutexGuard<'_, BTreeSet<&'static str>> {
+        self.stale
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// An audited `controller` has gone unreconciled for the stale threshold: `/livez`
+    /// answers `503` until every stale controller has been cleared (ADR-0145).
+    pub fn mark_stale(&self, controller: &'static str) {
+        self.lock_stale().insert(controller);
+    }
+
+    /// `controller` is reconciling again.
+    pub fn clear_stale(&self, controller: &'static str) {
+        self.lock_stale().remove(controller);
+    }
+
+    /// What `/livez` reports right now.
+    pub fn liveness(&self) -> Liveness {
+        if self.lock_stale().is_empty() {
+            Liveness::Live
+        } else {
+            Liveness::Stale
+        }
+    }
+
     /// A copy of the current state.
     pub fn snapshot(&self) -> ReadinessSnapshot {
         *self.lock()
@@ -204,12 +251,24 @@ impl Readiness {
     }
 }
 
-/// Route one health request. Pure in `(line, ready)`.
+/// Route one health request, for a process with no audit: `/livez` is always the live
+/// case. Pure in `(line, ready)`.
 pub fn route(line: &RequestLine<'_>, ready: ReadyState) -> Response {
+    route_live(line, ready, Liveness::Live)
+}
+
+/// Route one health request. Pure in `(line, ready, live)`.
+///
+/// Readiness ignores staleness: a stale controller is restarted by the liveness probe,
+/// not taken out of its Service.
+pub fn route_live(line: &RequestLine<'_>, ready: ReadyState, live: Liveness) -> Response {
     if line.method != METHOD_GET {
         return Response::not_found();
     }
     match line.path {
+        LIVEZ_PATH if live == Liveness::Stale => {
+            Response::text(Status::ServiceUnavailable, STALE_BODY)
+        }
         LIVEZ_PATH => Response::text(Status::Ok, LIVE_BODY),
         READYZ_PATH if ready.is_ready() => Response::text(Status::Ok, ready.as_str()),
         READYZ_PATH => Response::text(Status::ServiceUnavailable, ready.as_str()),
@@ -220,7 +279,12 @@ pub fn route(line: &RequestLine<'_>, ready: ReadyState) -> Response {
 /// Answer raw request bytes for the health server: `400` when the request
 /// line does not parse, otherwise [`route`].
 pub fn handle(buf: &[u8], ready: ReadyState) -> Response {
-    httpd::respond(buf, |line| route(line, ready))
+    handle_live(buf, ready, Liveness::Live)
+}
+
+/// As [`handle`], with the liveness the audit reports (ADR-0145).
+pub fn handle_live(buf: &[u8], ready: ReadyState, live: Liveness) -> Response {
+    httpd::respond(buf, |line| route_live(line, ready, live))
 }
 
 /// Bind the health port and start serving it in the background.
@@ -242,7 +306,7 @@ pub async fn start_health_server(port: u16, readiness: Readiness) -> Result<(), 
     httpd::spawn_server(
         listener,
         HEALTH_SERVER,
-        Arc::new(move |buf: &[u8]| handle(buf, readiness.state())),
+        Arc::new(move |buf: &[u8]| handle_live(buf, readiness.state(), readiness.liveness())),
     );
     Ok(())
 }

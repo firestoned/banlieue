@@ -11,6 +11,8 @@
 //!   `name`, `resource_version` and `result` (ADR-0092 Decision 4, D-017);
 //! - is counted in `banlieue_reconcile_total{controller,result}` and timed in
 //!   `banlieue_reconcile_duration_seconds{controller}`;
+//! - for a controller that opted in with `Metrics::enable_audit`, is written to
+//!   the audit ledger by object UID before it runs (ADR-0145);
 //! - on error, is counted in `banlieue_reconcile_errors_total{controller,kind}`
 //!   with `kind` from the error's [`ErrorKind`].
 //!
@@ -75,6 +77,13 @@ where
     E: ErrorKind + Send + 'static,
 {
     move |obj: Arc<K>, ctx: Arc<Ctx>| {
+        // Every invocation is recorded, including one the reconcile then returns early
+        // from (the namespace gate's unserved path, ADR-0130): the audit tells "invoked
+        // and skipped" from "never invoked" (ADR-0145). A no-op unless the controller
+        // opted in with `Metrics::enable_audit`.
+        if let Some(uid) = obj.uid() {
+            metrics.note_invoked(controller, &uid);
+        }
         let span = tracing::info_span!(
             "reconcile",
             controller,

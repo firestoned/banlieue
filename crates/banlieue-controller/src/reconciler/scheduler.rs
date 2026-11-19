@@ -1196,6 +1196,40 @@ impl Decision {
             scheduled_at: Some(now),
         }
     }
+
+    /// As [`Self::to_scheduled_placement`], but an unchanged decision keeps the time it
+    /// was made.
+    ///
+    /// `scheduledAt` is "the time the placement decision was made". The reconciler runs this
+    /// on every pass, and stamping `now` each time rewrote the status of every VM on every
+    /// reconcile: a new revision and a watch event on every control-plane node, and the event
+    /// woke the next reconcile, so the write fed itself (about four seconds a VM, about 25
+    /// events a second over 77 VMs, which overflowed a watch subscriber in kine). So `previous`
+    /// wins whenever the new placement equals it in everything but the time, and `now` is used
+    /// only for a first placement, a changed one, or a previous status that never recorded a
+    /// time.
+    ///
+    /// # Arguments
+    /// * `previous` - the placement already on the VM's status, if any.
+    /// * `now` - the time to record for a new or changed decision.
+    pub fn to_scheduled_placement_keeping(
+        &self,
+        previous: Option<&banlieue_api::banlieue::ScheduledPlacement>,
+        now: k8s_openapi::apimachinery::pkg::apis::meta::v1::Time,
+    ) -> banlieue_api::banlieue::ScheduledPlacement {
+        let mut next = self.to_scheduled_placement(now);
+        if let Some(previous) = previous.filter(|p| p.scheduled_at.is_some()) {
+            // Equal in every field but the time, including any field added later.
+            let same = banlieue_api::banlieue::ScheduledPlacement {
+                scheduled_at: next.scheduled_at.clone(),
+                ..previous.clone()
+            } == next;
+            if same {
+                next.scheduled_at = previous.scheduled_at.clone();
+            }
+        }
+        next
+    }
 }
 
 #[cfg(test)]

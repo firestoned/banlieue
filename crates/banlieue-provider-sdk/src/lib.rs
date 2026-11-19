@@ -42,6 +42,7 @@
 //!   Job's lifecycle to the `OSArtifact` whose PVC it mounts (ADR-0027).
 
 pub mod artifact;
+pub mod audit;
 pub mod bootstrap;
 pub mod ca_bundle;
 pub mod capacity;

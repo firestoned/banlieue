@@ -11,6 +11,7 @@
 //! | `banlieue_reconcile_duration_seconds` | histogram | `controller` |
 //! | `banlieue_reconcile_errors_total` | counter | `controller`, `kind` |
 //! | `banlieue_leader` | gauge | `role` |
+//! | `banlieue_audit_unreconciled_objects` | gauge | `controller`, `reason` |
 //!
 //! The reconcile series are recorded by [`crate::runner`], never by call
 //! sites. Every label value is a `&'static str` chosen by code (a controller
@@ -20,6 +21,7 @@
 //! `banlieue_virtualmachines`, `banlieue_provider_failure_domains`) are
 //! [`Collector`]s added with [`Metrics::register_collector`].
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -31,6 +33,7 @@ use prometheus_client::metrics::gauge::Gauge;
 use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::{Registry, Unit};
 
+use crate::audit::Ledger;
 use crate::bootstrap::BootstrapError;
 use crate::httpd::{self, METHOD_GET, RequestLine, Response, Status};
 
@@ -55,6 +58,9 @@ const RECONCILE_ERRORS_NAME: &str = "banlieue_reconcile_errors";
 
 /// Leadership gauge (ADR-0093 Decision 3).
 const LEADER_NAME: &str = "banlieue_leader";
+
+/// Objects the audit found unreconciled (ADR-0145).
+const AUDIT_UNRECONCILED_NAME: &str = "banlieue_audit_unreconciled_objects";
 
 /// Histogram buckets for one reconcile, in seconds: from a cache-only
 /// reconcile (milliseconds) to one that waits on a slow backend call.
@@ -119,6 +125,12 @@ struct RoleLabels {
     role: String,
 }
 
+#[derive(Debug, Clone, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct AuditLabels {
+    controller: &'static str,
+    reason: &'static str,
+}
+
 /// Constructor for the duration histogram family.
 fn duration_histogram() -> Histogram {
     Histogram::new(RECONCILE_DURATION_BUCKETS_SECS)
@@ -132,6 +144,10 @@ struct Inner {
     reconcile_duration: Family<ControllerLabels, Histogram, fn() -> Histogram>,
     reconcile_errors: Family<ErrorLabels, Counter>,
     leader: Family<RoleLabels, Gauge>,
+    audit_unreconciled: Family<AuditLabels, Gauge>,
+    /// One ledger per audited controller (ADR-0145). A controller that never called
+    /// [`Metrics::enable_audit`] has none, so its memory does not grow with churn.
+    ledgers: Mutex<HashMap<&'static str, Ledger>>,
 }
 
 /// The process's metrics registry. Cheap to clone; clones share state.
@@ -154,6 +170,7 @@ impl Metrics {
             );
         let reconcile_errors = Family::<ErrorLabels, Counter>::default();
         let leader = Family::<RoleLabels, Gauge>::default();
+        let audit_unreconciled = Family::<AuditLabels, Gauge>::default();
 
         let mut registry = Registry::default();
         registry.register(
@@ -177,6 +194,12 @@ impl Metrics {
             "1 while this process holds its leader lease (or runs without election), else 0",
             leader.clone(),
         );
+        registry.register(
+            AUDIT_UNRECONCILED_NAME,
+            "Objects that exist in the API but that the controller has not reconciled past the \
+             grace, by controller and reason (ADR-0145)",
+            audit_unreconciled.clone(),
+        );
 
         Self {
             inner: Arc::new(Inner {
@@ -186,6 +209,8 @@ impl Metrics {
                 reconcile_duration,
                 reconcile_errors,
                 leader,
+                audit_unreconciled,
+                ledgers: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -232,6 +257,41 @@ impl Metrics {
             .reconcile_errors
             .get_or_create(&ErrorLabels { controller, kind })
             .inc();
+    }
+
+    fn lock_ledgers(&self) -> MutexGuard<'_, HashMap<&'static str, Ledger>> {
+        self.inner
+            .ledgers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Opt `controller` in to the audit (ADR-0145): from now on every invocation of its
+    /// reconcile is written to a ledger that [`crate::audit::run`] reads. Calling it again
+    /// keeps the ledger it already has.
+    pub fn enable_audit(&self, controller: &'static str) {
+        self.lock_ledgers().entry(controller).or_default();
+    }
+
+    /// The ledger of an audited controller, or `None` if it never opted in.
+    pub fn ledger(&self, controller: &str) -> Option<Ledger> {
+        self.lock_ledgers().get(controller).cloned()
+    }
+
+    /// Note that `controller` was invoked for the object with `uid`. A no-op for a
+    /// controller that never opted in.
+    pub fn note_invoked(&self, controller: &str, uid: &str) {
+        if let Some(ledger) = self.lock_ledgers().get(controller) {
+            ledger.record(uid);
+        }
+    }
+
+    /// Set `banlieue_audit_unreconciled_objects{controller,reason}` to `count`.
+    pub fn set_unreconciled(&self, controller: &'static str, reason: &'static str, count: usize) {
+        self.inner
+            .audit_unreconciled
+            .get_or_create(&AuditLabels { controller, reason })
+            .set(i64::try_from(count).unwrap_or(i64::MAX));
     }
 
     /// Add a collector that encodes its own series on every scrape.
