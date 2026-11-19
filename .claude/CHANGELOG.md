@@ -9,6 +9,8 @@
   (default `None`), implemented for `FirecrackerMachine`; the VM status now carries the subject, replaced
   (not merged) on every mirror so a withdrawn subject does not linger. `FirecrackerMachine` joins the
   macro with no EK certificates.
+  The macro's subject argument is written `subject = |this| ...`: as `subject |this| ...`, rustfmt 1.100
+  read it as a bitwise or and reformatted it, failing CI's format check.
 - `claim_plan.rs`: `MirroredMemberState.attestation_subject`; `claim.rs`: `mirrored_status_fields`, the
   merge-patch body `hold` writes, naming `attestationSubject` as `null` when absent so the claim drops it.
 - 8 tests (red first: the build failed on the missing items). Three sabotages, each removing one of the
@@ -86,6 +88,9 @@ cloud.
 - `crates/banlieue-api/src/capi.rs`, `crdgen_support.rs`: the new kinds are
   registered; `deploy/crds/`, `docs/src/reference/api.md` regenerated;
   `examples/30-firecrackermachine.yaml` added.
+- `deploy/capi/clusterrole-aggregate.yaml`: `firecrackermachines`, its `/status` and
+  `firecrackermachinetemplates` added, since both CRDs carry the CAPI contract label
+  (caught by `capi_aggregate_role_covers_exactly_the_capi_contract_kinds`).
 
 ### Why
 The API half of the Firecracker provider class, code-first.

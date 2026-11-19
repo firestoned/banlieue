@@ -66,7 +66,7 @@ pub trait InfraMachineRead {
 /// the CAPI v1beta2 status shape, so the accessors are identical; only the
 /// `tpm_endorsement_certificates` body differs and is supplied by the caller.
 macro_rules! impl_infra_machine_read {
-    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject |$subj_this:ident| $subj:expr) => {
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject = |$subj_this:ident| $subj:expr) => {
         impl InfraMachineRead for $kind {
             fn initialization(&self) -> &InitializationStatus {
                 self.status
@@ -122,7 +122,7 @@ macro_rules! impl_infra_machine_read {
         }
     };
     ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr) => {
-        impl_infra_machine_read!($kind, $(#[$tpm_doc])* |$this| $tpm, subject |_s| None);
+        impl_infra_machine_read!($kind, $(#[$tpm_doc])* |$this| $tpm, subject = |_s| None);
     };
     ($kind:ty) => {
         impl_infra_machine_read!($kind, |this| this
@@ -141,7 +141,7 @@ impl_infra_machine_read!(
     /// Firecracker has no vTPM, so no EK certificate: the published
     /// attestation fact is `attestation_subject` instead (ADR-0143).
     |_this| &[],
-    subject |this| this
+    subject = |this| this
         .status
         .as_ref()
         .and_then(|s| s.attestation_subject.as_deref())

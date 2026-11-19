@@ -54,4 +54,7 @@ rules:
       - cloudhypervisormachines
       - cloudhypervisormachines/status
       - cloudhypervisormachinetemplates
+      - firecrackermachines
+      - firecrackermachines/status
+      - firecrackermachinetemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
