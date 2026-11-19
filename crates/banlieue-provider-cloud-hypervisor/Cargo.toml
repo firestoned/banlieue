@@ -18,6 +18,10 @@ banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
 # Pulling Url images by digest (ADR-0064).
 banlieue-oci = { path = "../banlieue-oci" }
 reqwest.workspace = true
+# The per-host attestation CA and guest certificate signer (ADR-0146).
+banlieue-attestation-ca = { path = "../banlieue-attestation-ca" }
+# `CancellationToken` stops a guest's signer when the guest stops.
+tokio-util.workspace = true
 
 anyhow.workspace = true
 # Reading the claims of the provider's own ServiceAccount token (token.rs).
@@ -50,3 +54,8 @@ toml = "1"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 libc = "0.2"
 tempfile.workspace = true
+# The live attestation test makes a CSR the way a guest would and reads the
+# certificate back (tests/live_attestation.rs).
+p256.workspace = true
+x509-cert.workspace = true
+x509-parser.workspace = true

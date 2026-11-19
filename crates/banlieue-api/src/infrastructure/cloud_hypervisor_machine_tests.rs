@@ -350,6 +350,31 @@ mod tests {
         assert_eq!(back.sealed_partitions, s.sealed_partitions);
     }
 
+    /// ADR-0146: a host that opted in to attestation publishes the exact
+    /// subject CN; every other machine omits the key.
+    #[test]
+    fn status_attestation_subject_omitted_when_none_and_round_trips() {
+        let empty = serde_json::to_value(CloudHypervisorMachineStatus::default()).unwrap();
+        assert!(empty.get("attestationSubject").is_none(), "{empty}");
+        assert!(
+            CloudHypervisorMachineStatus::default()
+                .attestation_subject
+                .is_none()
+        );
+
+        let st = CloudHypervisorMachineStatus {
+            attestation_subject: Some("0f3c9a1e-0000-4000-8000-000000000001".to_string()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(
+            json["attestationSubject"],
+            "0f3c9a1e-0000-4000-8000-000000000001"
+        );
+        let back: CloudHypervisorMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(st, back);
+    }
+
     // ------------------------------------------------------------------
     // Moves (ADR-0127)
     // ------------------------------------------------------------------

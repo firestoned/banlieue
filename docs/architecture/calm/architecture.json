@@ -601,7 +601,7 @@
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10). IMPLEMENTED (ADR-0133): a Provider may live in the provider namespace and serve every served tenant namespace that has no Provider of its own; its credentialsRef Secret stays in that namespace, out of reach of tenants. spec.namespaceSelector (ADR-0133 Decision 11) declares the namespaces the Provider serves besides its own; absent means its own only and an empty selector serves nothing. Setting it needs update on the virtual subresource providers/namespaceselector (deploy/admission/provider-namespace-selector-authorization.yaml)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10). IMPLEMENTED (ADR-0133): a Provider may live in the provider namespace and serve every served tenant namespace that has no Provider of its own; its credentialsRef Secret stays in that namespace, out of reach of tenants. spec.namespaceSelector (ADR-0133 Decision 11) declares the namespaces the Provider serves besides its own; absent means its own only and an empty selector serves nothing. Setting it needs update on the virtual subresource providers/namespaceselector (deploy/admission/provider-namespace-selector-authorization.yaml). PROPOSED (ADR-0146): spec.attestation.hostCa, already in the API (ADR-0143), is also the assertion edge for a Cloud Hypervisor host's per-host attestation CA; admin-asserted, never discovered."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -1012,6 +1012,40 @@
       "node-type": "system",
       "name": "Host rules for the sandbox segment",
       "description": "ACCEPTED (ADR-0144), not yet implemented. Root-owned iptables rules installed by the operator from a documented recipe (the binary installs no package, ADR-0067 Decision 7): INPUT dropped from the sandbox bridge, FORWARD dropped from the sandbox bridge to anything outside it and between the two bridges, masquerade of the uplink bridge's range only, IPv6 disabled on both bridges. preflight reports them and refuses install for a sandbox class without them."
+    },
+    {
+      "unique-id": "data-asset-ch-attestation-ca",
+      "node-type": "data-asset",
+      "name": "Per-host attestation CA (Cloud Hypervisor host)",
+      "description": "PROPOSED (ADR-0146), not yet implemented. A signing CA banlieue creates at install, only on a host that opts in with an [attestation] section in its host config (ADR-0146 Decision 1, 5; ADR-0143 Decision 1): EC P-256, made as the provider's user at <state root>/attestation-ca/{ca.key (0600), ca.crt (0644)}, directory 0700, never overwritten by a re-run, rotated only by an explicit flag that issues a new name. The key is never readable by a guest uid. Unlike swtpm-localca, which a shared host's other tenants' root can read and replace, its custody is the provider's alone; its common name is in every agent ID it signs, so a compromised host speaks only for its own guests (mediatore ADR-0049 Decision 2). It still trusts the host that signs: this is custody and blast radius, not a claim that x509pop outranks a trusted TPM."
+    },
+    {
+      "unique-id": "service-ch-attestation-signer",
+      "node-type": "service",
+      "name": "In-provider attestation signer (vsock, per guest)",
+      "description": "PROPOSED (ADR-0146), not yet implemented. Part of banlieue-provider-cloud-hypervisor, implemented in the new library crate banlieue-attestation-ca shared with the future Firecracker provider (ADR-0146 Decision 3): the CA, the CSR checks, the certificate builder and the vsock request loop, with no Kubernetes dependency and no subprocess. Answers on <run dir>/vsock.sock_1025, per guest, created with the guest's unit, owned by the guest's uid and removed when it stops. One connection is one request, bounded; EC P-256 only; takes only the public key; forces CA:FALSE, digitalSignature, no SAN and a bounded validity; the subject CN is the CloudHypervisorMachine's metadata.uid; rate-limited per guest; never logs a CSR or certificate (ADR-0143 Decisions 4 and 5; mediatore ADR-0049 Decision 6).",
+      "interfaces": [
+        {
+          "unique-id": "ch-attestation-signer-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:/run/banlieue/ch/<uid>/vsock.sock_1025",
+            "port": 1025
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-ch-guest-attestation-helper",
+      "node-type": "service",
+      "name": "Guest-side attestation helper (mediatore, not decided here)",
+      "description": "PROPOSED (ADR-0146), not yet implemented. Runs in the guest: makes the key, sends the CSR to host vsock port 1025, renews at half life and configures the SPIRE agent for x509pop with discover_workload_path = true. NOT decided by banlieue: the helper and the image layer belong to mediatore ADR-0049 and the sandbox image build (ADR-0146 Decision 6). banlieue fixes only the host contract the helper talks to, vsock port 1025 on the guest's own hybrid vsock; the port is a named constant shared with the install report's 1024."
+    },
+    {
+      "unique-id": "service-spire-server-x509pop",
+      "node-type": "service",
+      "name": "SPIRE server x509pop bundle (mediatore, external)",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The SPIRE server's x509pop node attestor trusts a bundle of per-host attestation CAs, a new trust-anchor class beside the per-host EK issuers (mediatore ADR-0049). The administrator copies each host's ca.crt into the bundle, with a name unique across it (unchecked by banlieue; mediatore ADR-0050 moves uniqueness to the issuer). Not shipped by banlieue and not a banlieue binary."
     }
   ],
   "relationships": [
@@ -2825,6 +2859,173 @@
         }
       },
       "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-ch-provider-composed-of-attestation-signer",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The signer is a library inside the provider, not a process of its own: the provider owns the CA key and decides what to sign for, the crate knows nothing of machines, classes or the cluster (ADR-0146 Decision 3). The signer exists only when the host config has [attestation]; a host without it behaves exactly as today and the vTPM path (ADR-0065, ekTrustBundle, the TPM attestor) is untouched, so one host may serve guests of either attestor (Decision 1).",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-provider-cloud-hypervisor",
+          "nodes": [
+            "service-ch-attestation-signer"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-attestation-signer-holds-ca",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The signer reads the CA key at <state root>/attestation-ca/ca.key to sign a guest's certificate; the installer made it as the provider's user (ADR-0146 Decision 5).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-ch-attestation-signer",
+          "nodes": [
+            "data-asset-ch-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "attestation-ca-key-custody": {
+          "description": "ca.key is 0600 in a 0700 directory, owned by the provider's user, never readable by a guest uid and never overwritten by a re-run or by --force; rotation needs --rotate-attestation-ca and issues a new name. preflight and status refuse a CA key that is not 0600 or not owned by the provider's user. Planned in crates/banlieue-host and crates/banlieue-attestation-ca; neither exists yet.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-28"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-guest-helper-attestation-signer",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The guest helper connects to host vsock port 1025, which the VMM forwards to <run dir>/vsock.sock_1025, where the signer listens, and sends one CSR; the signer answers with a certificate and closes (ADR-0146 Decision 2; mediatore ADR-0049 Decision 6). Same transport as the install report on port 1024 (rel-cloud-hypervisor-vmm-guest-report).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ch-guest-attestation-helper"
+          },
+          "destination": {
+            "node": "service-ch-attestation-signer",
+            "interfaces": [
+              "ch-attestation-signer-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "attestation-signer-bounded-request": {
+          "description": "The CSR is untrusted input: one connection is one request, size and time bounded, EC P-256 only, only the public key is taken, and the certificate is forced to CA:FALSE, digitalSignature, no SAN, bounded validity, with the subject set by the provider rather than the guest. The socket is per guest, in the guest's own run directory, and removed when the guest stops; requests are rate-limited per guest and no CSR or certificate is logged. Planned in crates/banlieue-attestation-ca; not yet written.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-10"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-5"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AU-9"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-guest-agent-attests-x509pop",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The in-guest SPIRE agent presents the host-signed certificate and proves possession of its key to the SPIRE server's x509pop attestor, which verifies the chain against the bundle of per-host attestation CAs. Which attestor a guest uses is the guest image's configuration; the host offers both this and the vTPM path (ADR-0146 Decision 1). The agent ID carries the CA's common name, so a compromised host speaks only for its own guests.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-in-guest-agent"
+          },
+          "destination": {
+            "node": "service-spire-server-x509pop"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-ch-operator-asserts-host-ca",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The administrator asserts the single-certificate ca.crt as Provider.spec.attestation.hostCa (the API field and its admission rules already exist, ADR-0143 Decision 2) and copies the same certificate into the SPIRE server's x509pop bundle. Admin-asserted, never discovered or verified by banlieue: a trust anchor fished off the host it vouches for would let that host vouch for itself (ADR-0049 Decision 10).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": [
+            "data-asset-provider-cr",
+            "service-spire-server-x509pop",
+            "data-asset-ch-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "host-ca-asserted-never-discovered": {
+          "description": "The provider never reads hostCa back from the host or verifies it; the only source is the administrator's assertion on the Provider, and the existing admission policy constrains the field. Existing: crates/banlieue-api/src/banlieue/provider.rs (ProviderAttestation), deploy/admission/provider-attestation-ektrustbundle.yaml (ekTrustBundle sibling).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "CM-5"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ch-provider-gated-on-host-ca",
+      "description": "PROPOSED (ADR-0146), not yet implemented. A host whose config has [attestation] while its Provider has no spec.attestation.hostCa is Ready=False with reason HostCaMissing (or HostCaUnreadable), naming the field, and creates no guest while the condition holds (ADR-0146 Decision 4, ADR-0143 Decision 7). Deliberately blunt: a guest started without the assertion would boot and sign, then have no node-entry parent mediatore could compute, and fail late and silently. A host that must keep running vTPM guests without the assertion does not opt in.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-cloud-hypervisor",
+          "nodes": [
+            "data-asset-provider-cr"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -3813,6 +4014,67 @@
           "description": "The VMM opens the container and its group under Landlock and attaches the function; the guest's driver sees the device."
         }
       ]
+    },
+    {
+      "unique-id": "flow-attest-with-host-signed-certificate-cloud-hypervisor",
+      "name": "A Cloud Hypervisor guest attests with a certificate its host signs (ADR-0146, proposed)",
+      "description": "PROPOSED (ADR-0146), not yet implemented. The x509pop alternative to the vTPM path for a guest on a shared host, extending ADR-0143's Firecracker design to Cloud Hypervisor. The signing CA is banlieue's own, owned by the provider alone, and asserted by the administrator on the Provider. The certificate subject is the CloudHypervisorMachine's metadata.uid, published as status.attestationSubject and mirrored machine to VirtualMachine to claim so mediatore can compute the node entry's parent. The guest-side helper is mediatore's (ADR-0049), not decided here.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-ch-operator-asserts-host-ca",
+          "description": "The installer made the CA; the administrator asserts ca.crt as Provider.spec.attestation.hostCa and adds it to the SPIRE server's x509pop bundle. Until then the opted-in host is Ready=False/HostCaMissing."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-ch-guest-helper-attestation-signer",
+          "description": "The guest helper makes a key and sends a CSR over vsock port 1025; the signer returns a certificate whose CN is the machine's metadata.uid."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-shared-provider-cloud-hypervisor-serves-tenant-machine",
+          "description": "The provider publishes CloudHypervisorMachineStatus.attestationSubject (the machine's metadata.uid). A Recreate makes a new machine and so a new subject."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-claim-binds-pool-member",
+          "description": "The controller mirrors attestationSubject onto VirtualMachineStatus and then onto the claim (ADR-0143 Decision 3), replacing it on every mirror so a withdrawn subject does not linger.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-ch-guest-agent-attests-x509pop",
+          "description": "The guest's SPIRE agent attests with x509pop against the bundle of per-host CAs; mediatore reads the subject from the claim to place the node entry."
+        }
+      ],
+      "controls": {
+        "host-ca-trusts-host-not-tpm": {
+          "description": "x509pop here is a narrower anchor, not a stronger one: the signer trusts the host it runs on, and a compromised host mints certificates for its own guests. What improves is custody (the key is banlieue's, 0600, provider only) and blast radius (the CA name is in every agent ID). Threat-model pass due on implementation (sections 3, 5, 6, 8 of docs/src/security/threat-model.md).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-3"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "controls": {
@@ -4331,6 +4593,8 @@
     "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
     "docs/adr/0135-claim-selection-strategies.md",
     "docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md",
-    "docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md"
+    "docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md",
+    "docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md",
+    "docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md"
   ]
 }

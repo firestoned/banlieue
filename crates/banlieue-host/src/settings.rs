@@ -5,6 +5,7 @@
 //! the defaults.
 
 use crate::accounts::{self, GuestAccounts};
+use crate::attestation;
 use crate::error::Error;
 use crate::hardening;
 use crate::ops::{CgroupMode, Probe};
@@ -14,6 +15,7 @@ use clap::Args;
 use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// First guest uid (ADR-0063 Decision 3).
 pub const DEFAULT_GUEST_UID_BASE: u32 = 2_000_000;
@@ -145,6 +147,30 @@ pub struct HostArgs {
         value_name = "DIRECTIVE"
     )]
     pub accept_reduced_hardening: Vec<String>,
+    /// Opt in to x509pop attestation (ADR-0146): create this host's
+    /// attestation CA, named by the host's short name. Refused when that
+    /// name has characters outside letters, digits, dots, dashes and
+    /// underscores and no `--attestation-ca-name` is given.
+    #[arg(long, env = "BANLIEUE_HOST_ATTESTATION")]
+    pub attestation: bool,
+    /// Opt in to x509pop attestation with this CA common name (letters,
+    /// digits, dots, dashes, underscores). It is in every agent ID the host
+    /// signs, so it must be unique across the SPIRE server's bundle.
+    #[arg(long, env = "BANLIEUE_HOST_ATTESTATION_CA_NAME", value_name = "NAME")]
+    pub attestation_ca_name: Option<String>,
+    /// How long a certificate the host signs is valid: `30m`, `1h`, `12h`
+    /// (5 minutes to 7 days). Default: the kept host config's, else 1 hour.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CERTIFICATE_TTL",
+        value_name = "DURATION"
+    )]
+    pub attestation_certificate_ttl: Option<String>,
+    /// Replace the attestation CA with a NEW one. Needs a new
+    /// `--attestation-ca-name`, different from the current one: a name is
+    /// never reused for a different key. `--force` never rotates it.
+    #[arg(long, env = "BANLIEUE_HOST_ROTATE_ATTESTATION_CA")]
+    pub rotate_attestation_ca: bool,
 }
 
 /// The guests' shared budget on a host that runs other workloads
@@ -217,6 +243,18 @@ impl Registry {
     }
 }
 
+/// What this run does about the attestation CA (ADR-0146 Decision 5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttestationPlan {
+    /// The name of the CA this run creates; `None` keeps the CA that is
+    /// there.
+    pub new_ca_name: Option<String>,
+    /// How long a certificate the host signs is valid.
+    pub ttl: Duration,
+    /// Whether the CA that is there is replaced (never without a new name).
+    pub rotate: bool,
+}
+
 /// Settings, resolved and validated.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
@@ -244,6 +282,8 @@ pub struct Settings {
     pub accounts_reason: String,
     /// Directives the operator accepted this host not enforcing, sorted.
     pub accepted_reduced: Vec<String>,
+    /// The attestation CA, when the host opted in (now or earlier).
+    pub attestation: Option<AttestationPlan>,
 }
 
 impl Settings {
@@ -660,6 +700,7 @@ fn resolve_with(
     };
     let (guest_accounts, accounts_reason) = accounts::choose(args.guest_accounts, probe)?;
     let accepted_reduced = accepted_hardening(args, probe, kept)?;
+    let attestation = attestation_plan(args, probe)?;
     Ok(Settings {
         provider_name,
         namespace,
@@ -673,7 +714,132 @@ fn resolve_with(
         guest_accounts,
         accounts_reason,
         accepted_reduced,
+        attestation,
     })
+}
+
+fn ca_files_present(probe: &dyn Probe) -> bool {
+    let dir = Path::new(crate::paths::ATTESTATION_CA_DIR);
+    [attestation::CA_KEY_FILE, attestation::CA_CERT_FILE]
+        .iter()
+        .any(|f| probe.stat(&dir.join(f)).is_some())
+}
+
+/// The attestation CA flags against what is on the host (ADR-0146
+/// Decision 5).
+///
+/// The opt-in is `--attestation-ca-name` or `--attestation`, or an
+/// `[attestation]` section already in the host config (kept by a plain
+/// re-run, and by `--force`, which regenerates the file but never rotates
+/// the CA). A name is validated and refused, never replaced; a CA that is
+/// there is never replaced by a different name without
+/// `--rotate-attestation-ca`, which needs a new name, different from the
+/// current one.
+fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<AttestationPlan>, Error> {
+    const NAME_FLAG: &str = "--attestation-ca-name";
+    const TTL_FLAG: &str = "--attestation-certificate-ttl";
+    const ROTATE_FLAG: &str = "--rotate-attestation-ca";
+    let given_name = match (&args.attestation_ca_name, args.attestation) {
+        (Some(n), _) => {
+            banlieue_attestation_ca::validate_name(n)
+                .map_err(|e| bad(NAME_FLAG, format!("{n:?}: {e}")))?;
+            Some(n.clone())
+        }
+        (None, true) => Some(
+            attestation::default_name(&probe.hostname())
+                .map_err(|why| bad("--attestation", why))?,
+        ),
+        (None, false) => None,
+    };
+    let given_ttl = args
+        .attestation_certificate_ttl
+        .as_deref()
+        .map(attestation::parse_ttl)
+        .transpose()
+        .map_err(|why| bad(TTL_FLAG, why))?;
+    let existing = attestation::existing_section(probe);
+    let dir = Path::new(crate::paths::ATTESTATION_CA_DIR);
+    let files = ca_files_present(probe);
+    let current = probe.attestation_ca(dir);
+
+    if args.rotate_attestation_ca {
+        let Some(name) = args.attestation_ca_name.as_ref() else {
+            return Err(bad(
+                ROTATE_FLAG,
+                "a new CA needs a new name: give --attestation-ca-name",
+            ));
+        };
+        if !files {
+            return Err(bad(ROTATE_FLAG, "there is no attestation CA to rotate"));
+        }
+        let info = current.as_ref().map_err(|why| {
+            bad(
+                ROTATE_FLAG,
+                format!("the current CA cannot be read ({why}); fix or remove it by hand"),
+            )
+        })?;
+        if &info.name == name {
+            return Err(bad(
+                NAME_FLAG,
+                format!(
+                    "{name:?} is the current CA's name: a name is never reused for a different                      key, give a new one"
+                ),
+            ));
+        }
+    }
+
+    if given_name.is_none() && existing.is_none() {
+        if given_ttl.is_some() {
+            return Err(bad(
+                TTL_FLAG,
+                "this host has not opted in: give --attestation or --attestation-ca-name",
+            ));
+        }
+        return Ok(None);
+    }
+
+    let ttl = given_ttl
+        .or_else(|| {
+            existing
+                .as_ref()
+                .map(|s| Duration::from_secs(s.certificate_ttl_secs))
+        })
+        .unwrap_or(attestation::DEFAULT_CERTIFICATE_TTL);
+    if args.rotate_attestation_ca {
+        return Ok(Some(AttestationPlan {
+            new_ca_name: given_name,
+            ttl,
+            rotate: true,
+        }));
+    }
+    if !files {
+        let name = match given_name {
+            Some(n) => n,
+            None => attestation::default_name(&probe.hostname())
+                .map_err(|why| bad("--attestation", why))?,
+        };
+        return Ok(Some(AttestationPlan {
+            new_ca_name: Some(name),
+            ttl,
+            rotate: false,
+        }));
+    }
+    if let (Some(name), Ok(info)) = (&given_name, &current)
+        && &info.name != name
+    {
+        return Err(bad(
+            NAME_FLAG,
+            format!(
+                "{name:?}, but the attestation CA here is named {:?}: a CA is never replaced                  under a new name unless --rotate-attestation-ca says so",
+                info.name
+            ),
+        ));
+    }
+    Ok(Some(AttestationPlan {
+        new_ca_name: None,
+        ttl,
+        rotate: false,
+    }))
 }
 
 /// A storage path, compared and printed as the config spells it.

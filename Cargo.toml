@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/banlieue",
     "crates/banlieue-api",
+    "crates/banlieue-attestation-ca",
     "crates/banlieue-cloud-hypervisor",
     "crates/banlieue-oci",
     "crates/banlieue-proxmox",
@@ -58,6 +59,14 @@ anyhow = "1"
 # Async / runtime (used by controller crates in later phases)
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"
+
+# Attestation CA and guest certificate signer (ADR-0143, ADR-0146): pure-Rust
+# RustCrypto crates, no FFI and no subprocess (ADR-0143 Decision 6). p256 0.14
+# (NIST P-256, ECDSA, PKCS#8/PEM) and x509-cert 0.3 (RFC 5280 certificate and
+# PKCS#10 types, with the `builder`) are from the RustCrypto organisation and
+# were released in 2026; both share the der/spki/pkcs8 0.8-0.11 generation.
+p256 = { version = "0.14", features = ["ecdsa", "pkcs8", "pem", "sha256", "getrandom"] }
+x509-cert = { version = "0.3", features = ["builder", "pem"] }
 
 # Logging / telemetry
 tracing = "0.1"

@@ -499,4 +499,73 @@ mod tests {
         assert_eq!(types, ["Ready"]);
         assert_eq!(patch["kind"], "CloudHypervisorMachine");
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0146 Decision 4: no guest while the host CA is not asserted
+    // ------------------------------------------------------------------
+
+    use crate::provider::HostCaHold;
+    use banlieue_provider_sdk::status::{
+        condition_status, provider_condition_types, set_condition,
+    };
+
+    fn status_with_ready(status: &str) -> CloudHypervisorMachineStatus {
+        let mut st = CloudHypervisorMachineStatus {
+            attestation_subject: Some("uid-1".into()),
+            ..Default::default()
+        };
+        set_condition(
+            &mut st.conditions,
+            provider_condition_types::READY,
+            status,
+            "Reason",
+            String::new(),
+            1,
+        );
+        st
+    }
+
+    #[test]
+    fn a_machine_that_never_ran_is_held() {
+        assert!(holds_new_guest(None));
+        assert!(holds_new_guest(Some(
+            &CloudHypervisorMachineStatus::default()
+        )));
+        assert!(holds_new_guest(Some(&status_with_ready(
+            condition_status::FALSE
+        ))));
+    }
+
+    /// A guest that is already running is not disturbed by a withdrawn CA.
+    #[test]
+    fn a_ready_machine_is_not_held() {
+        assert!(!holds_new_guest(Some(&status_with_ready(
+            condition_status::TRUE
+        ))));
+    }
+
+    #[test]
+    fn the_held_status_carries_the_reason_clears_the_subject_and_provisions_nothing() {
+        let st = host_ca_held_status(
+            Some(&status_with_ready(condition_status::FALSE)),
+            &HostCaHold::Missing,
+            3,
+        );
+        let ready = st.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
+        assert_eq!(ready.status, "False");
+        assert_eq!(ready.reason, "HostCaMissing");
+        assert!(ready.message.contains("spec.attestation.hostCa"));
+        assert_eq!(st.attestation_subject, None);
+        assert_eq!(st.initialization.provisioned, Some(false));
+        let unreadable = host_ca_held_status(None, &HostCaHold::Unreadable("x".into()), 1);
+        assert_eq!(
+            unreadable
+                .conditions
+                .iter()
+                .find(|c| c.type_ == "Ready")
+                .unwrap()
+                .reason,
+            "HostCaUnreadable"
+        );
+    }
 }

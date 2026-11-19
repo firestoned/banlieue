@@ -101,6 +101,9 @@ pub const DISK_ID_INSTALL: &str = "install";
 const INSTALL_MEDIA_FILE: &str = "install.iso";
 /// The guest's vsock, host end, in the run directory.
 const VSOCK_SOCKET: &str = "vsock.sock";
+/// The host vsock port a guest asks for its attestation certificate on,
+/// beside [`crate::report::REPORT_PORT`] (ADR-0146 Decision 6).
+pub const ATTESTATION_PORT: u32 = 1025;
 
 /// Why a machine could not be planned.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -208,6 +211,10 @@ pub struct MachinePlan {
     /// with `_<port>` appended, which is where a guest's connection to that
     /// host port lands.
     pub report_socket: PathBuf,
+    /// Where the provider's certificate signer listens for this guest
+    /// (`<vsock socket>_1025`), present only when the host opted in with
+    /// `[attestation]` (ADR-0146).
+    pub attestation_socket: Option<PathBuf>,
     /// The seed's `network-config`, when any NIC is static (ADR-0114),
     /// matched by each NIC's planned MAC. `None` for a DHCP-only machine.
     pub network_config: Option<String>,
@@ -281,6 +288,10 @@ pub fn plan_machine(
     let api_socket = run_dir.join("api.sock");
     let vsock_socket = run_dir.join(VSOCK_SOCKET);
     let report_socket = run_dir.join(format!("{VSOCK_SOCKET}_{}", crate::report::REPORT_PORT));
+    let attestation_socket = config
+        .attestation
+        .is_some()
+        .then(|| run_dir.join(format!("{VSOCK_SOCKET}_{ATTESTATION_PORT}")));
     let tpm = spec.tpm_enabled.then(|| TpmPlan {
         state_dir: config
             .paths
@@ -394,6 +405,7 @@ pub fn plan_machine(
         empty_os_disk,
         first_boot_sealing: spec.first_boot_sealing.clone(),
         report_socket,
+        attestation_socket,
         network_config,
         declared_addresses: banlieue_provider_sdk::status::declared_addresses(
             spec.nics.iter().map(|n| &n.ipam),

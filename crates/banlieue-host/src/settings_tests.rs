@@ -649,4 +649,224 @@ lan = "br0"
         assert_eq!(s.guest_slice.cpu_quota.as_deref(), Some("400%"));
         assert_eq!(s.provider_name, "baz");
     }
+
+    // ------------------------------------------------ attestation (ADR-0146)
+
+    use crate::ops::{Host, Owner};
+
+    const CA_DIR: &str = "/var/lib/banlieue/attestation-ca";
+    const SECTION_TEXT: &str = "[attestation]\nca_dir = \"/var/lib/banlieue/attestation-ca\"\ncertificate_ttl_secs = 7200\n";
+
+    fn provider_user(h: &FakeHost) {
+        let mut s = h.state.lock().unwrap();
+        s.users.insert("banlieue".into(), (998, 998));
+        s.groups
+            .insert("banlieue".into(), (998, Default::default()));
+        drop(s);
+        h.put_dir("/var/lib/banlieue");
+    }
+
+    /// A host that already has a CA named `name`.
+    fn host_with_ca(name: &str) -> FakeHost {
+        let h = FakeHost::debian();
+        provider_user(&h);
+        h.create_attestation_ca(Path::new(CA_DIR), name, &Owner::new("banlieue", "banlieue"))
+            .unwrap();
+        h
+    }
+
+    fn why(r: Result<Settings, Error>) -> String {
+        match r {
+            Err(Error::Setting { why, .. }) => why,
+            other => panic!("expected a refused setting, got {other:?}"),
+        }
+    }
+
+    fn flag_of(r: Result<Settings, Error>) -> &'static str {
+        match r {
+            Err(Error::Setting { name, .. }) => name,
+            other => panic!("expected a refused setting, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_attestation_flag_means_not_opted_in() {
+        let h = FakeHost::debian();
+        assert!(resolve(&args(&[]), &h).unwrap().attestation.is_none());
+    }
+
+    #[test]
+    fn a_ca_name_is_the_opt_in_with_a_one_hour_default() {
+        let h = FakeHost::debian();
+        let plan = resolve(&args(&["--attestation-ca-name", "sandbox-1.foo_2"]), &h)
+            .unwrap()
+            .attestation
+            .unwrap();
+        assert_eq!(plan.new_ca_name.as_deref(), Some("sandbox-1.foo_2"));
+        assert_eq!(plan.ttl, Duration::from_secs(3600));
+        assert!(!plan.rotate);
+    }
+
+    #[test]
+    fn an_invalid_ca_name_is_refused_never_replaced() {
+        let h = FakeHost::debian();
+        for bad in ["bad name", "a/b", "", "a=b", "x\"y", "caf\u{e9}"] {
+            let r = resolve(&args(&["--attestation-ca-name", bad]), &h);
+            assert_eq!(flag_of(r), "--attestation-ca-name", "{bad:?}");
+        }
+        let long = "a".repeat(65);
+        assert_eq!(
+            flag_of(resolve(&args(&["--attestation-ca-name", &long]), &h)),
+            "--attestation-ca-name"
+        );
+    }
+
+    #[test]
+    fn attestation_alone_names_the_ca_after_the_short_host_name() {
+        let h = FakeHost::debian();
+        let plan = resolve(&args(&["--attestation"]), &h)
+            .unwrap()
+            .attestation
+            .unwrap();
+        assert_eq!(plan.new_ca_name.as_deref(), Some("bar"));
+    }
+
+    #[test]
+    fn attestation_refuses_a_short_name_outside_the_alphabet_unless_a_name_is_given() {
+        let h = FakeHost::debian();
+        h.env.lock().unwrap().hostname = "b@r host".into();
+        let r = resolve(&args(&["--attestation"]), &h);
+        assert!(why(r).contains("--attestation-ca-name"));
+        let plan = resolve(
+            &args(&["--attestation", "--attestation-ca-name", "sandbox"]),
+            &h,
+        )
+        .unwrap()
+        .attestation
+        .unwrap();
+        assert_eq!(plan.new_ca_name.as_deref(), Some("sandbox"));
+    }
+
+    #[test]
+    fn the_certificate_ttl_is_parsed_and_bounded() {
+        let h = FakeHost::debian();
+        for (raw, secs) in [("30m", 1800), ("1h", 3600), ("12h", 43_200)] {
+            let s = resolve(
+                &args(&["--attestation", "--attestation-certificate-ttl", raw]),
+                &h,
+            )
+            .unwrap();
+            assert_eq!(s.attestation.unwrap().ttl, Duration::from_secs(secs));
+        }
+        for bad in ["4m", "8d", "soon", "0"] {
+            let r = resolve(
+                &args(&["--attestation", "--attestation-certificate-ttl", bad]),
+                &h,
+            );
+            assert_eq!(flag_of(r), "--attestation-certificate-ttl", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_ttl_without_an_opt_in_is_refused() {
+        let h = FakeHost::debian();
+        let r = resolve(&args(&["--attestation-certificate-ttl", "1h"]), &h);
+        assert_eq!(flag_of(r), "--attestation-certificate-ttl");
+    }
+
+    #[test]
+    fn rotation_needs_an_explicit_new_name() {
+        let h = host_with_ca("bar");
+        let r = resolve(&args(&["--rotate-attestation-ca"]), &h);
+        assert_eq!(flag_of(r), "--rotate-attestation-ca");
+        let r = resolve(&args(&["--rotate-attestation-ca", "--attestation"]), &h);
+        assert_eq!(flag_of(r), "--rotate-attestation-ca");
+    }
+
+    /// A name must never be reused for a different key.
+    #[test]
+    fn rotation_refuses_the_current_name() {
+        let h = host_with_ca("bar");
+        let r = resolve(
+            &args(&["--rotate-attestation-ca", "--attestation-ca-name", "bar"]),
+            &h,
+        );
+        assert!(why(r).contains("never reused"));
+    }
+
+    #[test]
+    fn rotation_with_a_new_name_is_planned() {
+        let h = host_with_ca("bar");
+        let plan = resolve(
+            &args(&["--rotate-attestation-ca", "--attestation-ca-name", "bar-2"]),
+            &h,
+        )
+        .unwrap()
+        .attestation
+        .unwrap();
+        assert!(plan.rotate);
+        assert_eq!(plan.new_ca_name.as_deref(), Some("bar-2"));
+    }
+
+    #[test]
+    fn rotation_with_no_ca_to_rotate_is_refused() {
+        let h = FakeHost::debian();
+        let r = resolve(
+            &args(&["--rotate-attestation-ca", "--attestation-ca-name", "bar"]),
+            &h,
+        );
+        assert!(why(r).contains("no attestation CA"));
+    }
+
+    #[test]
+    fn rotation_of_an_unreadable_ca_is_refused() {
+        let h = host_with_ca("bar");
+        h.set_mode(Path::new("/var/lib/banlieue/attestation-ca/ca.key"), 0o640)
+            .unwrap();
+        let r = resolve(
+            &args(&["--rotate-attestation-ca", "--attestation-ca-name", "bar-2"]),
+            &h,
+        );
+        assert!(why(r).contains("cannot be read"));
+    }
+
+    #[test]
+    fn another_name_over_an_existing_ca_needs_rotation() {
+        let h = host_with_ca("bar");
+        let r = resolve(&args(&["--attestation-ca-name", "baz"]), &h);
+        assert!(why(r).contains("--rotate-attestation-ca"));
+        let same = resolve(&args(&["--attestation-ca-name", "bar"]), &h)
+            .unwrap()
+            .attestation
+            .unwrap();
+        assert_eq!(same.new_ca_name, None, "the CA that is there is kept");
+    }
+
+    /// The kept-config rule: no flag keeps the section, and its ttl.
+    #[test]
+    fn an_existing_section_keeps_the_host_opted_in() {
+        let h = host_with_ca("bar");
+        let text = format!("{KEPT}\n{SECTION_TEXT}");
+        h.put_file(crate::paths::HOST_CONFIG, text.as_bytes(), Kind::File);
+        let plan = resolve(&args(&[]), &h).unwrap().attestation.unwrap();
+        assert_eq!(plan.new_ca_name, None);
+        assert_eq!(plan.ttl, Duration::from_secs(7200));
+        let changed = resolve(&args(&["--attestation-certificate-ttl", "30m"]), &h)
+            .unwrap()
+            .attestation
+            .unwrap();
+        assert_eq!(changed.ttl, Duration::from_secs(1800));
+    }
+
+    /// `--force` regenerates the file; it never rotates the CA, and the host
+    /// stays opted in.
+    #[test]
+    fn a_fresh_resolve_keeps_the_attestation_plan_and_never_rotates() {
+        let h = host_with_ca("bar");
+        let text = format!("{KEPT}\n{SECTION_TEXT}");
+        h.put_file(crate::paths::HOST_CONFIG, text.as_bytes(), Kind::File);
+        let plan = resolve_fresh(&args(&[]), &h).unwrap().attestation.unwrap();
+        assert!(!plan.rotate);
+        assert_eq!(plan.new_ca_name, None);
+    }
 }

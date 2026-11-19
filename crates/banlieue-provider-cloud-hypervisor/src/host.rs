@@ -104,6 +104,13 @@ pub trait HostOps: Send + Sync {
     /// Stop listening for the guest.
     async fn stop_report_listener(&self, plan: &MachinePlan);
 
+    /// Serve the guest's attestation certificate requests on its vsock
+    /// (ADR-0146); a no-op when the plan has no signer socket. Idempotent:
+    /// a running signer is left alone and a dead one is started again.
+    async fn ensure_attestation_signer(&self, plan: &MachinePlan) -> Result<()>;
+    /// Stop the guest's signer and remove its socket.
+    async fn stop_attestation_signer(&self, plan: &MachinePlan);
+
     /// Guest IPv4 addresses per NIC, from the neighbour table.
     async fn guest_addresses(&self, plan: &MachinePlan) -> Result<Vec<Ipv4Addr>>;
 }
@@ -114,6 +121,7 @@ pub struct RealHost {
     group: u32,
     arp_table: std::path::PathBuf,
     reports: crate::report::Listeners,
+    signers: Option<crate::attestation::Signers>,
 }
 
 impl RealHost {
@@ -128,6 +136,7 @@ impl RealHost {
             group,
             arp_table: neigh::PROC_NET_ARP.into(),
             reports: crate::report::Listeners::default(),
+            signers: None,
         })
     }
 
@@ -136,6 +145,14 @@ impl RealHost {
     #[must_use]
     pub fn with_report_wake(mut self, wake: crate::report::Wake) -> Self {
         self.reports = crate::report::Listeners::waking(wake);
+        self
+    }
+
+    /// Offer guests certificate signing with `signers` (ADR-0146). Without
+    /// it a plan that has a signer socket is an error, not a silent skip.
+    #[must_use]
+    pub fn with_attestation(mut self, signers: crate::attestation::Signers) -> Self {
+        self.signers = Some(signers);
         self
     }
 
@@ -318,6 +335,14 @@ impl HostOps for RealHost {
 
     async fn stop_report_listener(&self, plan: &MachinePlan) {
         self.reports.stop(&plan.uid, &plan.report_socket);
+    }
+
+    async fn ensure_attestation_signer(&self, plan: &MachinePlan) -> Result<()> {
+        Ok(crate::attestation::ensure_for_plan(self.signers.as_ref(), plan, self.group).await?)
+    }
+
+    async fn stop_attestation_signer(&self, plan: &MachinePlan) {
+        crate::attestation::stop_for_plan(self.signers.as_ref(), plan);
     }
 
     async fn guest_addresses(&self, plan: &MachinePlan) -> Result<Vec<Ipv4Addr>> {

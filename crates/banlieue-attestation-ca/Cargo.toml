@@ -1,0 +1,31 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "banlieue-attestation-ca"
+publish = false
+description = "Per-host attestation CA and guest certificate signer (ADR-0143, ADR-0146): pure Rust, no Kubernetes dependency."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+p256.workspace = true
+x509-cert.workspace = true
+getrandom.workspace = true
+# `oid` gives Sha256 its AssociatedOid, which x509-cert's builder needs to name ecdsa-with-SHA256.
+# Handle-relative (openat/fchown/unlinkat) file operations, as banlieue-host uses.
+rustix = { version = "1", features = ["fs", "std"] }
+sha2 = { workspace = true, features = ["oid"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync"] }
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "io-util", "time", "sync", "macros", "rt"] }
+x509-parser.workspace = true

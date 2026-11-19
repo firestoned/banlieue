@@ -1126,4 +1126,161 @@ mod tests {
         let o = run_until_running(&h, &plain).await;
         assert!(o.sealed.is_empty());
     }
+
+    // ------------------------------------------------------------------
+    // The attestation signer (ADR-0146)
+    // ------------------------------------------------------------------
+
+    fn attesting_plan() -> MachinePlan {
+        plan_machine(
+            UID,
+            MACHINE_NAME,
+            "ch-a",
+            &spec(),
+            &crate::test_fixtures::with_attestation(config()),
+            HOST_UID,
+        )
+        .unwrap()
+    }
+
+    fn signing(h: &FakeHost) -> std::collections::BTreeMap<String, String> {
+        h.state.lock().unwrap().signing.clone()
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_host_starts_the_signer_before_the_vmm_with_the_machine_uid() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert_eq!(signing(&h).get(&plan.uid), Some(&UID.to_string()));
+        let calls = h.state.lock().unwrap().calls.clone();
+        let at = |prefix: &str| calls.iter().position(|c| c.starts_with(prefix));
+        let signer = at("ensure_attestation_signer").expect("signer started");
+        assert!(signer < at("start_unit").expect("vmm started"), "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn a_host_that_did_not_opt_in_starts_no_signer() {
+        let plan = plan_for(&spec());
+        let h = host(&plan);
+        for _ in 0..3 {
+            pass(&h, &plan, &PowerState::PoweredOn).await;
+        }
+        let s = h.state.lock().unwrap();
+        assert!(s.signing.is_empty());
+        assert!(s.signer_starts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn later_passes_do_not_start_a_second_signer() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        for _ in 0..4 {
+            pass(&h, &plan, &PowerState::PoweredOn).await;
+        }
+        assert_eq!(
+            h.state.lock().unwrap().signer_starts.get(&plan.uid),
+            Some(&1)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_signer_that_died_is_started_again_by_the_next_pass() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        h.kill_signer(&plan);
+        assert!(signing(&h).is_empty());
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(signing(&h).contains_key(&plan.uid));
+        assert_eq!(
+            h.state.lock().unwrap().signer_starts.get(&plan.uid),
+            Some(&2)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_provider_restart_brings_the_signer_back() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        for _ in 0..2 {
+            pass(&h, &plan, &PowerState::PoweredOn).await;
+        }
+        h.restart_provider();
+        assert!(signing(&h).is_empty());
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(signing(&h).contains_key(&plan.uid));
+    }
+
+    #[tokio::test]
+    async fn the_signer_stops_when_the_guest_is_powered_off() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        for _ in 0..2 {
+            pass(&h, &plan, &PowerState::PoweredOn).await;
+        }
+        for _ in 0..3 {
+            pass(&h, &plan, &PowerState::PoweredOff).await;
+        }
+        assert!(signing(&h).is_empty());
+    }
+
+    /// The other power-off path: the VMM is already gone when the desired
+    /// state turns to off.
+    #[tokio::test]
+    async fn the_signer_stops_when_a_dead_guest_is_powered_off() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(signing(&h).contains_key(&plan.uid));
+        h.fail_unit(&plan.unit, "exit-code");
+        pass(&h, &plan, &PowerState::PoweredOff).await;
+        assert!(signing(&h).is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_signer_stops_when_the_machine_is_deleted() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        for _ in 0..2 {
+            pass(&h, &plan, &PowerState::PoweredOn).await;
+        }
+        teardown(&h, &plan).await.unwrap();
+        assert!(signing(&h).is_empty());
+    }
+
+    /// As on a real host: the socket cannot be bound in a run directory that
+    /// does not exist.
+    #[tokio::test]
+    async fn the_fake_refuses_a_signer_without_a_run_directory() {
+        let plan = attesting_plan();
+        let h = host(&plan);
+        assert!(h.ensure_attestation_signer(&plan).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_opted_in_machine_publishes_its_attestation_subject() {
+        let plan = attesting_plan();
+        let o = observed(Phase::Running, vec![]);
+        let st = build_status(None, &o, &plan, "ch-a", 1);
+        assert_eq!(st.attestation_subject.as_deref(), Some(UID));
+    }
+
+    #[tokio::test]
+    async fn a_machine_that_is_not_opted_in_publishes_none() {
+        let plan = plan_for(&spec());
+        let o = observed(Phase::Running, vec![]);
+        let st = build_status(None, &o, &plan, "ch-a", 1);
+        assert_eq!(st.attestation_subject, None);
+    }
+
+    /// The host config no longer opts in: the published subject is withdrawn.
+    #[tokio::test]
+    async fn a_withdrawn_opt_in_clears_the_published_subject() {
+        let o = observed(Phase::Running, vec![]);
+        let before = build_status(None, &o, &attesting_plan(), "ch-a", 1);
+        assert!(before.attestation_subject.is_some());
+        let after = build_status(Some(&before), &o, &plan_for(&spec()), "ch-a", 2);
+        assert_eq!(after.attestation_subject, None);
+    }
 }

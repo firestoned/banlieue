@@ -135,7 +135,21 @@ macro_rules! impl_infra_machine_read {
 
 impl_infra_machine_read!(VSphereMachine);
 impl_infra_machine_read!(LibvirtMachine);
-impl_infra_machine_read!(CloudHypervisorMachine);
+impl_infra_machine_read!(
+    CloudHypervisorMachine,
+    /// A Cloud Hypervisor guest with a vTPM publishes its EK certificates;
+    /// one on a host that opted in to x509pop also publishes
+    /// `attestation_subject` (ADR-0146).
+    |this| this
+        .status
+        .as_ref()
+        .map(|s| s.tpm_endorsement_certificates.as_slice())
+        .unwrap_or(&[]),
+    subject = |this| this
+        .status
+        .as_ref()
+        .and_then(|s| s.attestation_subject.as_deref())
+);
 impl_infra_machine_read!(
     FirecrackerMachine,
     /// Firecracker has no vTPM, so no EK certificate: the published

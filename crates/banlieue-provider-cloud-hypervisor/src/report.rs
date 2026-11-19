@@ -248,7 +248,7 @@ fn merge_sealed(heard: &Mutex<Vec<String>>, reported: &[String]) -> bool {
 /// O_NOFOLLOW`, checked to be a socket this process owns, then re-owned and
 /// re-moded through `/proc/self/fd`, so nothing a guest swaps in at `path`
 /// is ever changed.
-fn hand_to_guest(path: &Path, guest_uid: u32, group: u32) -> io::Result<()> {
+pub(crate) fn hand_to_guest(path: &Path, guest_uid: u32, group: u32) -> io::Result<()> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)

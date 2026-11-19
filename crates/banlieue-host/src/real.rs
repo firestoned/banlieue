@@ -230,6 +230,10 @@ impl Probe for RealHost {
         self.query(&Cmd::new("systemctl", &["--version"]))
             .and_then(|out| crate::hardening::parse_systemd_version(&out))
     }
+
+    fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String> {
+        crate::attestation::inspect(dir)
+    }
 }
 
 /// A `Command` for `cmd`, through `runuser` when it names a user.
@@ -312,6 +316,22 @@ impl Host for RealHost {
             Ok(m) if m.is_dir() => fs::remove_dir_all(path).map_err(|e| with_path(e, path)),
             Ok(_) => fs::remove_file(path).map_err(|e| with_path(e, path)),
         }
+    }
+
+    fn create_attestation_ca(&self, dir: &Path, name: &str, owner: &Owner) -> io::Result<()> {
+        let (uid, gid) = self.ids(owner)?;
+        banlieue_attestation_ca::AttestationCa::create(
+            dir,
+            name,
+            Some((uid.as_raw(), gid.as_raw())),
+        )
+        .map(drop)
+        .map_err(|e| with_path(io::Error::other(e.to_string()), dir))
+    }
+
+    fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()> {
+        banlieue_attestation_ca::AttestationCa::remove_files(dir)
+            .map_err(|e| with_path(io::Error::other(e.to_string()), dir))
     }
 
     fn run(&self, cmd: &Cmd) -> io::Result<String> {

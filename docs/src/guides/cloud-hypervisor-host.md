@@ -273,6 +273,10 @@ variable, so a cloud-init payload needs no file of its own
 | `--guest-accounts userdb\|files` | derived from the host | How guest uids become accounts: systemd userdb records, or `useradd`/`groupadd` in the host's own databases for a host without userdb (systemd before 245). It prints the choice and the reason ([details](cloud-hypervisor-host-systemd.md#hosts-without-userdb-guest-accounts-files)). |
 | `--accept-reduced-hardening=PrivateIPC` | none | Required on a systemd older than 248, which cannot enforce `PrivateIPC=`: it must name exactly what the host lacks, and is recorded in the host config ([details](cloud-hypervisor-host-systemd.md#directives-an-old-systemd-cannot-enforce)). |
 | `--allow-virtualized-host` | off | Lab use only: run on a host that is itself a VM. |
+| `--attestation-ca-name NAME` (`BANLIEUE_HOST_ATTESTATION_CA_NAME`) | none (not opted in) | Opt in to x509pop attestation (ADR-0146): create this host's attestation CA with this common name (letters, digits, dots, dashes, underscores; refused, never replaced, otherwise). See [Attesting with x509pop](#attesting-with-x509pop-adr-0146). |
+| `--attestation` (`BANLIEUE_HOST_ATTESTATION`) | off | Opt in with the host's short name as the CA name. Refused when that name has other characters and no `--attestation-ca-name` is given. |
+| `--attestation-certificate-ttl DURATION` (`BANLIEUE_HOST_ATTESTATION_CERTIFICATE_TTL`) | the kept host config's, else `1h` | How long a certificate the host signs is valid: `30m`, `1h`, `12h`. Bounded to 5 minutes through 7 days. |
+| `--rotate-attestation-ca` (`BANLIEUE_HOST_ROTATE_ATTESTATION_CA`) | off | Replace the attestation CA with a new one. Needs a new `--attestation-ca-name`, different from the current one. `--force` never does this. |
 
 On a host `install` has already prepared, `/etc/banlieue/cloud-hypervisor.toml`
 is kept (only `--force` regenerates it), so it decides the settings it
@@ -1104,6 +1108,112 @@ still run there.
 kubectl get providers.banlieue.io <name> -n banlieue-system \
   -o jsonpath='{.status.failureDomains[0].attributes.raw.storageWithoutReflink}'
 ```
+
+## Attesting with x509pop (ADR-0146)
+
+A guest normally attests with its vTPM: SPIRE's TPM attestor, an endorsement
+key whose certificate this host's `swtpm_localca` issued. On a **shared** host
+that anchor is only as good as everyone with root on the machine, because the
+`swtpm-localca` state is readable and replaceable by the host's other tenants.
+
+The alternative is SPIRE's `x509pop` attestor. The guest makes its own key, the
+host signs a certificate for it with a dedicated **attestation CA** that
+banlieue created and only the provider's user can read, and the SPIRE server
+trusts a bundle of those per-host CAs. The vTPM path is untouched: a host may
+serve guests that attest either way, and the guest image chooses.
+
+```mermaid
+sequenceDiagram
+    participant G as Guest (key, CSR)
+    participant V as vsock.sock_1025
+    participant S as Provider signer
+    participant P as SPIRE agent and server
+    G->>V: one PEM CSR, then half-close
+    V->>S: bounded request, EC P-256 public key only
+    S->>S: CA:FALSE, no SAN, bounded validity, rate limit
+    S-->>G: one PEM certificate (CN of the CA in the agent ID)
+    G->>P: x509pop attestation with that certificate
+    P->>P: verify against the bundle of per-host CAs
+```
+
+### When to opt in
+
+Opt in on a shared host whose TPM tooling you cannot vouch for. A host you
+fully control, whose vTPM path you already trust, gains little. Opting in is
+deliberate and blunt: an opted-in host is `Ready=False` until the CA is
+asserted on the `Provider` (below).
+
+### Install
+
+```sh
+sudo banlieue host cloud-hypervisor install --attestation-ca-name bar.foo.io
+# or, naming the CA after the host's short name:
+sudo banlieue host cloud-hypervisor install --attestation
+# a shorter certificate lifetime:
+sudo banlieue host cloud-hypervisor install --attestation --attestation-certificate-ttl 30m
+```
+
+The `attestation` stage creates the CA once, as the provider's user, at
+`/var/lib/banlieue/attestation-ca/` (directory `0700`, `ca.key` `0600`,
+`ca.crt` `0644`) and writes this section into the host config:
+
+```toml
+[attestation]
+ca_dir = "/var/lib/banlieue/attestation-ca"
+certificate_ttl_secs = 3600
+```
+
+It also runs with `install --only host`. A re-run never overwrites the CA: it
+reports the existing name. A host that did not opt in gets no section, and an
+existing section is kept like the rest of the config. `--dry-run` prints the
+plan and changes nothing. `preflight` and `status` report the CA's name and
+expiry, and refuse a key that is not `0600`, a directory open to group or
+world, or a key or directory the provider's user does not own. The key is
+never printed.
+
+### The administrator step
+
+The installer prints the path of `ca.crt`, its common name and one action. Do
+it once per host:
+
+1. Copy that single certificate into `Provider.spec.attestation.hostCa`.
+2. Add the same certificate to the SPIRE server's x509pop bundle. The common
+   name must be **unique across the bundle**; banlieue does not check this.
+
+banlieue never discovers or verifies the certificate: you assert it
+(ADR-0049 Decision 10).
+
+### `HostCaMissing`
+
+If the host config has `[attestation]` and the `Provider` has no
+`spec.attestation.hostCa`, the provider sets `Ready=False` with reason
+`HostCaMissing` (or `HostCaUnreadable`), names the field, and creates no guest
+while it holds. Assert the certificate and the condition clears. A host that
+must keep running vTPM guests without the assertion should not opt in.
+
+### Rotation
+
+```sh
+sudo banlieue host cloud-hypervisor install --rotate-attestation-ca \
+  --attestation-ca-name bar.foo.io-2
+```
+
+Rotation creates a **new** CA and requires a **new name**: a name must never be
+reused for a different key. It is refused when the name equals the current one,
+when no name is given, or when there is no CA to rotate. Then re-assert: put
+the new `ca.crt` in `Provider.spec.attestation.hostCa` and in the SPIRE bundle
+(keep the old one in the bundle until its certificates have expired), and
+restart the provider unit so the signer loads the new CA. `--force` never
+rotates this CA, although it rotates the EK CA.
+
+### The honest limit
+
+This is not a claim that x509pop is stronger than a trusted TPM. The signer
+still trusts the host it runs on: a compromised host mints certificates for its
+own guests. What changes is custody and blast radius. The signing key is made
+by banlieue, owned by the provider's user alone, and never readable by a guest
+uid; and its common name is in every agent ID it signs, so a compromised host
+speaks only for its own guests.
 
 ## Gotchas
 

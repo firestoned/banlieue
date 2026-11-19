@@ -1,0 +1,67 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A Provider's spec.attestation.hostCa is a value-or-source: exactly one of
+# `inline`, `configMapRef`, or `secretRef` must be set (ADR-0143 Decision 2,
+# same CABundleSource shape as ekTrustBundle and spec.connection.caBundle).
+#
+# SCOPE: this policy checks only the "exactly one source" shape, the part CEL
+# expresses reliably. The other two hostCa rules, "an inline source holds exactly
+# one certificate" and "no private key", stay in ProviderAttestation::validate
+# (crates/banlieue-api/src/banlieue/provider.rs): counting PEM blocks and
+# scanning for key markers in CEL is brittle, and a configMapRef/secretRef
+# source is never read at admission anyway.
+#
+# The rule applies only when hostCa is set; a Provider with only ekTrustBundle
+# (or no attestation block) is untouched. Enforced in the API server via CEL (no
+# webhook). Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+# Cases (spec.attestation fragments; both policies evaluated):
+#   allowed: ekTrustBundle {inline} only        (hostCa rule not matched)
+#   allowed: hostCa {inline} only               (ekTrustBundle rule not matched)
+#   allowed: both, one source each
+#   denied:  hostCa {inline, secretRef}         (two sources)
+#   denied:  hostCa {}                          (zero sources)
+# These could not be executed offline (no CEL runtime in the repo); the live
+# check is `kubectl apply --dry-run=server` of a Provider with each fragment.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-attestation-hostca
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  # Only evaluate when hostCa is present (absence is valid: a vTPM class has
+  # none). The validation reads hostCa.<source> unconditionally, which errors on
+  # a missing parent and, with failurePolicy Fail, would deny the Provider.
+  matchConditions:
+    - name: has-hostca
+      expression: "has(object.spec.attestation) && has(object.spec.attestation.hostCa)"
+  validations:
+    # Count the set sources; exactly one is required. CEL has() is true only when
+    # the optional field is present, so this is a clean 0/1/many check.
+    - expression: >-
+        [has(object.spec.attestation.hostCa.inline),
+         has(object.spec.attestation.hostCa.configMapRef),
+         has(object.spec.attestation.hostCa.secretRef)].filter(x, x).size() == 1
+      messageExpression: >-
+        'spec.attestation.hostCa must set exactly one of inline, configMapRef, secretRef.'
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-attestation-hostca
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-attestation-hostca
+  validationActions: ["Deny"]

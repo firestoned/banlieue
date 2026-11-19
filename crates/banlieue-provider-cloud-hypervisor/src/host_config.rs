@@ -70,6 +70,32 @@ pub struct HostConfig {
     /// means none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardening: Option<HardeningSection>,
+    /// The attestation CA this host signs its guests' certificates with
+    /// (ADR-0146). Absent means the host does not opt in: no signer runs,
+    /// no `attestationSubject` is published, and nothing about the vTPM path
+    /// changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation: Option<AttestationSection>,
+}
+
+/// `[attestation]`: the host opts in to the guest certificate signer
+/// (ADR-0146 Decisions 1 and 5). Rendered by the installer from this type.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestationSection {
+    /// Directory holding `ca.key` and `ca.crt` (ADR-0143 Decision 1).
+    pub ca_dir: PathBuf,
+    /// Validity of every certificate the signer issues, in seconds; within
+    /// the signer's own bounds.
+    pub certificate_ttl_secs: u64,
+}
+
+impl AttestationSection {
+    /// [`Self::certificate_ttl_secs`] as a duration.
+    #[must_use]
+    pub fn certificate_ttl(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.certificate_ttl_secs)
+    }
 }
 
 /// `[hardening]`: what the operator accepted not to have (ADR-0139).
@@ -270,6 +296,21 @@ impl HostConfig {
                 ("tpm.setup_config", t.setup_config.as_path()),
                 ("tpm.ek_ca_certificate", t.ek_ca_certificate.as_path()),
             ]);
+        }
+        if let Some(a) = &self.attestation {
+            paths.push(("attestation.ca_dir", a.ca_dir.as_path()));
+            let ttl = a.certificate_ttl();
+            if !(banlieue_attestation_ca::MIN_CERTIFICATE_TTL
+                ..=banlieue_attestation_ca::MAX_CERTIFICATE_TTL)
+                .contains(&ttl)
+            {
+                return invalid(format!(
+                    "attestation.certificate_ttl_secs = {} is outside {} to {} seconds",
+                    a.certificate_ttl_secs,
+                    banlieue_attestation_ca::MIN_CERTIFICATE_TTL.as_secs(),
+                    banlieue_attestation_ca::MAX_CERTIFICATE_TTL.as_secs(),
+                ));
+            }
         }
         if let Some(r) = &self.registry {
             if let Some(dir) = &r.credentials_dir {

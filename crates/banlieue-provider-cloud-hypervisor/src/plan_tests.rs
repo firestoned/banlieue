@@ -616,4 +616,41 @@ mod tests {
         assert!(u.memory_max.unwrap() > guest);
         assert!(u.memory_max.unwrap() <= guest + 1024 * 1024 * 1024);
     }
+
+    // ------------------------------------------------------------------
+    // The attestation signer's socket (ADR-0146 Decision 2)
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn the_attestation_port_is_1025_beside_the_report_port() {
+        assert_eq!(ATTESTATION_PORT, 1025);
+        assert_eq!(crate::report::REPORT_PORT, 1024);
+    }
+
+    #[test]
+    fn a_host_that_did_not_opt_in_plans_no_signer_socket() {
+        assert_eq!(plan().attestation_socket, None);
+    }
+
+    #[test]
+    fn an_opted_in_host_plans_the_signer_socket_in_the_run_directory() {
+        let p = plan_machine(
+            UID,
+            "m1",
+            "ch-a",
+            &spec(),
+            &crate::test_fixtures::with_attestation(config()),
+            HOST_UID,
+        )
+        .unwrap();
+        let run = Path::new("/run/banlieue/ch").join(HOST_UID.to_string());
+        assert_eq!(
+            p.attestation_socket,
+            Some(run.join(format!("vsock.sock_{ATTESTATION_PORT}")))
+        );
+        assert_ne!(
+            p.attestation_socket.as_deref(),
+            Some(p.report_socket.as_path())
+        );
+    }
 }

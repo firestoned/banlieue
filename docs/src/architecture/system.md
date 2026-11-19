@@ -78,6 +78,10 @@ flowchart LR
     service-ch-egress-gateway["Egress gateway VM (two per Cloud Hypervisor host)"]
     system-ch-sandbox-guest["Sandbox guest on a Cloud Hypervisor host"]
     system-ch-host-sandbox-rules["Host rules for the sandbox segment"]
+    data-asset-ch-attestation-ca["Per-host attestation CA (Cloud Hypervisor host)"]
+    service-ch-attestation-signer["In-provider attestation signer (vsock, per guest)"]
+    service-ch-guest-attestation-helper["Guest-side attestation helper (mediatore, not decided here)"]
+    service-spire-server-x509pop["SPIRE server x509pop bundle (mediatore, external)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -212,6 +216,16 @@ flowchart LR
     network-ch-uplink-bridge -->|TCP| network-cloud-hypervisor-host
     system-ch-host-sandbox-rules -->|TCP| network-ch-sandbox-bridge
     service-provider-cloud-hypervisor -->|TCP| network-ch-sandbox-bridge
+    subgraph sg_service-provider-cloud-hypervisor [Service Provider Cloud Hypervisor]
+        service-ch-attestation-signer
+    end
+    service-ch-attestation-signer --> data-asset-ch-attestation-ca
+    service-ch-guest-attestation-helper -->|TCP| service-ch-attestation-signer
+    service-in-guest-agent -->|HTTPS| service-spire-server-x509pop
+    actor-platform-operator --> data-asset-provider-cr
+    actor-platform-operator --> service-spire-server-x509pop
+    actor-platform-operator --> data-asset-ch-attestation-ca
+    service-provider-cloud-hypervisor --> data-asset-provider-cr
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

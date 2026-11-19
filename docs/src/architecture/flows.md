@@ -339,3 +339,20 @@ flowchart TD
 
 <sub>Source: flow `flow-assign-pci-device-cloud-hypervisor` in `architecture.json`.</sub>
 
+
+## A Cloud Hypervisor guest attests with a certificate its host signs (ADR-0146, proposed)
+
+PROPOSED (ADR-0146), not yet implemented. The x509pop alternative to the vTPM path for a guest on a shared host, extending ADR-0143's Firecracker design to Cloud Hypervisor. The signing CA is banlieue's own, owned by the provider alone, and asserted by the administrator on the Provider. The certificate subject is the CloudHypervisorMachine's metadata.uid, published as status.attestationSubject and mirrored machine to VirtualMachine to claim so mediatore can compute the node entry's parent. The guest-side helper is mediatore's (ADR-0049), not decided here.
+
+```mermaid
+flowchart TD
+    t1["1. The installer made the CA; the administrator asserts ca.crt as Provider.spec.attestation.hostCa and adds it to the SPIRE server's x509pop bundle. Until then the opted-in host is Ready=False/HostCaMissing."]
+    t2["2. The guest helper makes a key and sends a CSR over vsock port 1025; the signer returns a certificate whose CN is the machine's metadata.uid."]
+    t3["3. The provider publishes CloudHypervisorMachineStatus.attestationSubject (the machine's metadata.uid). A Recreate makes a new machine and so a new subject."]
+    t4["4. The controller mirrors attestationSubject onto VirtualMachineStatus and then onto the claim (ADR-0143 Decision 3), replacing it on every mirror so a withdrawn subject does not linger."]
+    t5["5. The guest's SPIRE agent attests with x509pop against the bundle of per-host CAs; mediatore reads the subject from the claim to place the node entry."]
+    t1 --> t2 --> t3 --> t4 --> t5
+```
+
+<sub>Source: flow `flow-attest-with-host-signed-certificate-cloud-hypervisor` in `architecture.json`.</sub>
+
