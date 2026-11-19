@@ -8,6 +8,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-09-27
 - **Proposed:** 2026-09-25
 - **Deciders:** Erick Bourgeois
+- **Amended by:** [ADR-0139](0139-hosts-without-systemd-userdb-or-cgroup-v2.md): Decision 3 (guest accounts may be files-database accounts on a host without userdb)
 - **Amended:** 2026-09-26 (Decision 4: taps by tun/bridge ioctls, not
   `rtnetlink`, and one digit longer for the NIC index; Decision 5: machine
   and run directories are `2770` guest-uid:banlieue under `0711` roots;

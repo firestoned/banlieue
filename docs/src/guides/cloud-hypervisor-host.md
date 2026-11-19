@@ -269,7 +269,9 @@ variable, so a cloud-init payload needs no file of its own
 | `--vmm-url`, `--ch-remote-url`, `--firmware-url` | the GitHub release asset | Where each file is downloaded from, for a mirror. HTTPS only. |
 | `--vmm-sha256`, `--ch-remote-sha256`, `--firmware-sha256` | the pin, or GitHub's digest | The sha256 of a file that is not the pinned release. |
 | `--artifacts-dir` | none (download) | Take `cloud-hypervisor-static`, `ch-remote-static` and `CLOUDHV.fd` from here, verified the same way. |
-| `--guest-cpus`, `--guest-cpu-weight`, `--guest-memory-max`, `--guest-tasks-max` | none (unbounded) | The budget all guests share on a host that runs other workloads: `banlieue-guests.slice` ([details](cloud-hypervisor-host-systemd.md#the-guests-slice)). |
+| `--guest-cpus`, `--guest-cpu-weight`, `--guest-cpu-quota`, `--guest-memory-max`, `--guest-tasks-max` | none (unbounded) | The budget all guests share on a host that runs other workloads: `banlieue-guests.slice` ([details](cloud-hypervisor-host-systemd.md#the-guests-slice)). |
+| `--guest-accounts userdb\|files` | derived from the host | How guest uids become accounts: systemd userdb records, or `useradd`/`groupadd` in the host's own databases for a host without userdb (systemd before 245). It prints the choice and the reason ([details](cloud-hypervisor-host-systemd.md#hosts-without-userdb-guest-accounts-files)). |
+| `--accept-reduced-hardening=PrivateIPC` | none | Required on a systemd older than 248, which cannot enforce `PrivateIPC=`: it must name exactly what the host lacks, and is recorded in the host config ([details](cloud-hypervisor-host-systemd.md#directives-an-old-systemd-cannot-enforce)). |
 | `--allow-virtualized-host` | off | Lab use only: run on a host that is itself a VM. |
 
 On a host `install` has already prepared, `/etc/banlieue/cloud-hypervisor.toml`
@@ -479,6 +481,7 @@ sudo banlieue host cloud-hypervisor install --network-class default=br0 \
 | `--guest-cpu-weight 50` | `CPUWeight=` (1 to 10000, default 100) | A share **under contention only**: idle CPU is still theirs. At 50 the guests together get half the CPU time of an equally busy peer. Almost always the right CPU control. |
 | `--guest-memory-max 200G` (or `75%`) | `MemoryMax=` | A **hard cap** on all guests together. Exceeding it makes the kernel **OOM-kill a VMM**, which is that guest crashing. Size it from the guests (below). |
 | `--guest-tasks-max 30000` | `TasksMax=` | Processes and threads, all guests together. |
+| `--guest-cpu-quota 4800%` | `CPUQuota=` | A ceiling on CPU **time**, 48 CPUs' worth: a share, not cores. Works on cgroup v1 and v2; on a cgroup v1 host (RHEL 8) it is the CPU ceiling, because `--guest-cpus` is refused there (it would not be enforced). |
 
 To change a guest budget, run `install` again with new values. Do **not** use
 `systemctl set-property` on `banlieue-guests.slice`: its drop-in silently

@@ -4,7 +4,7 @@
 //! each change `install` would make. The stages skip what is already in
 //! place, so what is printed is the difference.
 
-use crate::ops::{Cmd, Host, Owner, Probe, Stat};
+use crate::ops::{CgroupMode, Cmd, Host, Owner, Probe, Stat};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -64,6 +64,12 @@ impl Probe for DryRun<'_> {
     }
     fn is_root(&self) -> bool {
         self.inner.is_root()
+    }
+    fn cgroup_mode(&self) -> CgroupMode {
+        self.inner.cgroup_mode()
+    }
+    fn systemd_version(&self) -> Option<u32> {
+        self.inner.systemd_version()
     }
 }
 

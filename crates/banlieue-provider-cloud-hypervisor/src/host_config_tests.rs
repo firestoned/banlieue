@@ -269,4 +269,52 @@ default = "br-test"
             "an unstable manager would orphan every row the last process owned"
         );
     }
+
+    // ------------------------------------------------------------------
+    // [hardening] (ADR-0139): what the operator accepted not to have
+    // ------------------------------------------------------------------
+
+    /// The section is optional: a host that never needed an acceptance
+    /// carries none, and `hardening()` says so.
+    #[test]
+    fn the_hardening_section_is_optional() {
+        let c = parsed();
+        assert!(c.hardening.is_none());
+        assert!(c.accepted_reduced_hardening().is_empty());
+    }
+
+    #[test]
+    fn an_accepted_reduction_is_read_back() {
+        let text = format!("{FROM_BOOTSTRAP}\n[hardening]\naccepted_reduced = [\"PrivateIPC\"]\n");
+        let c = HostConfig::parse(&text).unwrap();
+        assert_eq!(c.accepted_reduced_hardening(), ["PrivateIPC".to_string()]);
+    }
+
+    #[test]
+    fn an_accepted_reduction_survives_a_serialize_round_trip() {
+        let mut c = parsed();
+        c.hardening = Some(HardeningSection {
+            accepted_reduced: vec!["PrivateIPC".into()],
+        });
+        let text = toml::to_string(&c).unwrap();
+        assert!(text.contains("[hardening]"), "{text}");
+        assert_eq!(HostConfig::parse(&text).unwrap(), c);
+    }
+
+    /// No acceptance is no section at all, never an empty one.
+    #[test]
+    fn no_acceptance_serializes_no_section() {
+        let text = toml::to_string(&parsed()).unwrap();
+        assert!(!text.contains("hardening"), "{text}");
+    }
+
+    #[test]
+    fn a_hardening_typo_or_a_bad_name_is_refused() {
+        let base = format!("{FROM_BOOTSTRAP}\n[hardening]\n");
+        assert!(HostConfig::parse(&format!("{base}accepted_reducd = []\n")).is_err());
+        for bad in ["\"\"", "\"Private IPC\"", "\"Private=IPC\"", "\"a\\nb\""] {
+            let text = format!("{base}accepted_reduced = [{bad}]\n");
+            assert!(HostConfig::parse(&text).is_err(), "{bad} accepted");
+        }
+    }
 }

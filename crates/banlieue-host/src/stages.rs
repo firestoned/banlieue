@@ -9,9 +9,11 @@
 //! regenerated only with `--force`. A second `install` therefore changes
 //! nothing (invariant 2).
 
+use crate::accounts::{self, GuestAccounts};
 use crate::error::Error;
 use crate::fetch::Fetch;
-use crate::ops::{Cmd, Host, Kind, Owner, Probe};
+use crate::hardening;
+use crate::ops::{CgroupMode, Cmd, Host, Kind, Owner, Probe};
 use crate::paths::{
     BANLIEUE_USER, BIN_DIR, CONF_DIR, CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR, GUEST_NAME_PREFIX,
     GUEST_SLICE_UNIT, HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE, PROVIDER_BINARY, PROVIDER_UNIT,
@@ -268,21 +270,20 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
             ));
         }
     }
-    let nsswitch = probe
-        .read(Path::new("/etc/nsswitch.conf"))
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
-    for db in ["passwd", "group"] {
-        let has_systemd = nsswitch.lines().any(|l| {
-            l.trim_start().starts_with(&format!("{db}:"))
-                && l.split_whitespace().any(|w| w == "systemd")
-        });
-        if !has_systemd {
-            bad.push(format!(
-                "nsswitch.conf {db} has no 'systemd' source: guest uids would not resolve"
-            ));
-        }
+    note(format!(
+        "guest accounts: {} ({})",
+        s.guest_accounts.name(),
+        s.accounts_reason
+    ));
+    if s.guest_accounts == GuestAccounts::Files {
+        note(format!(
+            "files mode creates {} users and {} private groups in this host's own account \
+             databases (system accounts, no login); lower --guest-uid-count to create fewer",
+            s.uid_count, s.uid_count
+        ));
     }
+    bad.extend(accounts::problems(probe, s));
+    bad.extend(hardening_problems(probe, s));
     for f in ["/etc/subuid", "/etc/subgid"] {
         let text = probe
             .read(Path::new(f))
@@ -309,6 +310,12 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     }
     note("preflight ok");
     Ok(())
+}
+
+/// What the host's systemd cannot enforce, against what the operator
+/// accepted (ADR-0139 Decision 4).
+fn hardening_problems(probe: &dyn Probe, s: &Settings) -> Vec<String> {
+    hardening::problems(probe.systemd_version(), &s.accepted_reduced)
 }
 
 // ---------------------------------------------------------------------- vmm
@@ -479,14 +486,20 @@ pub fn host(host: &dyn Host, s: &Settings, release: &Release, o: &Options) -> Re
     note(format!(
         "{HOST_CONFIG} exists, keeping it (--force regenerates)"
     ));
-    refresh_vmm_section(host, release, o)
+    refresh_managed_sections(host, s, release, o)
 }
 
 /// An existing host config keeps everything but `[vmm]`, which follows
-/// the release just installed, so changing the VMM never needs `--force`
-/// and its EK CA rotation (ADR-0084 Decision 5). A file that does not
-/// parse is the admin's to fix, and is left as it is.
-fn refresh_vmm_section(host: &dyn Host, release: &Release, o: &Options) -> Result<(), Error> {
+/// the release just installed, and `[hardening]`, which follows what the
+/// operator accepted now, so neither needs `--force` and its EK CA rotation
+/// (ADR-0084 Decision 5, ADR-0139). A file that does not parse is the
+/// admin's to fix, and is left as it is.
+fn refresh_managed_sections(
+    host: &dyn Host,
+    s: &Settings,
+    release: &Release,
+    o: &Options,
+) -> Result<(), Error> {
     let existing = match host.read(Path::new(HOST_CONFIG)) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) if o.dry_run => {
@@ -495,7 +508,7 @@ fn refresh_vmm_section(host: &dyn Host, release: &Release, o: &Options) -> Resul
         }
         Err(e) => return Err(e.into()),
     };
-    let updated = match render::with_vmm(&existing, release) {
+    let updated = match render::with_managed(&existing, release, &s.accepted_reduced) {
         Ok(Some(text)) => text,
         Ok(None) => return Ok(()),
         Err(e) => {
@@ -514,16 +527,43 @@ fn refresh_vmm_section(host: &dyn Host, release: &Release, o: &Options) -> Resul
     )?;
     note(format!(
         "[vmm] in {HOST_CONFIG} now names cloud-hypervisor {} and firmware {}; \
-         restart {PROVIDER_UNIT} so it reads them",
-        release.version, release.firmware_tag
+         [hardening] accepts {}; restart {PROVIDER_UNIT} so it reads them",
+        release.version,
+        release.firmware_tag,
+        accepted_display(&s.accepted_reduced)
     ));
     Ok(())
 }
 
-/// One userdb user and one private group per guest uid; systemd refuses
-/// `User=` for a uid NSS does not know (status 217), so the range must
-/// resolve before any guest starts (ADR-0063 Decision 3).
+/// What was accepted, for a message.
+fn accepted_display(accepted: &[String]) -> String {
+    if accepted.is_empty() {
+        return "nothing".into();
+    }
+    accepted.join(",")
+}
+
+/// One user and one private group per guest uid, registered the way the
+/// settings chose (ADR-0139): systemd refuses `User=` for a uid NSS does
+/// not know (status 217), so the range must resolve before any guest starts.
 fn register_guest_uids(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
+    match s.guest_accounts {
+        GuestAccounts::Userdb => register_userdb(host, s)?,
+        GuestAccounts::Files => {
+            let added = accounts::register_files(host, s)?;
+            note(format!(
+                "guest uids {}-{} ({added} new users and groups in this host's own databases)",
+                s.uid_base,
+                s.uid_end()
+            ));
+        }
+    }
+    verify_guest_uids(host, s, o)
+}
+
+/// One userdb user and one private group per guest uid, as records in
+/// `/etc/userdb` (ADR-0063 Decision 3).
+fn register_userdb(host: &dyn Host, s: &Settings) -> Result<(), Error> {
     let db = Path::new(USERDB_DIR);
     dir(host, db, MODE_ROOT_DIR, &Owner::root())?;
     let mut added = 0usize;
@@ -565,6 +605,11 @@ fn register_guest_uids(host: &dyn Host, s: &Settings, o: &Options) -> Result<(),
         s.uid_base,
         s.uid_end()
     ));
+    Ok(())
+}
+
+/// The first and last guest uids resolve to their names through NSS.
+fn verify_guest_uids(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error> {
     if o.dry_run {
         return Ok(());
     }
@@ -579,7 +624,8 @@ fn register_guest_uids(host: &dyn Host, s: &Settings, o: &Options) -> Result<(),
     if first.as_deref() != Some(want_first.as_str()) || last.as_deref() != Some(want_last.as_str())
     {
         return Err(Error::Unsupported(format!(
-            "NSS does not resolve the guest records in {USERDB_DIR} (is 'systemd' in nsswitch.conf?)"
+            "NSS does not resolve the guest accounts ({} mode; for userdb, is 'systemd' in nsswitch.conf and are the records in {USERDB_DIR}?)",
+            s.guest_accounts.name()
         )));
     }
     Ok(())
@@ -732,7 +778,7 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
     let values = render::values(s, host);
     let mut templates_changed = false;
     for t in render::UNIT_TEMPLATES.iter().chain([&render::GUEST_SLICE]) {
-        let text = render::render(t, &values)?;
+        let text = hardening::drop_directives(&render::render(t, &values)?, &s.accepted_reduced);
         templates_changed |= put(
             host,
             &units.join(t.name),
@@ -755,10 +801,24 @@ pub fn provider(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), Error>
              until its next start",
         );
     }
+    if !s.accepted_reduced.is_empty() {
+        note(format!(
+            "reduced hardening accepted: {} not enforced by this host's systemd, dropped from \
+             the guest units and recorded in {HOST_CONFIG}",
+            s.accepted_reduced.join(",")
+        ));
+    }
+    if s.guest_slice.cpu_quota.is_some() && s.guest_slice.cpus.is_none() {
+        note(
+            "--guest-cpu-quota is a share of CPU time, not a set of cores: guests are not kept \
+             off other workloads' cores and share SMT siblings with them (--guest-cpus pins, on \
+             cgroup v2)",
+        );
+    }
     if s.guest_slice.is_unbounded() {
         note(format!(
             "{GUEST_SLICE_UNIT} sets no limit: guests may take all of this host's CPU and memory \
-             (--guest-cpus, --guest-cpu-weight, --guest-memory-max, --guest-tasks-max)"
+             (--guest-cpus, --guest-cpu-weight, --guest-cpu-quota, --guest-memory-max, --guest-tasks-max)"
         ));
     }
     let systemd = host.systemd_running();
@@ -988,6 +1048,19 @@ pub fn status(probe: &dyn Probe) {
             "not running"
         },
     );
+    row(
+        "systemd-version",
+        &probe
+            .systemd_version()
+            .map_or_else(|| "unknown".into(), |v| v.to_string()),
+    );
+    row(
+        "cgroup",
+        match probe.cgroup_mode() {
+            CgroupMode::Unified => "v2 (unified)",
+            CgroupMode::Legacy => "v1 (AllowedCPUs= is not enforced)",
+        },
+    );
     println!("--- vmm ---");
     row(
         "cloud-hypervisor",
@@ -1128,6 +1201,11 @@ pub async fn install(
                 stage: only.name(),
                 missing,
             });
+        }
+        // A single stage skips the preflight stage, not this refusal.
+        let reduced = hardening_problems(host, s);
+        if only != Stage::Preflight && !reduced.is_empty() {
+            return Err(Error::Preflight(reduced));
         }
     }
     for stage in plan(o) {

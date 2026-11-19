@@ -20,8 +20,8 @@ use crate::paths::{
 use crate::pins::Release;
 use crate::settings::Settings;
 use banlieue_provider_cloud_hypervisor::host_config::{
-    GuestsSection, HostConfig, PathsSection, ProviderSection, RegistrySection, TpmSection,
-    VmmSection,
+    GuestsSection, HardeningSection, HostConfig, PathsSection, ProviderSection, RegistrySection,
+    TpmSection, VmmSection,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -195,19 +195,33 @@ fn serialize(config: &HostConfig) -> Result<String, Error> {
     Ok(text)
 }
 
-/// An existing host config with its `[vmm]` section naming `release`, or
-/// `None` when it already does (ADR-0084 Decision 5). Every other key
-/// keeps its value; comments an admin added are not kept.
+/// The `[hardening]` section for `accepted`: none when nothing is accepted.
+fn hardening_section(accepted: &[String]) -> Option<HardeningSection> {
+    (!accepted.is_empty()).then(|| HardeningSection {
+        accepted_reduced: accepted.to_vec(),
+    })
+}
+
+/// An existing host config with the sections the installer owns brought up
+/// to date, or `None` when they already are: `[vmm]` names `release`
+/// (ADR-0084 Decision 5) and `[hardening]` holds exactly `accepted`
+/// (ADR-0139). Every other key keeps its value; comments an admin added are
+/// not kept.
 ///
 /// # Errors
 /// [`Error::Config`] if `existing` does not parse as the provider would.
-pub fn with_vmm(existing: &str, release: &Release) -> Result<Option<String>, Error> {
+pub fn with_managed(
+    existing: &str,
+    release: &Release,
+    accepted: &[String],
+) -> Result<Option<String>, Error> {
     let mut config = HostConfig::parse(existing).map_err(|e| Error::Config(e.to_string()))?;
-    let vmm = vmm_section(release);
-    if config.vmm == vmm {
+    let (vmm, hardening) = (vmm_section(release), hardening_section(accepted));
+    if config.vmm == vmm && config.hardening == hardening {
         return Ok(None);
     }
     config.vmm = vmm;
+    config.hardening = hardening;
     serialize(&config).map(Some)
 }
 
@@ -245,6 +259,7 @@ pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result
         }),
         storage_classes: s.storage.iter().cloned().collect(),
         network_classes: s.network.iter().cloned().collect(),
+        hardening: hardening_section(&s.accepted_reduced),
     };
     serialize(&config)
 }
