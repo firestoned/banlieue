@@ -554,6 +554,7 @@ pub struct ImageSource {
     ///   vsphere + Template:     template name e.g. "ubuntu-22.04-cloudinit"
     ///   proxmox + Template:     template VMID e.g. "9000"
     ///   libvirt + BackingFile:  path e.g. "/var/lib/libvirt/images/ubuntu.qcow2"
+    ///   firecracker + OciArtifact: `<repository>@sha256:<manifest digest>`
     ///   * + Url:                ignored; uses `importFrom`
     #[serde(rename = "ref")]
     pub reference: String,
@@ -582,6 +583,12 @@ pub enum ImageSourceKind {
     /// A URL-only source. Requires `importFrom` to be set; providers that
     /// can't import will skip this image.
     Url,
+    /// A digest-pinned OCI artifact, for `providerClass: firecracker`
+    /// (ADR-0142 Decision 2). `ref` is `<repository>@sha256:<manifest digest>`
+    /// and `importFrom` is not used: the digest is the integrity. The host
+    /// pins its repository and pulls only a digest in it (ADR-0064); every
+    /// other provider class treats this kind as unsupported.
+    OciArtifact,
 }
 
 /// Observed availability of a VMImage across the Providers that can serve it.

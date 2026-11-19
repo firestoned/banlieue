@@ -210,13 +210,28 @@ impl ProviderScheduling {
     }
 }
 
-/// Attestation configuration for one backend (ADR-0049 Decision 10).
+/// PEM marker that opens a certificate block.
+const PEM_CERTIFICATE_BEGIN: &str = "-----BEGIN CERTIFICATE-----";
+/// PEM marker prefix of every private-key block (`PRIVATE KEY`,
+/// `RSA PRIVATE KEY`, `EC PRIVATE KEY`, `ENCRYPTED PRIVATE KEY`).
+const PEM_PRIVATE_KEY_MARKER: &str = "PRIVATE KEY-----";
+/// Why `hostCa` was refused: not exactly one certificate.
+const ERR_HOST_CA_NOT_ONE_CERT: &str = "hostCa: an inline source must hold exactly one certificate";
+/// Why `hostCa` was refused: key material in a published field.
+const ERR_HOST_CA_HAS_PRIVATE_KEY: &str = "hostCa: an inline source must not contain a private key";
+/// Why an attestation block was refused: it anchors nothing.
+const ERR_ATTESTATION_EMPTY: &str =
+    "attestation: at least one of ekTrustBundle, hostCa must be set";
+
+/// Attestation configuration for one backend (ADR-0049 Decision 10,
+/// ADR-0143 Decision 2).
 ///
-/// banlieue itself neither resolves nor verifies against anything here —
+/// banlieue itself neither resolves nor verifies against anything here:
 /// ADR-0049 Decision 2 keeps it out of the verification path. The fields are
-/// configuration published *for the broker* (ADR-0055), which verifies TPM
-/// quotes against the EK certificates that `tpmEnabled` machines publish
-/// (ADR-0045) and needs to know which issuers the administrator trusts.
+/// configuration published *for the broker* (ADR-0055), which needs to know
+/// which issuers the administrator trusts. Each backend uses the anchor that
+/// fits its attestation path, so both are optional and [`validate`](Self::validate)
+/// requires at least one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderAttestation {
@@ -229,8 +244,59 @@ pub struct ProviderAttestation {
     /// `inline`, `configMapRef`, `secretRef` must be set (see
     /// [`CABundleSource`]); references resolve in the Provider's namespace.
     /// Removal of an issuer from this bundle is the revocation mechanism on
-    /// libvirt — swtpm EK certificates never expire.
-    pub ek_trust_bundle: CABundleSource,
+    /// libvirt: swtpm EK certificates never expire. Not used by the
+    /// `firecracker` class, which has no vTPM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ek_trust_bundle: Option<CABundleSource>,
+
+    /// For the `firecracker` class: the host's attestation CA (ADR-0143
+    /// Decision 2), the one certificate whose key signs the short-lived
+    /// certificates the host issues to its guests. Asserted here by the
+    /// administrator who installed the host, never discovered from the
+    /// host's own status (ADR-0049 Decision 10).
+    ///
+    /// Same value-or-source shape as `ekTrustBundle`, but it must hold
+    /// **exactly one** certificate and no private key: an inline source is
+    /// checked by [`validate`](Self::validate). banlieue neither resolves nor
+    /// verifies against it. Revocation is removing it here and from the SPIRE
+    /// bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_ca: Option<CABundleSource>,
+}
+
+impl ProviderAttestation {
+    /// Validate the attestation block's shape, the same rule an admission
+    /// policy enforces.
+    ///
+    /// At least one anchor must be set; each one set must name exactly one
+    /// source ([`CABundleSource::validate`]); and an inline `hostCa` must hold
+    /// exactly one PEM certificate and no private-key block. A `configMapRef`
+    /// or `secretRef` is not read here, so its content is not checked.
+    ///
+    /// # Errors
+    /// Returns a static message naming the first rule broken.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.ek_trust_bundle.is_none() && self.host_ca.is_none() {
+            return Err(ERR_ATTESTATION_EMPTY);
+        }
+        if let Some(bundle) = &self.ek_trust_bundle {
+            bundle.validate()?;
+        }
+        let Some(host_ca) = &self.host_ca else {
+            return Ok(());
+        };
+        host_ca.validate()?;
+        let Some(pem) = host_ca.inline.as_deref() else {
+            return Ok(());
+        };
+        if pem.contains(PEM_PRIVATE_KEY_MARKER) {
+            return Err(ERR_HOST_CA_HAS_PRIVATE_KEY);
+        }
+        if pem.matches(PEM_CERTIFICATE_BEGIN).count() != 1 {
+            return Err(ERR_HOST_CA_NOT_ONE_CERT);
+        }
+        Ok(())
+    }
 }
 
 /// Explicit override for one discovered failure domain's generated `name`,

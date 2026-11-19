@@ -725,4 +725,107 @@ mod tests {
             &PowerState::PoweredOff
         );
     }
+    // ======================================================================
+    // The concrete FirecrackerMachine impl and attestationSubject (ADR-0143)
+    // ======================================================================
+
+    const SUBJECT: &str = "0f3c9a1e-0000-4000-8000-000000000001";
+
+    fn firecracker_machine(
+        subject: Option<&str>,
+    ) -> banlieue_api::infrastructure::FirecrackerMachine {
+        use banlieue_api::infrastructure::{
+            FirecrackerMachine, FirecrackerMachineSpec, FirecrackerMachineStatus,
+        };
+        FirecrackerMachine {
+            metadata: Default::default(),
+            spec: FirecrackerMachineSpec {
+                provider_id: Some("firecracker://fc-a/0f3c9a1e".to_string()),
+                failure_domain: None,
+                provider_ref: banlieue_api::common::ProviderReference {
+                    name: "fc-a".to_string(),
+                    namespace: None,
+                },
+                vcpus: 2,
+                memory_mi_b: 1024,
+                image: "microvm".to_string(),
+                nics: vec![],
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(FirecrackerMachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("fc-a".to_string()),
+                observed_power_state: Some(PowerState::PoweredOn),
+                attestation_subject: subject.map(str::to_string),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn firecracker_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = firecracker_machine(Some(SUBJECT));
+        assert_eq!(m.provider_id(), Some("firecracker://fc-a/0f3c9a1e"));
+        assert_eq!(m.failure_domain(), Some("fc-a"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.desired_power_state(), &PowerState::PoweredOn);
+        assert!(m.tpm_endorsement_certificates().is_empty());
+    }
+
+    #[test]
+    fn firecracker_impl_tolerates_an_absent_status() {
+        let mut m = firecracker_machine(Some(SUBJECT));
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.conditions().is_empty());
+        assert_eq!(m.attestation_subject(), None);
+    }
+
+    /// The subject is a fact the machine publishes; the trait must hand it
+    /// over verbatim, not a value derived from anything else.
+    #[test]
+    fn firecracker_impl_reads_the_attestation_subject_from_status() {
+        assert_eq!(
+            firecracker_machine(Some(SUBJECT)).attestation_subject(),
+            Some(SUBJECT)
+        );
+        assert_eq!(firecracker_machine(None).attestation_subject(), None);
+    }
+
+    #[test]
+    fn the_attestation_subject_is_mirrored_from_the_infra_cr() {
+        let infra = firecracker_machine(Some(SUBJECT));
+        let next = mirror_status_from_infra(&VirtualMachineStatus::default(), &infra, 1);
+        assert_eq!(next.attestation_subject.as_deref(), Some(SUBJECT));
+    }
+
+    /// A machine that stops publishing a subject must not leave a stale one
+    /// on the parent: the claim would hand mediatore a parent ID that no
+    /// longer exists.
+    #[test]
+    fn a_withdrawn_attestation_subject_is_cleared_on_the_parent() {
+        let current = VirtualMachineStatus {
+            attestation_subject: Some(SUBJECT.to_string()),
+            ..Default::default()
+        };
+        let next = mirror_status_from_infra(&current, &firecracker_machine(None), 1);
+        assert_eq!(next.attestation_subject, None);
+    }
+
+    /// Every other kind has no such fact, and the parent must not invent one.
+    #[test]
+    fn a_kind_without_an_attestation_subject_mirrors_none() {
+        let infra = cloud_hypervisor_machine();
+        let current = VirtualMachineStatus {
+            attestation_subject: Some(SUBJECT.to_string()),
+            ..Default::default()
+        };
+        let next = mirror_status_from_infra(&current, &infra, 1);
+        assert_eq!(next.attestation_subject, None);
+    }
 }

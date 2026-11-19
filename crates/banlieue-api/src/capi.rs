@@ -35,7 +35,7 @@ use serde_json::Value;
 
 use crate::banlieue::VirtualMachine;
 use crate::infrastructure::{
-    CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+    CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
 };
 
 /// Cluster API's core API group.
@@ -394,6 +394,8 @@ macro_rules! bootstrap_target {
 
 bootstrap_target!(
     CloudHypervisorMachine => |m| m.spec.provider_id.is_some()
+        || m.status.as_ref().is_some_and(|s| s.host_uid.is_some()),
+    FirecrackerMachine => |m| m.spec.provider_id.is_some()
         || m.status.as_ref().is_some_and(|s| s.host_uid.is_some()),
     LibvirtMachine => |m| m.spec.provider_id.is_some(),
     VSphereMachine => |m| m.spec.provider_id.is_some(),

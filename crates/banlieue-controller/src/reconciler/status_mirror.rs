@@ -20,7 +20,7 @@ use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
 use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
 use banlieue_api::infrastructure::{
-    CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+    CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
 };
 use banlieue_provider_sdk::status::{
     condition_status, find_condition, is_condition_true, set_condition,
@@ -50,6 +50,12 @@ pub trait InfraMachineRead {
     /// (ADR-0045). Empty for a machine with no vTPM, and until its guest
     /// has produced one.
     fn tpm_endorsement_certificates(&self) -> &[String];
+    /// The certificate subject CN the host's signer sets for a guest with no
+    /// vTPM (ADR-0143 Decision 3). `None` for every kind that attests with a
+    /// vTPM, which publishes the EK certificate instead.
+    fn attestation_subject(&self) -> Option<&str> {
+        None
+    }
     /// The power state this infra CR's spec currently asks for. Read by the
     /// duplicate-address path (ADR-0083), which must still apply a VM's
     /// `desiredPowerState` to an infra CR it otherwise leaves untouched.
@@ -60,7 +66,7 @@ pub trait InfraMachineRead {
 /// the CAPI v1beta2 status shape, so the accessors are identical; only the
 /// `tpm_endorsement_certificates` body differs and is supplied by the caller.
 macro_rules! impl_infra_machine_read {
-    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr) => {
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject = |$subj_this:ident| $subj:expr) => {
         impl InfraMachineRead for $kind {
             fn initialization(&self) -> &InitializationStatus {
                 self.status
@@ -105,10 +111,18 @@ macro_rules! impl_infra_machine_read {
                 $tpm
             }
 
+            fn attestation_subject(&self) -> Option<&str> {
+                let $subj_this = self;
+                $subj
+            }
+
             fn desired_power_state(&self) -> &PowerState {
                 &self.spec.desired_power_state
             }
         }
+    };
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr) => {
+        impl_infra_machine_read!($kind, $(#[$tpm_doc])* |$this| $tpm, subject = |_s| None);
     };
     ($kind:ty) => {
         impl_infra_machine_read!($kind, |this| this
@@ -122,6 +136,16 @@ macro_rules! impl_infra_machine_read {
 impl_infra_machine_read!(VSphereMachine);
 impl_infra_machine_read!(LibvirtMachine);
 impl_infra_machine_read!(CloudHypervisorMachine);
+impl_infra_machine_read!(
+    FirecrackerMachine,
+    /// Firecracker has no vTPM, so no EK certificate: the published
+    /// attestation fact is `attestation_subject` instead (ADR-0143).
+    |_this| &[],
+    subject = |this| this
+        .status
+        .as_ref()
+        .and_then(|s| s.attestation_subject.as_deref())
+);
 impl_infra_machine_read!(
     ProxmoxMachine,
     /// Proxmox publishes no EK certificate: its vTPM is a `tpmstate0`
@@ -156,6 +180,9 @@ pub fn mirror_status_from_infra(
     // verifier gets the nonce and the anchor its quote must chain to from
     // one GET.
     next.tpm_endorsement_certificates = infra.tpm_endorsement_certificates().to_vec();
+    // ADR-0143 Decision 3: the counterpart for a guest with no vTPM. Replaced,
+    // not merged, so a subject the machine withdrew does not linger.
+    next.attestation_subject = infra.attestation_subject().map(str::to_string);
 
     // Mirror Ready → InfrastructureReady.
     let infra_ready = is_condition_true(infra.conditions(), condition_types::READY);

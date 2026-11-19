@@ -36,10 +36,10 @@ use serde_json::{Value, json};
 use tracing::{info, warn};
 
 use super::claim_plan::{
-    BoundMember, ClaimInputs, ClaimStep, FinishBind, MemberPlacement, Pick, PickDetail,
-    PoolMembers, PoolWaitState, PoolWarm, SelectionInputs, bound_message, expiry, finish_bind,
-    hold_message, is_expired, member_placement, mirrored_member_state, next_step, pool_selection,
-    rank_pick, subject_held, wait_reason,
+    BoundMember, ClaimInputs, ClaimStep, FinishBind, MemberPlacement, MirroredMemberState, Pick,
+    PickDetail, PoolMembers, PoolWaitState, PoolWarm, SelectionInputs, bound_message, expiry,
+    finish_bind, hold_message, is_expired, member_placement, mirrored_member_state, next_step,
+    pool_selection, rank_pick, subject_held, wait_reason,
 };
 use super::pool::member_view;
 use super::pool_plan::{MemberPhase, MemberView};
@@ -482,10 +482,7 @@ async fn hold(
     // bound claim yields both the nonce and the anchor a quote must chain to
     // (ADR-0049). Empty for a member with no vTPM.
     let mirrored = mirrored_member_state(vm);
-    let mut extra = json!({
-        "addresses": mirrored.addresses,
-        "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
-    });
+    let mut extra = mirrored_status_fields(&mirrored);
     // ADR-0132 Decision 6: backfills a claim bound before status.poolRef
     // existed; for any other claim it rewrites the value the bind wrote.
     if let Some(pool) = mirrored.pool {
@@ -511,6 +508,21 @@ async fn hold(
     )
     .await?;
     Ok(requeue_default())
+}
+
+/// The member state a hold writes onto the claim, as a merge-patch body.
+///
+/// `attestationSubject` is always present: `null` when the member has none,
+/// because a merge patch removes a field only by naming it `null`, and a
+/// subject the member withdrew must not linger on the claim (ADR-0143
+/// Decision 3). The certificates are overwritten the same way, as a list.
+#[must_use]
+pub fn mirrored_status_fields(mirrored: &MirroredMemberState) -> Value {
+    json!({
+        "addresses": mirrored.addresses,
+        "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
+        "attestationSubject": mirrored.attestation_subject,
+    })
 }
 
 /// Destroy the member, then let the claim go.

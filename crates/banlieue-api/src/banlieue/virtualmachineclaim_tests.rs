@@ -307,6 +307,26 @@ mod tests {
         assert!(json.get("virtual_machine_ref").is_none());
     }
 
+    /// ADR-0143 Decision 3: mirrored beside the EK certificates, absent
+    /// (not null) for a member that has no attestation subject.
+    #[test]
+    fn attestation_subject_is_mirrored_camel_case_and_omitted_when_absent() {
+        let empty = serde_json::to_value(VirtualMachineClaimStatus::default()).unwrap();
+        assert!(empty.get("attestationSubject").is_none(), "{empty}");
+        let st = VirtualMachineClaimStatus {
+            phase: ClaimPhase::Bound,
+            attestation_subject: Some("0f3c9a1e-0000-4000-8000-000000000001".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&st).unwrap();
+        assert_eq!(
+            json["attestationSubject"],
+            "0f3c9a1e-0000-4000-8000-000000000001"
+        );
+        let back: VirtualMachineClaimStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, st);
+    }
+
     // ------------------------------------------------------------------
     // The finalizer contract (ADR-0047 Decision 6)
     // ------------------------------------------------------------------

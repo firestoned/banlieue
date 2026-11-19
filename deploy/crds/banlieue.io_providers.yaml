@@ -101,7 +101,9 @@ spec:
                       `inline`, `configMapRef`, `secretRef` must be set (see
                       `CABundleSource`); references resolve in the Provider's namespace.
                       Removal of an issuer from this bundle is the revocation mechanism on
-                      libvirt — swtpm EK certificates never expire.
+                      libvirt: swtpm EK certificates never expire. Not used by the
+                      `firecracker` class, which has no vTPM.
+                    nullable: true
                     properties:
                       configMapRef:
                         description: Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
@@ -136,8 +138,54 @@ spec:
                         - name
                         type: object
                     type: object
-                required:
-                - ekTrustBundle
+                  hostCa:
+                    description: |-
+                      For the `firecracker` class: the host's attestation CA (ADR-0143
+                      Decision 2), the one certificate whose key signs the short-lived
+                      certificates the host issues to its guests. Asserted here by the
+                      administrator who installed the host, never discovered from the
+                      host's own status (ADR-0049 Decision 10).
+
+                      Same value-or-source shape as `ekTrustBundle`, but it must hold
+                      **exactly one** certificate and no private key: an inline source is
+                      checked by `validate`. banlieue neither resolves nor
+                      verifies against it. Revocation is removing it here and from the SPIRE
+                      bundle.
+                    nullable: true
+                    properties:
+                      configMapRef:
+                        description: Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      inline:
+                        description: Inline PEM (one or more concatenated certificates).
+                        nullable: true
+                        type: string
+                      secretRef:
+                        description: Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+                        nullable: true
+                        properties:
+                          key:
+                            description: Key within the object's `data`. Defaults are caller-defined.
+                            nullable: true
+                            type: string
+                          name:
+                            description: Name of the ConfigMap / Secret in the referrer's namespace.
+                            type: string
+                        required:
+                        - name
+                        type: object
+                    type: object
                 type: object
               capabilities:
                 description: |-

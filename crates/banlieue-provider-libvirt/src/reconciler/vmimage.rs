@@ -213,6 +213,13 @@ async fn reconcile_for_provider(
             Some("Template sources are a vSphere concept".to_string()),
             Vec::new(),
         ),
+        ImageSourceKind::OciArtifact => row(
+            provider,
+            false,
+            reasons::UNSUPPORTED_SOURCE_KIND,
+            Some("OciArtifact sources are a firecracker concept".to_string()),
+            Vec::new(),
+        ),
     }
 }
 

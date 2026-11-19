@@ -19,6 +19,8 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 
 - [CloudHypervisorMachine](#cloudhypervisormachine)
 - [CloudHypervisorMachineTemplate](#cloudhypervisormachinetemplate)
+- [FirecrackerMachine](#firecrackermachine)
+- [FirecrackerMachineTemplate](#firecrackermachinetemplate)
 - [LibvirtMachine](#libvirtmachine)
 - [LibvirtMachineTemplate](#libvirtmachinetemplate)
 - [ProxmoxMachine](#proxmoxmachine)
@@ -90,7 +92,8 @@ runs no `tpmEnabled` classes has no reason to set it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `ekTrustBundle` | object | Yes | PEM bundle of CA certificates trusted to issue this backend's vTPM endorsement-key certificates. Provenance differs per backend (ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is each host's `swtpm_localca` issuer certificate, one entry per host. |
+| `ekTrustBundle` | object |  | PEM bundle of CA certificates trusted to issue this backend's vTPM endorsement-key certificates. Provenance differs per backend (ADR-0045): on vSphere the issuing CA is vCenter's; on libvirt it is each host's `swtpm_localca` issuer certificate, one entry per host. |
+| `hostCa` | object |  | For the `firecracker` class: the host's attestation CA (ADR-0143 Decision 2), the one certificate whose key signs the short-lived certificates the host issues to its guests. Asserted here by the administrator who installed the host, never discovered from the host's own status (ADR-0049 Decision 10). |
 
 ##### `.spec.attestation.ekTrustBundle`
 
@@ -103,7 +106,8 @@ Same value-or-source shape as `connection.caBundle`: exactly one of
 `inline`, `configMapRef`, `secretRef` must be set (see
 `CABundleSource`); references resolve in the Provider's namespace.
 Removal of an issuer from this bundle is the revocation mechanism on
-libvirt — swtpm EK certificates never expire.
+libvirt: swtpm EK certificates never expire. Not used by the
+`firecracker` class, which has no vTPM.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -121,6 +125,44 @@ Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
 | `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
 
 ###### `.spec.attestation.ekTrustBundle.secretRef`
+
+Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+##### `.spec.attestation.hostCa`
+
+For the `firecracker` class: the host's attestation CA (ADR-0143
+Decision 2), the one certificate whose key signs the short-lived
+certificates the host issues to its guests. Asserted here by the
+administrator who installed the host, never discovered from the
+host's own status (ADR-0049 Decision 10).
+
+Same value-or-source shape as `ekTrustBundle`, but it must hold
+**exactly one** certificate and no private key: an inline source is
+checked by `validate`. banlieue neither resolves nor
+verifies against it. Revocation is removing it here and from the SPIRE
+bundle.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `configMapRef` | object |  | Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`). |
+| `inline` | string |  | Inline PEM (one or more concatenated certificates). |
+| `secretRef` | object |  | Key in a Secret in the referrer's namespace (key defaults to `ca.crt`). |
+
+###### `.spec.attestation.hostCa.configMapRef`
+
+Key in a ConfigMap in the referrer's namespace (key defaults to `ca.crt`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `key` | string |  | Key within the object's `data`. Defaults are caller-defined. |
+| `name` | string | Yes | Name of the ConfigMap / Secret in the referrer's namespace. |
+
+###### `.spec.attestation.hostCa.secretRef`
 
 Key in a Secret in the referrer's namespace (key defaults to `ca.crt`).
 
@@ -890,6 +932,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the infra CR's `status.addresses`. |
+| `attestationSubject` | string |  | Mirrored from the infra CR's `status.attestationSubject` (ADR-0143 Decision 3): the exact certificate subject CN the host's signer sets for a guest with no vTPM (the `firecracker` class). Public, carrying no authorization; mirrored onward onto a bound `VirtualMachineClaim`. |
 | `conditions` | object[] |  | Standard Kubernetes conditions. Required types: `Ready` — overall readiness `Scheduled` — placement decision exists and is current `PlacementValid` — current placement satisfies the spec `InfrastructureReady` — mirrors the infra CR's Ready condition Optional: `Migrating` — true while a migration is in progress `Paused` — present (True) only while `spec.paused` suspends reconciliation |
 | `heldAddresses` | object[] |  | Static addresses this VM's infrastructure CR was last applied with (ADR-0083). Written by the controller **only** when it applies the infra CR, and carried forward unchanged otherwise, so it records what the guest is configured with: it survives guest reboots and is the same on every backend. A held address is never given to another VM. |
 | `infrastructureRef` | object |  | Reference to the provider-specific infrastructure CR (e.g. `infrastructure.banlieue.io/v1alpha1/VSphereMachine`). Set after scheduling, owned by this VirtualMachine. |
@@ -1437,6 +1480,7 @@ the member as annotations, and never interpreted.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | Mirrored from the bound member so a consumer needs one GET. |
+| `attestationSubject` | string |  | The certificate subject CN of the bound member's node-attestation identity, mirrored from the infra CR (ADR-0143 Decision 3), beside `tpm_endorsement_certificates`. Set for a member of a class with no vTPM (`firecracker`), which signs a certificate with this subject for the guest; absent otherwise. Public and carrying no authorization, so a consumer needs one GET. |
 | `boundAt` | string |  | Time is a wrapper around time.Time which supports correct marshaling to YAML and JSON. Wrappers are provided for many of the factory methods that the time package offers. |
 | `conditions` | object[] |  |  |
 | `expiresAt` | string |  | `bound_at + spec.ttlSeconds`. The member is deleted at this instant. |
@@ -1913,9 +1957,9 @@ has one, rather than leaving it to `find_url_source` /
 | --- | --- | --- | --- |
 | `checksum` | string |  | Optional checksum for imported images. Format: `<alg>:<hex>`, e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`. Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify the built artifact against this value before writing it to the backend and fail closed on mismatch or an unsupported algorithm. |
 | `importFrom` | string |  | Optional source URL. When set, providers that support image import will pull from here if the image isn't already present locally. |
-| `kind` | string | Yes | What kind of backend artifact `ref` refers to. Allowed: `Template`, `BackingFile`, `Url`. |
+| `kind` | string | Yes | What kind of backend artifact `ref` refers to. Allowed: `Template`, `BackingFile`, `Url`, `OciArtifact`. |
 | `providerClass` | string | Yes | Name of the ProviderClass this source applies to. Conventional values: `vsphere`, `proxmox`, `libvirt`. |
-| `ref` | string | Yes | Provider-interpreted reference: vsphere + Template: template name e.g. "ubuntu-22.04-cloudinit" proxmox + Template: template VMID e.g. "9000" libvirt + BackingFile: path e.g. "/var/lib/libvirt/images/ubuntu.qcow2" * + Url: ignored; uses `importFrom` |
+| `ref` | string | Yes | Provider-interpreted reference: vsphere + Template: template name e.g. "ubuntu-22.04-cloudinit" proxmox + Template: template VMID e.g. "9000" libvirt + BackingFile: path e.g. "/var/lib/libvirt/images/ubuntu.qcow2" firecracker + OciArtifact: `<repository>@sha256:<manifest digest>` * + Url: ignored; uses `importFrom` |
 
 #### `.spec.template`
 
@@ -2603,6 +2647,272 @@ Static IPAM parameters (address, prefix, gateway, nameservers, domain).
 ###### `.spec.template.spec.providerRef`
 
 The `Provider` for the one host that runs this machine (ADR-0060).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
+
+---
+
+## FirecrackerMachine
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `FirecrackerMachine` · **Scope:** Namespaced · **Short names:** `fcm`
+
+FirecrackerMachine: the concrete, scheduled microVM request for a
+Firecracker host.
+
+You normally do not create this by hand: banlieue's controller does, owned
+by the `VirtualMachine` it was scheduled from, and the host-resident
+provider on the chosen host runs it as a Firecracker guest.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Provider | string | `.spec.providerRef.name` | 0 |
+| Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
+| Image | string | `.spec.image` | 1 |
+| ProviderID | string | `.spec.providerID` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend. |
+| `image` | string | Yes | The image to boot: `<repository>@sha256:<manifest digest>`, the resolved `ref` of the `VMImage`'s `OciArtifact` source (ADR-0142 Decision 2). The host pulls only a digest in the repository it pins; the cluster says which image, never where images may come from. |
+| `memoryMiB` | integer | Yes | Guest memory in MiB. Fixed at boot, and must cover the image's RAM overlay as well as its working set (ADR-0142 Decision 4): the provider refuses a value below the image's declared minimum. |
+| `nics` | object[] | Yes | Network interfaces. One tap each, on the host's private bridge for the network class (ADR-0137 Decision 5). |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `firecracker://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
+| `providerRef` | object | Yes | The `Provider` for the one host that runs this machine. Shared-capable from the first commit (ADR-0133): the namespace may name a `Provider` outside the machine's own, which only `banlieue-controller` may set. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud seed drive, attached read-only second; the provider reads no Secret or ConfigMap (ADR-0137 Decision 4, ADR-0054). |
+| `vcpus` | integer | Yes | Virtual CPUs. Fixed at boot: there is no hotplug (ADR-0137 Decision 7), so a `VMClass` change is a `Recreate`. |
+
+#### `.spec.nics[]`
+
+Network interfaces. One tap each, on the host's private bridge for the
+network class (ADR-0137 Decision 5).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ipam` | object | Yes | IP address management for this interface. The address and gateway are passed to the guest on its kernel command line (ADR-0137 Decision 5). |
+| `macAddress` | string |  | Optional MAC address. The provider derives a stable one from the machine UID otherwise. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `networkClass` | string | Yes | Network class: a name the host resolves to one of its bridges. Never a bridge name from the cluster. |
+
+##### `.spec.nics[].ipam`
+
+IP address management for this interface. The address and gateway are
+passed to the guest on its kernel command line (ADR-0137 Decision 5).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+###### `.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+####### `.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+###### `.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+#### `.spec.providerRef`
+
+The `Provider` for the one host that runs this machine. Shared-capable
+from the first commit (ADR-0133): the namespace may name a `Provider`
+outside the machine's own, which only `banlieue-controller` may set.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
+
+### `.status`
+
+Observed state of a FirecrackerMachine, shaped to the CAPI v1beta2
+InfraMachine status contract. The non-contract fields mean what they mean
+on `CloudHypervisorMachineStatus`, so the controller's status mirror
+treats both backends alike.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addresses` | object[] |  | CAPI contract field (optional): VM addresses. Known before boot, from IPAM (ADR-0024, ADR-0033). |
+| `attestationSubject` | string |  | The exact certificate subject CN the host's signer sets for this guest: this machine's `metadata.uid`, never a value from the guest (ADR-0143 Decision 3). Public and carrying no authorization; mirrored onto the bound claim so mediatore can compute the node entry's parent before the guest boots. This class has no vTPM, so this replaces the EK certificate as the published attestation fact. |
+| `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
+| `guestInstalled` | boolean |  | Whether the guest has announced readiness over its vsock (ADR-0137 Decision 6). Sticky once true. |
+| `hostUid` | integer |  | The unprivileged host uid this machine's unit runs as (ADR-0063 Decision 3). Recorded so the provider re-adopts a running guest without trusting its own memory. |
+| `initialization` | object |  | CAPI contract field. |
+| `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
+| `observedPowerState` | string |  | The VM's last observed run state. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+
+#### `.status.addresses[]`
+
+CAPI contract field (optional): VM addresses. Known before boot, from
+IPAM (ADR-0024, ADR-0033).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.initialization`
+
+CAPI contract field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+---
+
+## FirecrackerMachineTemplate
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `FirecrackerMachineTemplate` · **Scope:** Namespaced · **Short names:** `fcmt`
+
+FirecrackerMachineTemplate: a stamped-out FirecrackerMachine spec.
+
+CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+can mint identical machines. A spec template, not a disk template: it
+carries no per-VM identity (ADR-0108).
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `template` | object | Yes | The spec stamped into every machine created from this template. |
+
+#### `.spec.template`
+
+The spec stamped into every machine created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec` | object | Yes | The FirecrackerMachine spec for machines created from this template. |
+
+##### `.spec.template.spec`
+
+The FirecrackerMachine spec for machines created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement. One host is one failure domain on this backend. |
+| `image` | string | Yes | The image to boot: `<repository>@sha256:<manifest digest>`, the resolved `ref` of the `VMImage`'s `OciArtifact` source (ADR-0142 Decision 2). The host pulls only a digest in the repository it pins; the cluster says which image, never where images may come from. |
+| `memoryMiB` | integer | Yes | Guest memory in MiB. Fixed at boot, and must cover the image's RAM overlay as well as its working set (ADR-0142 Decision 4): the provider refuses a value below the image's declared minimum. |
+| `nics` | object[] | Yes | Network interfaces. One tap each, on the host's private bridge for the network class (ADR-0137 Decision 5). |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node, if this VM becomes a Kubernetes node. Format: `firecracker://<provider-name>/<machine-uid>`. Set by the provider once the guest exists. |
+| `providerRef` | object | Yes | The `Provider` for the one host that runs this machine. Shared-capable from the first commit (ADR-0133): the namespace may name a `Provider` outside the machine's own, which only `banlieue-controller` may set. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Rendered into a NoCloud seed drive, attached read-only second; the provider reads no Secret or ConfigMap (ADR-0137 Decision 4, ADR-0054). |
+| `vcpus` | integer | Yes | Virtual CPUs. Fixed at boot: there is no hotplug (ADR-0137 Decision 7), so a `VMClass` change is a `Recreate`. |
+
+###### `.spec.template.spec.nics[]`
+
+Network interfaces. One tap each, on the host's private bridge for the
+network class (ADR-0137 Decision 5).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `ipam` | object | Yes | IP address management for this interface. The address and gateway are passed to the guest on its kernel command line (ADR-0137 Decision 5). |
+| `macAddress` | string |  | Optional MAC address. The provider derives a stable one from the machine UID otherwise. |
+| `name` | string | Yes | Stable NIC name; echoed in status. |
+| `networkClass` | string | Yes | Network class: a name the host resolves to one of its bridges. Never a bridge name from the cluster. |
+
+####### `.spec.template.spec.nics[].ipam`
+
+IP address management for this interface. The address and gateway are
+passed to the guest on its kernel command line (ADR-0137 Decision 5).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `pool` | object |  | Pool-based IPAM parameters. |
+| `static` | object |  | Static IPAM parameters (address, prefix, gateway, nameservers, domain). |
+
+######## `.spec.template.spec.nics[].ipam.pool`
+
+Pool-based IPAM parameters.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `poolRef` | object | Yes | Typed reference (apiGroup + kind + name + optional namespace). |
+
+######### `.spec.template.spec.nics[].ipam.pool.poolRef`
+
+Typed reference (apiGroup + kind + name + optional namespace).
+
+Used wherever the referenced kind is pluggable — e.g. IPAM pools, where we
+want to accept either `ipam.cluster.x-k8s.io/IPAddressClaim` (CAPI's
+default) or future banlieue-native pool types.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `apiGroup` | string | Yes |  |
+| `kind` | string | Yes |  |
+| `name` | string | Yes |  |
+| `namespace` | string |  |  |
+
+######## `.spec.template.spec.nics[].ipam.static`
+
+Static IPAM parameters (address, prefix, gateway, nameservers, domain).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes |  |
+| `domain` | string |  | DNS domain, used both as a DNS search domain and (by a `VirtualMachine.spec.networkOverrides` consumer, ADR-0024) to build an FQDN as `<vm-name>.<domain>`. |
+| `gateway` | string |  |  |
+| `nameservers` | string[] |  |  |
+| `prefix` | integer | Yes |  |
+
+###### `.spec.template.spec.providerRef`
+
+The `Provider` for the one host that runs this machine. Shared-capable
+from the first commit (ADR-0133): the namespace may name a `Provider`
+outside the machine's own, which only `banlieue-controller` may set.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

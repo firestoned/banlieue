@@ -388,6 +388,13 @@ pub struct VirtualMachineStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
 
+    /// Mirrored from the infra CR's `status.attestationSubject` (ADR-0143
+    /// Decision 3): the exact certificate subject CN the host's signer sets
+    /// for a guest with no vTPM (the `firecracker` class). Public, carrying
+    /// no authorization; mirrored onward onto a bound `VirtualMachineClaim`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attestation_subject: Option<String>,
+
     /// Static addresses this VM's infrastructure CR was last applied with
     /// (ADR-0083). Written by the controller **only** when it applies the
     /// infra CR, and carried forward unchanged otherwise, so it records what
