@@ -78,6 +78,18 @@ flowchart LR
     service-ch-egress-gateway["Egress gateway VM (two per Cloud Hypervisor host)"]
     system-ch-sandbox-guest["Sandbox guest on a Cloud Hypervisor host"]
     system-ch-host-sandbox-rules["Host rules for the sandbox segment"]
+    service-provider-firecracker["banlieue-provider-firecracker"]
+    service-firecracker-guest["Firecracker microVM (one per guest)"]
+    network-firecracker-host["Firecracker KVM Host"]
+    service-banlieue-host-firecracker-installer["banlieue host firecracker (installer)"]
+    service-provider-host-layer["banlieue-provider-host (shared host provider layer, library)"]
+    data-asset-firecracker-machine-cr["FirecrackerMachine / FirecrackerMachineTemplate Custom Resources"]
+    data-asset-microvm-image-artifact["microvm image (one OCI artifact)"]
+    data-asset-firecracker-image-cache["Firecracker host image cache (a directory per image)"]
+    data-asset-firecracker-attestation-ca["Firecracker host attestation CA (key and certificate)"]
+    system-banlieue-slice["banlieue.slice (parent of every banlieue VM slice)"]
+    system-banlieue-guests-slice["banlieue-guests.slice (Cloud Hypervisor guests)"]
+    system-banlieue-firecracker-slice["banlieue-firecracker.slice (Firecracker guests)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -108,6 +120,7 @@ flowchart LR
         data-asset-infra-cluster-cr
         data-asset-capi-cluster-cr
         data-asset-capi-bootstrap-secret
+        data-asset-firecracker-machine-cr
     end
     actor-vm-consumer --> data-asset-virtualmachine-cr
     actor-vm-consumer --> data-asset-vmclass-cr
@@ -212,6 +225,42 @@ flowchart LR
     network-ch-uplink-bridge -->|TCP| network-cloud-hypervisor-host
     system-ch-host-sandbox-rules -->|TCP| network-ch-sandbox-bridge
     service-provider-cloud-hypervisor -->|TCP| network-ch-sandbox-bridge
+    subgraph sg_network-firecracker-host [Network Firecracker Host]
+        service-provider-firecracker
+        service-firecracker-guest
+        data-asset-firecracker-image-cache
+        data-asset-firecracker-attestation-ca
+    end
+    subgraph sg_network-firecracker-host [Network Firecracker Host]
+        service-banlieue-host-firecracker-installer
+    end
+    subgraph sg_system-banlieue-slice [System Banlieue Slice]
+        system-banlieue-guests-slice
+        system-banlieue-firecracker-slice
+    end
+    subgraph sg_system-banlieue-firecracker-slice [System Banlieue Firecracker Slice]
+        service-firecracker-guest
+    end
+    service-provider-firecracker -->|HTTPS| service-kubernetes-api
+    service-banlieue-controller --> data-asset-firecracker-machine-cr
+    service-banlieue-controller --> data-asset-provider-cr
+    service-provider-firecracker --> data-asset-firecracker-machine-cr
+    service-provider-firecracker --> data-asset-provider-cr
+    service-provider-firecracker -->|TCP| service-firecracker-guest
+    service-provider-firecracker --> service-provider-host-layer
+    service-provider-cloud-hypervisor --> service-provider-host-layer
+    service-firecracker-guest -->|TCP| service-provider-firecracker
+    service-firecracker-guest -->|TCP| service-provider-firecracker
+    service-in-guest-agent -->|HTTPS| service-sandbox-broker
+    actor-platform-operator --> data-asset-provider-cr
+    actor-platform-operator --> data-asset-firecracker-attestation-ca
+    service-provider-firecracker --> data-asset-firecracker-attestation-ca
+    service-provider-firecracker -->|HTTPS| service-oci-registry
+    service-provider-firecracker --> data-asset-firecracker-image-cache
+    service-firecracker-guest --> data-asset-firecracker-image-cache
+    subgraph sg_service-oci-registry [Service Oci Registry]
+        data-asset-microvm-image-artifact
+    end
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

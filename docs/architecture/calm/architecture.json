@@ -601,7 +601,7 @@
       "unique-id": "data-asset-provider-cr",
       "node-type": "data-asset",
       "name": "Provider Custom Resource",
-      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10). IMPLEMENTED (ADR-0133): a Provider may live in the provider namespace and serve every served tenant namespace that has no Provider of its own; its credentialsRef Secret stays in that namespace, out of reach of tenants. spec.namespaceSelector (ADR-0133 Decision 11) declares the namespaces the Provider serves besides its own; absent means its own only and an empty selector serves nothing. Setting it needs update on the virtual subresource providers/namespaceselector (deploy/admission/provider-namespace-selector-authorization.yaml)."
+      "description": "Namespaced CRD (banlieue.io/v1alpha1) declaring one backend instance in this cluster: providerClassRef (\u2192 ProviderClass, which carries the backend kind), connection (endpoint, credentialsRef, optional caBundle/insecureSkipTLSVerify), and capabilities (storage/network class mappings plus a free-form features list, e.g. the vtpm well-known value gating VMClass.spec.tpmEnabled, ADR-0039). spec.attestation.ekTrustBundle (ADR-0049 Decision 10) is the admin-supplied, never-discovered EK trust anchor for this backend's vTPMs \u2014 vCenter's CA on vSphere, each host's swtpm_localca issuer on libvirt \u2014 published for the broker, which banlieue itself never verifies against. Owned by the platform operator; VirtualMachines never reference a Provider by name \u2014 they are matched onto one via placement.providerSelector against the Provider's labels. features is set by hand, never auto-discovered from the backend (e.g. vtpm requires the operator to confirm KMS + vTPM actually work end-to-end in that vCenter first). IMPLEMENTED (ADR-0128): status.failureDomains[].attributes.capacity gains memoryAvailableMiB and storage[] (storageClass, totalGiB, freeGiB, shared), measured by each provider and rounded down to whole GiB so a status patch happens only when a rounded figure changes (each Provider status change requeues every VirtualMachine); spec.scheduling gains storageReservePercent (0 to 50, default 10). IMPLEMENTED (ADR-0133): a Provider may live in the provider namespace and serve every served tenant namespace that has no Provider of its own; its credentialsRef Secret stays in that namespace, out of reach of tenants. spec.namespaceSelector (ADR-0133 Decision 11) declares the namespaces the Provider serves besides its own; absent means its own only and an empty selector serves nothing. Setting it needs update on the virtual subresource providers/namespaceselector (deploy/admission/provider-namespace-selector-authorization.yaml). DESIGNED, NOT IMPLEMENTED (ADR-0143): for the firecracker class spec.attestation gains hostCa, a CABundleSource holding exactly ONE certificate, the host's attestation CA, asserted by the administrator who installed the host and never read from the host's own status (ADR-0049 Decision 10). banlieue neither resolves nor verifies against it: it is published for the broker and for whoever assembles the SPIRE server's bundle. Exactly-one-source and single-certificate are admission rules, on the pattern of ekTrustBundle."
     },
     {
       "unique-id": "data-asset-providerclass-cr",
@@ -619,7 +619,7 @@
       "unique-id": "data-asset-vmimage-cr",
       "node-type": "data-asset",
       "name": "VMImage Custom Resource",
-      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.imageRef.name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.buildArtifact (typed cloudImage | iso, set by banlieue-imagebuilder) and status.perProvider[] (set by each provider, incl. per-zone import progress in .zones[]) are separate fields owned by separate field managers. spec.cloudConfigs[] supplies an ordered, layered list of cloud-config sources baked into the built artifact (ADR-0037, supersedes the earlier single spec.cloudConfig). spec.template.installMode (immediate | deferred | manual, ADR-0021/ADR-0040) controls whether the vSphere provider installs Kairos once into the golden template (immediate, the default) or leaves the template un-installed with the ISO still attached so each clone runs the installer itself at its own first boot (deferred/manual) -- deferred is the sanctioned mode for a tpmEnabled: true VMClass, since Kairos's kcrypt only seals encryption keys to a TPM present during install, and a clone's vTPM (ADR-0039) does not exist yet when the golden template itself installs. See ADR-0010, ADR-0020, ADR-0037, and ADR-0040."
+      "description": "Cluster-scoped CRD (banlieue.io/v1alpha1) declaring a boot image and its source. Referenced by VirtualMachine.spec.imageRef.name; resolved by the provider against its backend's native image catalog. spec.sources[].kind == Url sources are built by banlieue-imagebuilder; status.buildArtifact (typed cloudImage | iso, set by banlieue-imagebuilder) and status.perProvider[] (set by each provider, incl. per-zone import progress in .zones[]) are separate fields owned by separate field managers. spec.cloudConfigs[] supplies an ordered, layered list of cloud-config sources baked into the built artifact (ADR-0037, supersedes the earlier single spec.cloudConfig). spec.template.installMode (immediate | deferred | manual, ADR-0021/ADR-0040) controls whether the vSphere provider installs Kairos once into the golden template (immediate, the default) or leaves the template un-installed with the ISO still attached so each clone runs the installer itself at its own first boot (deferred/manual) -- deferred is the sanctioned mode for a tpmEnabled: true VMClass, since Kairos's kcrypt only seals encryption keys to a TPM present during install, and a clone's vTPM (ADR-0039) does not exist yet when the golden template itself installs. See ADR-0010, ADR-0020, ADR-0037, and ADR-0040. DESIGNED, NOT IMPLEMENTED (ADR-0142): ImageSource gains kind OciArtifact for providerClass firecracker, whose ref is <repository>@sha256:<manifest digest> of a microvm image. It is an explicit new kind and not Url (an OCI reference is not a URL, and here the digest is the integrity); the existing kinds are unchanged and the existing providers ignore it. The host pins its repository, as ADR-0064 requires."
     },
     {
       "unique-id": "data-asset-osartifact-cr",
@@ -631,7 +631,7 @@
       "unique-id": "data-asset-infra-machine-cr",
       "node-type": "data-asset",
       "name": "Infrastructure Machine CR (VSphereMachine, etc.)",
-      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation. IMPLEMENTED (ADR-0133): spec.providerRef gains an optional namespace (absent means the machine's own namespace). The machine always lives beside its VM; a provider in another namespace is named by this reference. Only the controller's identity may create a machine or set providerRef (RBAC default-deny for tenants plus a ValidatingAdmissionPolicy), because a machine naming a platform Provider is a placement that skipped scheduling."
+      "description": "Namespaced CRD (infrastructure.banlieue.io/v1alpha1) created by the banlieue-controller as the message to the provider. Satisfies the CAPI v1beta2 InfraMachine contract so the same provider can serve both banlieue and CAPI. Status is owned by the provider; the banlieue controller mirrors it back onto the VirtualMachine. ACCEPTED (ADR-0129); milestone 1 IMPLEMENTED (controller serving CloudHypervisorMachine, Cloud Hypervisor hold, admission policy; libvirt, vSphere and Proxmox are neither held nor served until milestone 2): on a machine owned by a CAPI Machine, the controller also writes spec.userData (the Machine's bootstrap data) and the one status condition BootstrapDataReady, which providers never apply. VSphereMachine additionally carries an optional createdBy field (ADR-0089), copied from the parent VirtualMachine's banlieue.io/created-by annotation. IMPLEMENTED (ADR-0133): spec.providerRef gains an optional namespace (absent means the machine's own namespace). The machine always lives beside its VM; a provider in another namespace is named by this reference. Only the controller's identity may create a machine or set providerRef (RBAC default-deny for tenants plus a ValidatingAdmissionPolicy), because a machine naming a platform Provider is a placement that skipped scheduling. DESIGNED, NOT IMPLEMENTED (ADR-0137): FirecrackerMachine and FirecrackerMachineTemplate join the family (data-asset-firecracker-machine-cr)."
     },
     {
       "unique-id": "data-asset-infra-cluster-cr",
@@ -729,7 +729,7 @@
       "unique-id": "service-in-guest-agent",
       "node-type": "service",
       "name": "In-guest agent (mediatore, separate repository)",
-      "description": "Runs inside a sandbox VM, receives the subject's credential over an attested channel, and verifies it before starting any workload (ADR-0049). Deliberately NOT a banlieue binary: its release cadence is the image's, nothing in banlieue imports it, and banlieue's side of the contract is the subject fields it publishes on a claim (subject.issuer, subject.id) plus the mirrored EK certificate and the Provider's trust anchors; the guest attests through SPIRE's TPM node attestation (ADR-0049, amended 2026-11-05). Its keys are generated on the member's first boot, onto a sealed partition, never shipped in an image (ADR-0108). It checks iss against subject.issuer, the token's subject claim against subject.id, and aud against its OWN configured audience -- never one read from the claim, since whoever wrote the claim would then choose the audience and a token minted for any other service would pass. A failed handshake leaves the sandbox unused and reaped: there is no partial-trust mode, because a sandbox that ran unattested is indistinguishable afterwards from one that did not.",
+      "description": "Runs inside a sandbox VM, receives the subject's credential over an attested channel, and verifies it before starting any workload (ADR-0049). Deliberately NOT a banlieue binary: its release cadence is the image's, nothing in banlieue imports it, and banlieue's side of the contract is the subject fields it publishes on a claim (subject.issuer, subject.id) plus the mirrored EK certificate and the Provider's trust anchors; the guest attests through SPIRE's TPM node attestation (ADR-0049, amended 2026-11-05). Its keys are generated on the member's first boot, onto a sealed partition, never shipped in an image (ADR-0108). It checks iss against subject.issuer, the token's subject claim against subject.id, and aud against its OWN configured audience -- never one read from the claim, since whoever wrote the claim would then choose the audience and a token minted for any other service would pass. A failed handshake leaves the sandbox unused and reaped: there is no partial-trust mode, because a sandbox that ran unattested is indistinguishable afterwards from one that did not. DESIGNED, NOT IMPLEMENTED (ADR-0143, mediatore ADR-0049): in a Firecracker guest, which has no vTPM, the agent makes its own key, sends a CSR over vsock to the host provider's per-guest signer, and its SPIRE agent presents the certificate the host signed to x509pop node attestation. The private key never leaves the guest. banlieue's side is only the per-guest listener, the host CA asserted on the Provider and the published attestationSubject; the agent and the SPIRE server are mediatore's, in another repository.",
       "interfaces": [
         {
           "unique-id": "agent-attestation-mtls",
@@ -745,7 +745,7 @@
       "unique-id": "service-provider-cloud-hypervisor",
       "node-type": "service",
       "name": "banlieue-provider-cloud-hypervisor",
-      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. Its unit makes /dev, /sys and /proc read-only, so those capabilities cannot re-own a device node, a sysfs attribute or a cgroup.procs, or write a /proc/sys/net sysctl; it deliberately sets neither ProtectKernelTunables nor ProtectControlGroups, which on systemd 257 re-mount /dev and /sys writable. Its only device beyond the standard pseudo-devices is /dev/net/tun, and the `banlieue` user is not in the kvm group (ADR-0063 Decision 6, amended 2026-11-16). It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114). ACCEPTED (ADR-0127), not yet implemented: it copies a moving guest's disk to the destination host's provider (a reflink clone streamed while the guest runs, then only the extents no longer shared with it, at cutover) and relays the VMM's migration stream, over one per-move TLS connection to that provider; it listens only for the duration of one move, for one pinned peer. IMPLEMENTED (ADR-0128): adds memoryAvailableMiB (/proc/meminfo MemAvailable, capped by the guests' slice budget less what the slice uses) and a typed storage[] (statvfs size and f_bavail per storage-class directory) to its capacity, replacing the raw storageFreeGiB display string. IMPLEMENTED (ADR-0134): a host can serve tenant namespaces. It reads its own Provider.spec.namespaceSelector from its home namespace once at startup (a change needs a restart), watches CloudHypervisorMachines in the selected namespaces, matches a machine by name and namespace, and reads no Secret outside its home namespace. The machines behind a selector are reachable only through the opt-in banlieue-provider-cloud-hypervisor-shared ClusterRole, which the operator binds only for a Provider with a non-empty namespaceSelector; a host with none keeps a namespaced-only token.",
+      "description": "Host-resident provider for Cloud Hypervisor (ADR-0060): the first banlieue component that runs OUTSIDE the management cluster, as a systemd service on the KVM host, as the unprivileged `banlieue` user with CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER only. Its unit makes /dev, /sys and /proc read-only, so those capabilities cannot re-own a device node, a sysfs attribute or a cgroup.procs, or write a /proc/sys/net sysctl; it deliberately sets neither ProtectKernelTunables nor ProtectControlGroups, which on systemd 257 re-mount /dev and /sys writable. Its only device beyond the standard pseudo-devices is /dev/net/tun, and the `banlieue` user is not in the kvm group (ADR-0063 Decision 6, amended 2026-11-16). It dials the API server with a bound ServiceAccount token from the host (nothing dials the host), watches its own Provider, CloudHypervisorMachines and VMImages, and realises each machine as one instance of a root-owned template unit, started over D-Bus (ADR-0063, amended), a persistent tap on a host bridge, an OS disk cloned from the host image cache and a NoCloud seed. Machines name storage and network CLASSES; the host resolves them through its own root-owned config, so a path or bridge never crosses into the cluster (ADR-0062 Decision 4). Holds no hypervisor credential: the hypervisor is local. Every privileged file change inside a guest's directory goes through a file handle, never a path, so a compromised guest cannot redirect it with a symlink. Code: crates/banlieue-provider-cloud-hypervisor. Host files: deploy/provider-cloud-hypervisor/host/. It publishes its failure domain's typed capacity (ADR-0107): CPUs and memory guests may use, the smaller of the host's and the guests' slice budget read from systemd over D-Bus, and the 512 MiB per-VM VMM overhead. For a firstBootSealing machine it reads the guest's `sealed=` vsock report into status.sealedPartitions and withholds GuestReady until every listed partition is sealed (ADR-0112). A static NIC reaches the guest as a cloud-init network-config (v2) in that seed, matched by the NIC's derived MAC, and a static machine gets a seed even with no user-data (ADR-0114). ACCEPTED (ADR-0127), not yet implemented: it copies a moving guest's disk to the destination host's provider (a reflink clone streamed while the guest runs, then only the extents no longer shared with it, at cutover) and relays the VMM's migration stream, over one per-move TLS connection to that provider; it listens only for the duration of one move, for one pinned peer. IMPLEMENTED (ADR-0128): adds memoryAvailableMiB (/proc/meminfo MemAvailable, capped by the guests' slice budget less what the slice uses) and a typed storage[] (statvfs size and f_bavail per storage-class directory) to its capacity, replacing the raw storageFreeGiB display string. IMPLEMENTED (ADR-0134): a host can serve tenant namespaces. It reads its own Provider.spec.namespaceSelector from its home namespace once at startup (a change needs a restart), watches CloudHypervisorMachines in the selected namespaces, matches a machine by name and namespace, and reads no Secret outside its home namespace. The machines behind a selector are reachable only through the opt-in banlieue-provider-cloud-hypervisor-shared ClusterRole, which the operator binds only for a Provider with a non-empty namespaceSelector; a host with none keeps a namespaced-only token. DESIGNED, NOT IMPLEMENTED (ADR-0141): its host-generic modules (tap and bridge, systemd and slice arithmetic, neighbour table, credential renewal, vsock report listener, import client, host config, capacity) move unchanged into the shared banlieue-provider-host library as a behaviour-preserving extraction, and its unit-name prefixes become properties of its `Vmm` implementation; on a host that also runs Firecracker it stays a separate process and reports only banlieue-guests.slice (ADR-0138).",
       "interfaces": [
         {
           "unique-id": "guest-report-unix-socket",
@@ -841,7 +841,7 @@
       "unique-id": "network-cloud-hypervisor-host",
       "node-type": "network",
       "name": "Cloud Hypervisor KVM Host",
-      "description": "A bare-metal KVM host prepared by `banlieue host cloud-hypervisor install` (ADR-0067, ADR-0084; the script is now an SSH wrapper around it): the pinned VMM and CLOUDHV.fd firmware, the `banlieue` user, a guest uid range registered in /etc/userdb (one user and private group per guest) or, with --guest-accounts files, created in the host's own account databases (ADR-0139), storage class directories (0711, per-guest 2770), root-owned template units for guests, vTPMs and image imports, a polkit rule limiting the provider to start/stop/reset-failed instances of those templates for uids in the guest range, the root-owned banlieue-guests.slice whose AllowedCPUs (refused on cgroup v1, where it is not enforced), CPUWeight, CPUQuota, MemoryMax and TasksMax the operator declares (ADR-0139) so guests cannot starve other workloads on a shared host (ADR-0105), a tmpfiles.d entry for the run root and /dev/net/tun, and the provider's own sandboxed unit, which install restarts when it or the provider binary changed. One host is one Provider and one failure domain (ADR-0060)."
+      "description": "A bare-metal KVM host prepared by `banlieue host cloud-hypervisor install` (ADR-0067, ADR-0084; the script is now an SSH wrapper around it): the pinned VMM and CLOUDHV.fd firmware, the `banlieue` user, a guest uid range registered in /etc/userdb (one user and private group per guest) or, with --guest-accounts files, created in the host's own account databases (ADR-0139), storage class directories (0711, per-guest 2770), root-owned template units for guests, vTPMs and image imports, a polkit rule limiting the provider to start/stop/reset-failed instances of those templates for uids in the guest range, the root-owned banlieue-guests.slice whose AllowedCPUs (refused on cgroup v1, where it is not enforced), CPUWeight, CPUQuota, MemoryMax and TasksMax the operator declares (ADR-0139) so guests cannot starve other workloads on a shared host (ADR-0105), a tmpfiles.d entry for the run root and /dev/net/tun, and the provider's own sandboxed unit, which install restarts when it or the provider binary changed. One Provider is one VMM on one host (ADR-0060): a host may ALSO be a Firecracker host, as a separate Provider with its own ServiceAccount, polkit rule, units, uid range, bridge and sibling slice (ADR-0138; see network-firecracker-host). The host is still one failure domain, reported by both Providers, so a pool spread across the two gets no extra fault tolerance."
     },
     {
       "unique-id": "service-oci-registry",
@@ -1012,6 +1012,106 @@
       "node-type": "system",
       "name": "Host rules for the sandbox segment",
       "description": "ACCEPTED (ADR-0144), not yet implemented. Root-owned iptables rules installed by the operator from a documented recipe (the binary installs no package, ADR-0067 Decision 7): INPUT dropped from the sandbox bridge, FORWARD dropped from the sandbox bridge to anything outside it and between the two bridges, masquerade of the uplink bridge's range only, IPv6 disabled on both bridges. preflight reports them and refuses install for a sandbox class without them."
+    },
+    {
+      "unique-id": "service-provider-firecracker",
+      "node-type": "service",
+      "name": "banlieue-provider-firecracker",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137). Host-resident provider for the `firecracker` class, the second banlieue component (after the Cloud Hypervisor provider, ADR-0060) that runs OUTSIDE the management cluster: `banlieue provider firecracker`, a systemd service on a KVM host, outbound only, with no listener beyond its health and metrics endpoints, a bound ServiceAccount token and no Secret reads. It watches its own Provider, FirecrackerMachines and VMImages and serves tenant namespaces through the same Provider namespaceSelector as the Cloud Hypervisor provider from its first commit, never built single-namespace and ported later (ADR-0133, ADR-0137 Decision 1). It realises each machine as one instance of the root-owned template unit banlieue-firecracker@<uid>.service, started over D-Bus (polkit allows start, stop, reset-failed and set-property MemoryMax on guest instances only), a persistent tap it prepares on the host's per-VMM bridge, and a boot configuration file it writes (ADR-0140 Decision 5). It re-adopts running guests from the units and never trusts its own memory. It publishes capacity from banlieue-firecracker.slice exactly as the Cloud Hypervisor provider does from banlieue-guests.slice, and records the host kernel and CPU in Provider.status, treating a host outside upstream's tested list as a visible fact and not a block (ADR-0137 Decision 8). Per guest it listens on <uds_path>_1024 for readiness and on <uds_path>_1025 for the identity bootstrap, where it is also the signer of the guest's attestation certificate with the host's own CA (ADR-0143 Decision 4; the signer is part of this process, not a separate service). It declares absent, and admission refuses: a vTPM, hotplug, devices beyond block, net, vsock, balloon and entropy, and live migration; snapshot restore is not used (ADR-0137 Decision 7, ADR-0052). Built on the shared host provider layer (ADR-0141), as its own process with its own ServiceAccount, credential, polkit rule, units, slice and uid range (ADR-0138 Decision 1). Nothing of this exists in crates/ or deploy/ yet.",
+      "interfaces": [
+        {
+          "unique-id": "firecracker-guest-report-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:<uds_path>_1024",
+            "port": 1024
+          }
+        },
+        {
+          "unique-id": "firecracker-guest-attestation-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:<uds_path>_1025",
+            "port": 1025
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "service-firecracker-guest",
+      "node-type": "service",
+      "name": "Firecracker microVM (one per guest)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0140). One firecracker process per guest, run by systemd as banlieue-firecracker@<guest uid>.service, an instance of a root-owned template, as the guest's OWN host uid. systemd is the jailer: Firecracker's own jailer is not used in v1, because it needs a root unit with CAP_SYS_ADMIN and five other capabilities and a per-guest chroot that root code would have to prepare and remove, and because on cgroup v1 it takes the VMM out of the slice budget unless --parent-cgroup is given. The unit applies the same hardening set as the Cloud Hypervisor guest template (ADR-0063 Decision 3, subject to ADR-0139 on an older host); the VMM runs with no capabilities, NoNewPrivs and Firecracker's own seccomp filter. It starts from a boot configuration file with --no-api: there is NO API socket, so the provider cannot call it after start, a restart boots the guest from the same file, and a crash cannot leave a half-configured VMM. The unit has Restart=no (a crashed guest is replaced by the reconciler, never resurrected without a fresh identity bootstrap), stop is `systemctl stop` (SIGTERM, about 70 ms, no guest cooperation), and ExecStartPre removes the guest's stale vsock sockets as the uid inside its own run directory. CPUAccounting and MemoryAccounting are on; MemoryMax is guest memory plus a named overhead constant set from a measurement under load. The guest is a kernel, an optional initramfs and a read-only root filesystem shared by every guest of the image, with writes in a RAM overlay that dies with the guest; the kernel command line is composed by the provider (platform arguments first, then the image's own, nothing from the cluster, ip= for the static address, reboot=k so a guest reboot exits the VMM). It has one tap, a vsock device and no vTPM. Runs inside banlieue-firecracker.slice (ADR-0138).",
+      "interfaces": [
+        {
+          "unique-id": "firecracker-vsock-unix-socket",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/host-port.json",
+          "config": {
+            "host": "unix:<uds_path>_<port>",
+            "port": 0
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-firecracker-host",
+      "node-type": "network",
+      "name": "Firecracker KVM Host",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137, ADR-0138). A bare-metal KVM host prepared by `banlieue host firecracker install`: the pinned VMM, a guest uid range, root-owned template units, a polkit rule limiting the provider to start, stop, reset-failed and set-property MemoryMax on instances of those templates for uids in the guest range, the root-owned banlieue-firecracker.slice whose budget the operator declares at install and the provider cannot change, a private bridge with no uplink, NAT or DHCP, the image cache and the host's attestation CA. It may be the SAME physical machine as a Cloud Hypervisor host (ADR-0138): the two are separate Providers, each its own VMM with its own ServiceAccount, polkit rule, unit templates, uid range, bridge, subnet, storage directory and sibling slice, sharing only the kernel and the host's own agents. On a host without systemd userdb or cgroup v2 the per-guest uid and the CPU budget follow ADR-0139. One Provider is one VMM on one host (ADR-0060); a host that runs both VMMs is one failure domain reported by both Providers, so a pool spread across them gets no extra fault tolerance (ADR-0138 Decision 4)."
+    },
+    {
+      "unique-id": "service-banlieue-host-firecracker-installer",
+      "node-type": "service",
+      "name": "banlieue host firecracker (installer)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138, ADR-0139, ADR-0143). `banlieue host firecracker {preflight,status,selftest,install}`, the same banlieue binary, run once as root, the counterpart of the Cloud Hypervisor installer. Every install runs preflight first; preflight reads the OTHER VMM's slice if one exists and refuses, quoting the offending line and never clamping, when the two budgets overlap (AllowedCPUs lists intersect, or the CPU quotas on a cgroup v1 host), when MemoryMax values sum to more than MemTotal less hugepages, or when one slice is unbudgeted on a host where both VMMs are present (ADR-0138 Decision 3). Each install takes its own --guest-cpus, --guest-memory-max and the other ADR-0105 flags for its own slice. Its attestation CA stage creates one EC P-256 CA as the provider's user, never overwritten by a re-run: --force does not rotate it, --rotate-attestation-ca makes a NEW CA with a NEW name (ADR-0143 Decision 1). The CA name is chosen with --attestation-ca-name, defaulting to the host's short name restricted to letters, digits, dots, dashes and underscores; any other character is refused, not replaced. Not a daemon, and not in the reconcile path (ADR-0067 Decision 3 applies unchanged)."
+    },
+    {
+      "unique-id": "service-provider-host-layer",
+      "node-type": "service",
+      "name": "banlieue-provider-host (shared host provider layer, library)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0141). A Linux-only workspace library, not a process, that holds what every host-resident provider does the same way: persistent tap creation and ownership and bridge membership (the only `unsafe` code, with its audit moving with it), the systemd D-Bus client and slice budget arithmetic, guest addresses from the IPv4 neighbour table, the provider's renewal of its own cluster credential, the hybrid-vsock report listener, the registry import client, the host config and the capacity and status computation. It is extracted from banlieue-provider-cloud-hypervisor as a pure move FIRST, with the tests and fakes moving beside the code and the Cloud Hypervisor provider unchanged in behaviour, before any Firecracker code exists. The VMM is behind a per-class `Vmm` trait (unit template and instance naming, slice, how a plan becomes a boot configuration, runtime control calls, declared absences). The Cloud Hypervisor extension keeps the TPM and install-media operations. Both providers remain separate processes; the layer is code they share, not a runtime they share. It is not part of banlieue-provider-sdk, which stays VMM- and platform-neutral. The Cloud Hypervisor provider exists today as one crate with these modules inside it."
+    },
+    {
+      "unique-id": "data-asset-firecracker-machine-cr",
+      "node-type": "data-asset",
+      "name": "FirecrackerMachine / FirecrackerMachineTemplate Custom Resources",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137, ADR-0143). Namespaced CRDs (infrastructure.banlieue.io/v1alpha1) satisfying the CAPI v1beta2 InfraMachine contract, beside CloudHypervisorMachine and not a `vmm` field on it: each class keeps its own declared capabilities, so the scheduler answers whether a Provider can run a VM from the Provider alone. spec.providerRef is a ProviderReference with an optional namespace (ADR-0133). Status is owned by the provider, which publishes status.attestationSubject: the machine's own metadata.uid, the exact string the signer will put in the guest certificate's subject, mirrored onto the bound claim like the EK certificate (ADR-0045) so a consumer needs one GET and mediatore can compute the node entry's parent before the guest boots. A Recreate (a VMClass change, since there is no hotplug) makes a new machine and so a new subject. It has no field for kernel arguments and no tpmEnabled."
+    },
+    {
+      "unique-id": "data-asset-microvm-image-artifact",
+      "node-type": "data-asset",
+      "name": "microvm image (one OCI artifact)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142). One OCI image manifest with artifactType application/vnd.banlieue.microvm.v1, identified by its manifest digest, so a pull gets a matched kernel, initramfs and root filesystem or nothing. A config blob (application/vnd.banlieue.microvm.config.v1+json, schema version 1) carries only architecture, the image's own kernel cmdline and minMemoryMiB. Three layers in a fixed order: the kernel (uncompressed vmlinux, gzip), an optional initramfs (cpio, gzip) and the root filesystem as built (not recompressed). Each gzip layer carries its uncompressed length in the annotation io.banlieue.layer.size, covered by the manifest digest. It is the consumer's own build output (ADR-0108), pushed by a first-party banlieue-oci subcommand from the consumer's pipeline, so banlieue's imagebuilder, an OSArtifact and a PVC are not involved and VMImage.status.buildArtifact is unused for this class. There is no signature scheme beyond the digest pin and the host's pinned repository in v1."
+    },
+    {
+      "unique-id": "data-asset-firecracker-image-cache",
+      "node-type": "data-asset",
+      "name": "Firecracker host image cache (a directory per image)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decisions 3 and 4). In the storage class's image area, one directory per image keyed by manifest digest: images/sha256-<hex>/ holding kernel (decompressed, verified), initramfs (absent if the image has none), rootfs (verified) and boot.json (the config blob verbatim). A pull writes into a temporary directory and renames it into place only after every layer's digest and size is verified, so nothing partial is visible. The rootfs is the guest's root drive, attached read-only, and the SAME file backs every guest of the image: no per-guest disk, no clone, no grow, no delete. Unlike the Cloud Hypervisor cache, which is private to the provider, guests read it as their own uid, so the image area is 0711 and each image's directory and files are 0755 and 0644: world-readable, an accepted risk because an image holds no secret by contract. An image is referenced, and never evicted, while this host's row of a live VMImage resolves to it or any guest unit on the host maps it."
+    },
+    {
+      "unique-id": "data-asset-firecracker-attestation-ca",
+      "node-type": "data-asset",
+      "name": "Firecracker host attestation CA (key and certificate)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143). One EC P-256 CA per host, the counterpart of the Cloud Hypervisor host's EK CA (ADR-0065 Decision 6): <state root>/attestation-ca/ca.key (mode 0600, the provider's user only) and ca.crt (public, 0644) in a 0700 directory a guest's uid cannot traverse. Its certificate's common name is the issuer CN in every agent ID the host's guests get (x509pop/<issuer CN>/<subject CN>), so it must be unique across every CA the SPIRE server trusts; the installer cannot check that, so it is checked where the bundle is assembled. The administrator who installed the host asserts ca.crt on the Provider as spec.attestation.hostCa; nothing banlieue publishes about the host is an anchor. Compromising the provider yields this key, which mints certificates for THAT host's guests only. Revocation is removing the CA from the Provider and from the SPIRE bundle; certificates are short lived, so expiry bounds them too."
+    },
+    {
+      "unique-id": "system-banlieue-slice",
+      "node-type": "system",
+      "name": "banlieue.slice (parent of every banlieue VM slice)",
+      "description": "IMPLEMENTED (ADR-0106): the one cgroup for the host's VM total, where an operator bounds guests and nodes together with `systemctl set-property`. Its children are banlieue-guests.slice (Cloud Hypervisor guests), banlieue-nodes.slice (management-cluster nodes) and, ADR-0138, banlieue-firecracker.slice."
+    },
+    {
+      "unique-id": "system-banlieue-guests-slice",
+      "node-type": "system",
+      "name": "banlieue-guests.slice (Cloud Hypervisor guests)",
+      "description": "IMPLEMENTED (ADR-0105): the root-owned, operator-budgeted slice of the Cloud Hypervisor guests and their vTPMs. Unchanged by ADR-0138: on a host that also runs Firecracker it is the Cloud Hypervisor half of the split, and the Cloud Hypervisor provider still reports only this slice's budget as capacity."
+    },
+    {
+      "unique-id": "system-banlieue-firecracker-slice",
+      "node-type": "system",
+      "name": "banlieue-firecracker.slice (Firecracker guests)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138). The Firecracker half of a split host, a SIBLING of banlieue-guests.slice under banlieue.slice, with the same flags and budget declared at install, never inferred, and a provider with no rights on it. It is deliberately NOT named banlieue-guests-firecracker.slice: systemd reads a dash in a slice name as parent and child, so that name would nest the Firecracker guests inside the Cloud Hypervisor budget and make the two budgets one. The two budgets are disjoint and checked by preflight at install; the check guards a footgun and is not a security boundary, since the host owner can edit unit files and a provider cannot. A noisy Firecracker pool can still hurt the Cloud Hypervisor half through shared hardware (memory bandwidth, last-level cache, SMT siblings, disk): a performance risk inside one trust domain, not an isolation break. On a cgroup v1 host the CPU ceiling is a quota, a share of time and not exclusive cores (ADR-0139)."
     }
   ],
   "relationships": [
@@ -1068,7 +1168,8 @@
             "data-asset-infra-machine-cr",
             "data-asset-infra-cluster-cr",
             "data-asset-capi-cluster-cr",
-            "data-asset-capi-bootstrap-secret"
+            "data-asset-capi-bootstrap-secret",
+            "data-asset-firecracker-machine-cr"
           ]
         }
       }
@@ -2825,6 +2926,477 @@
         }
       },
       "protocol": "TCP"
+    },
+    {
+      "unique-id": "rel-firecracker-host-runs-provider-and-guests",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137, ADR-0138): the Firecracker provider, its guests' VMMs, the image cache and the host attestation CA live on the KVM host, not in the management cluster. With the Cloud Hypervisor provider this is the second place a banlieue controller runs outside Kubernetes. The same physical host may also appear under network-cloud-hypervisor-host.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "network-firecracker-host",
+          "nodes": [
+            "service-provider-firecracker",
+            "service-firecracker-guest",
+            "data-asset-firecracker-image-cache",
+            "data-asset-firecracker-attestation-ca"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-host-installer-prepares-host",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138, ADR-0143): the installer runs on the KVM host as root, once, preflights against the other VMM's slice, creates the attestation CA and exits. It opens no socket and talks to no cluster.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "network-firecracker-host",
+          "nodes": [
+            "service-banlieue-host-firecracker-installer"
+          ]
+        }
+      },
+      "controls": {
+        "firecracker-split-budgets-checked": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138 Decision 3): every install runs preflight, which reads the other VMM's slice and refuses, quoting the offending line, when AllowedCPUs lists intersect, when MemoryMax values over-commit MemTotal less hugepages, or when one slice is unbudgeted where both VMMs are present; never a silent clamp. A guard against a footgun, not a security boundary: the host owner can edit unit files, a provider cannot (polkit does not allow set-property on a slice). Specified in docs/adr/0138-a-host-may-run-both-vmms-with-split-budgets.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-6 Resource Availability"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-banlieue-slice-contains-vm-slices",
+      "description": "banlieue.slice is the parent of the Cloud Hypervisor guests' slice (ADR-0105, ADR-0106) and, ADR-0138, of the Firecracker guests' slice, as SIBLINGS: the Firecracker slice is not banlieue-guests-firecracker.slice, because systemd would read that as a child of the Cloud Hypervisor budget.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "system-banlieue-slice",
+          "nodes": [
+            "system-banlieue-guests-slice",
+            "system-banlieue-firecracker-slice"
+          ]
+        }
+      },
+      "controls": {
+        "firecracker-sibling-slice-budget": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138 Decisions 2 and 4): each VMM has its own sibling slice and each Provider publishes capacity from its OWN slice, so the scheduler sees two halves of a machine, never one machine twice. The Firecracker Provider reads banlieue-firecracker.slice over D-Bus as the Cloud Hypervisor Provider reads banlieue-guests.slice. Both report the same failure domain, so spread does not count the two as fault tolerance. Specified in docs/adr/0138-a-host-may-run-both-vmms-with-split-budgets.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-6 Resource Availability"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-slice-confines-guest",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0138): the Firecracker guests' units are set into banlieue-firecracker.slice by the root-owned template, so the slice's budget applies to them. The provider has no rights on the slice.",
+      "relationship-type": {
+        "deployed-in": {
+          "container": "system-banlieue-firecracker-slice",
+          "nodes": [
+            "service-firecracker-guest"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-kube-api",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137): the host-resident provider dials the management-cluster API server from the KVM host with a bound ServiceAccount token (nothing dials the host): watches its Provider by name, FirecrackerMachines in its own and its served tenant namespaces, and VMImages; server-side-applies Provider status (capacity, host kernel and CPU), its perProvider VMImage row, and machine status including attestationSubject. Same CRD-only contract as every provider; the Lease it renews is its liveness signal (ADR-0102).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-firecracker"
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": [
+              "kube-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "firecracker-provider-namespaced-rbac": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137 Decision 2, ADR-0060, ADR-0134 pattern): the host identity is the per-Provider Role the operator builds for an External class, with no Secret or ConfigMap access, plus the opt-in shared ClusterRole only for a Provider with a non-empty namespaceSelector (an empty selector serves nothing). Specified in docs/adr/0137-firecracker-provider-class.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-controller-applies-firecracker-machine",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137): banlieue-controller schedules a VirtualMachine onto a firecracker Provider and applies a FirecrackerMachine naming storage and network classes and the image from the VMImage's perProvider row. A request for a vTPM, hotplug, a device beyond block, net, vsock, balloon and entropy, or live migration is refused at admission.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-firecracker-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-shared-provider-firecracker-serves-tenant-machine",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137 Decision 1, ADR-0133): a Firecracker host serves tenant namespaces through the Provider's namespaceSelector from the first commit; the guest uid ledger and image-eviction check count machines across every served namespace.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-firecracker",
+          "nodes": [
+            "data-asset-firecracker-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-guest",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0140): the provider prepares the persistent tap owned by the guest's uid and joined to the bridge, and writes the boot configuration file owned by the uid (a file the provider writes as root with the default umask is 0640 root and the VMM could not read it), then starts banlieue-firecracker@<uid>.service over D-Bus. It then has NO channel to the VMM: there is no API socket. Stop is `systemctl stop`. Guests are systemd's children, so a provider restart leaves them running.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-firecracker"
+          },
+          "destination": {
+            "node": "service-firecracker-guest"
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "firecracker-systemd-as-jailer": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0140 Decision 1): the guest unit runs the VMM directly as User=%i with the Cloud Hypervisor template's hardening set; the VMM ends with no capabilities, NoNewPrivs and Firecracker's own seccomp filter, and its cgroups stay systemd's, inside the slice. The provider needs nothing beyond the CAP_NET_ADMIN, CAP_CHOWN and CAP_FOWNER it already has for Cloud Hypervisor (Decision 5). Specified in docs/adr/0140-firecracker-guests-are-supervised-by-systemd-not-the-jailer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6 Least Privilege"
+              }
+            }
+          ]
+        },
+        "firecracker-no-jailer-accepted-gap": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0140 Decision 2): ACCEPTED GAP, not a control. Without the jailer the VMM has no chroot and no pid namespace: it can read the host filesystem wherever file modes allow and sees every process in /proc. Observed denied: /etc/shadow, other guests' storage and run directories, /dev/mem, /dev/sda; /etc, /dev and /app are read-only and /tmp is private. Revisit when a host needs the chroot: a systemd-native equivalent (RootDirectory= with BindPaths) has not been measured, and any change needs a new ADR; a jailer invocation with --cgroup and no --parent-cgroup is to be refused by a test. Nothing secret is on a Firecracker command line. Recorded here so the gap is not hidden; the threat-model pass is due when implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-39 Process Isolation"
+              }
+            }
+          ]
+        },
+        "firecracker-config-file-no-api-socket": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0140 Decision 3): the VMM starts from a configuration file with --no-api, so there is no runtime socket to create, own, clean or defend, a restart boots the guest from the same file, and Restart=no leaves replacement to the reconciler, so no guest is booted again without a fresh identity bootstrap. A runtime socket is added only by amending docs/adr/0140-firecracker-guests-are-supervised-by-systemd-not-the-jailer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "CM-7 Least Functionality"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-uses-host-layer",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0141 Decision 3): the Firecracker provider is written on the shared host layer and never as a copy of the Cloud Hypervisor crate, supplying its own `Vmm` implementation. No runtime is shared: separate processes, ServiceAccounts, credentials, polkit rules, units and slices, so a fault, restart or upgrade of one never touches the other.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-firecracker",
+          "nodes": [
+            "service-provider-host-layer"
+          ]
+        }
+      },
+      "controls": {
+        "single-audited-host-layer": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0141 Decisions 1 and 5): one audited copy of the tap, supervision and credential code serves both VMMs. The extraction is a pure move with its tests and fakes moving beside it and not weakened; #![deny(unsafe_code)] everywhere but `sys`, per-block SAFETY comments and #![deny(clippy::undocumented_unsafe_blocks)] move with it. Specified in docs/adr/0141-shared-host-provider-layer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SA-8 Security and Privacy Engineering Principles"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-cloud-hypervisor-uses-host-layer",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0141 Decision 5): the Cloud Hypervisor provider moves onto the shared layer first, with no change of behaviour and its whole suite and live tiers re-run before Firecracker code starts.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-cloud-hypervisor",
+          "nodes": [
+            "service-provider-host-layer"
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-guest-report-vsock",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137 Decision 6, ADR-0141 Decision 4): the guest connects to (CID 2, port 1024), which Firecracker's hybrid vsock delivers to <uds_path>_1024 of THAT microVM, where the provider listens, and reports readiness. Guest-initiated only: the host pushes nothing. The provider then publishes GuestReady.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-firecracker-guest"
+          },
+          "destination": {
+            "node": "service-provider-firecracker",
+            "interfaces": [
+              "firecracker-guest-report-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "firecracker-vsock-peer-is-guest": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137 Decision 6): the listener is per guest, on that guest's own socket path, so the peer of a connection is that guest by construction. A guest cannot reach another guest's sockets and nothing on the network can reach them at all: vsock is not routed and is not netfilter traffic. Specified in docs/adr/0137-firecracker-provider-class.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-7 Boundary Protection"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-guest-attestation-csr-vsock",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 4): the guest makes its own EC P-256 key, connects to port 1025, delivered to <uds_path>_1025, and sends a PEM CSR; the provider signs one short-lived certificate for the guest's public key with the host's attestation CA and closes. One connection is one request. The private key never leaves the guest, the provider never logs a CSR or a certificate body and only counts outcomes (issued, refused for size, key type, signature or rate), and renewal at half life uses the same key (mediatore ADR-0049).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-firecracker-guest"
+          },
+          "destination": {
+            "node": "service-provider-firecracker",
+            "interfaces": [
+              "firecracker-guest-attestation-unix-socket"
+            ]
+          }
+        }
+      },
+      "protocol": "TCP",
+      "controls": {
+        "firecracker-signer-public-key-only": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 4): the signer reads a PEM CSR of at most 4096 bytes and refuses anything else without a reply, accepts an EC P-256 key only and checks the CSR's own signature, takes ONLY the public key and discards the CSR's subject and every extension, and sets the subject CN itself to attestationSubject, the machine's metadata.uid. It rate-limits per guest. Pure Rust in the provider, no subprocess in the request path (ADR-0011). Specified in docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-10 Information Input Validation"
+              }
+            }
+          ]
+        },
+        "firecracker-signer-leaf-profile": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 4): every certificate has basicConstraints CA:FALSE (the SPIRE server does not enforce it, so the signer must) and keyUsage digitalSignature (the server requires it), no SAN, no extended key usage, a random serial and a validity from the host config, bounded. Specified in docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12 Cryptographic Key Establishment and Management"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-agent-attests-x509pop",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143, mediatore ADR-0049): the in-guest SPIRE agent presents the host-signed certificate to the SPIRE server's x509pop node attestor, through the attestation relay path mediatore already has, and the agent ID is x509pop/<issuer CN from hostCa>/<attestationSubject>. The SPIRE server is mediatore's and has no node in this model; the edge ends at the broker node, which is how this model represents mediatore's attestation side. banlieue's part ends at the published Provider.spec.attestation.hostCa and FirecrackerMachineStatus.attestationSubject, from which mediatore computes the node entry's parent before the guest boots. Until both exist, a firecracker pool member cannot be bound to a claim.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-in-guest-agent"
+          },
+          "destination": {
+            "node": "service-sandbox-broker"
+          }
+        }
+      },
+      "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-operator-asserts-host-ca-on-provider",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 2): the administrator who installed the host copies its ca.crt into the Provider as spec.attestation.hostCa, the same assertion the libvirt administrator makes with each host's swtpm_localca issuer. The host's own status carries no anchor.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": [
+            "data-asset-provider-cr",
+            "data-asset-firecracker-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "firecracker-host-ca-admin-asserted": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 2, ADR-0049 Decision 10): the trust anchor is asserted by the administrator on the Provider and never discovered: an anchor taken from the hypervisor would let whoever controls the hypervisor choose the anchor that vouches for its own guests. hostCa holds exactly one certificate, enforced by admission rules on the pattern of deploy/admission/provider-attestation-ektrustbundle.yaml (a new policy file, not yet written). banlieue neither resolves nor verifies against it. Specified in docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5 Authenticator Management"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-holds-attestation-ca",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decisions 1 and 4): the provider, running as the provider's user, uses the CA key to sign guest certificates; the installer created it as that user so it is born with the right owner.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-provider-firecracker",
+          "nodes": [
+            "data-asset-firecracker-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "firecracker-ca-key-custody": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0143 Decision 1): ca.key is EC P-256, mode 0600, the provider's user only, in a 0700 directory a guest's uid cannot traverse (the confined VMM was observed unable to read other directories under the host's storage and run roots), never overwritten by a re-run. A compromised provider can mint certificates for that host's guests only, since the issuer CN is in every agent ID; it cannot mint an identity another host's guests hold. Rotation is explicit and uses a new name. Specified in docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12 Cryptographic Key Establishment and Management"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-registry",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142): for an OciArtifact source the host provider starts a transient pull unit, as for Cloud Hypervisor, which pulls the microvm image manifest and its three layers BY DIGEST from the OCI registry into the host image cache. The reconciler never touches bytes. Registry credentials are files in the host config's credentials directory, never a cluster Secret (ADR-0064). The client is shared with Cloud Hypervisor; banlieue-oci grows multi-layer push and pull.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-firecracker"
+          },
+          "destination": {
+            "node": "service-oci-registry",
+            "interfaces": [
+              "oci-distribution-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "firecracker-image-pull-pins-repository": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decision 2, ADR-0064): the host pulls only a digest in the one repository its root-owned config names and re-checks its own command line; the cluster says which image, the host owner says where images may come from. Whoever can write a VMImage cannot choose what a host boots. Specified in docs/adr/0142-microvm-image-and-artifact-contract.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "CM-7 Least Functionality"
+              }
+            }
+          ]
+        },
+        "firecracker-image-pull-fails-closed": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decision 6): the pull unit refuses the image when the manifest is not exactly this artifact type, a layer's media type is unknown or out of order, a required layer is missing, the config blob is not schema version 1, architecture is not the host's, a gzip layer decompresses to more or less than its annotated length, a layer exceeds the host's per-layer ceiling, or a digest does not match; it also refuses an image whose cmdline sets a platform argument. Nothing is renamed into place, the reason is reported as ImportFailed, and the unit is reset so the next reconcile retries. Specified in docs/adr/0142-microvm-image-and-artifact-contract.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SI-7 Software, Firmware, and Information Integrity"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-firecracker-writes-image-cache",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decision 3): the pull unit writes into a temporary directory and renames images/sha256-<hex>/ into place only after every layer's digest and size is verified.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-firecracker"
+          },
+          "destination": {
+            "node": "data-asset-firecracker-image-cache"
+          }
+        }
+      }
+    },
+    {
+      "unique-id": "rel-firecracker-guest-reads-image-cache",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decisions 3 and 4): the VMM loads the cached kernel and initramfs and attaches the cached rootfs read-only as the root drive, as the guest's own uid; the same file backs every guest of the image and writes go to a RAM overlay that dies with the guest.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-firecracker-guest"
+          },
+          "destination": {
+            "node": "data-asset-firecracker-image-cache"
+          }
+        }
+      },
+      "controls": {
+        "firecracker-image-cache-world-readable": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142 Decision 3): ACCEPTED RISK. A guest reads the shared files as its own uid, so the image area is 0711 and each image's files are world-readable; any local account that knows an image's digest can read it. Acceptable because an image holds no secret by contract: a template carries no per-VM identity and secrets arrive over vsock or the seed (ADR-0108). The cache is not private to the provider, unlike Cloud Hypervisor's. Specified in docs/adr/0142-microvm-image-and-artifact-contract.md; not yet implemented.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-3 Access Enforcement"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-oci-registry-holds-microvm-image",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142): the consumer's pipeline pushes a microvm image to the operator-provided OCI registry through the first-party banlieue-oci push subcommand; the registry holds it as one artifact and integrity comes from digest addressing, not from trusting the registry.",
+      "relationship-type": {
+        "composed-of": {
+          "container": "service-oci-registry",
+          "nodes": [
+            "data-asset-microvm-image-artifact"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -3813,6 +4385,87 @@
           "description": "The VMM opens the container and its group under Landlock and attaches the function; the guest's driver sees the device."
         }
       ]
+    },
+    {
+      "unique-id": "flow-create-virtualmachine-firecracker",
+      "name": "Create a VirtualMachine on a Firecracker host, from request to GuestReady and attested",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0137, ADR-0140, ADR-0142, ADR-0143). The back half runs on a KVM host with no vTPM: identity comes from a certificate the host signs for the guest's own key, not from an endorsement key.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-kubectl",
+          "description": "VM consumer applies a VirtualMachine whose placement selects a firecracker Provider; a request for a vTPM or hotplug is refused at admission."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-controller-applies-firecracker-machine",
+          "description": "banlieue-controller schedules it onto the host's failure domain, against the capacity of banlieue-firecracker.slice, and applies a FirecrackerMachine."
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-firecracker-kube-api",
+          "description": "The host's provider sees the machine, records a guest uid on status before any host work and publishes status.attestationSubject, the machine's metadata.uid, so mediatore can compute the node entry's parent before the guest boots.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-firecracker-guest",
+          "description": "The provider prepares the tap and the uid-owned boot configuration, composes the kernel command line (platform arguments, then the image's, ip= for the static address), starts banlieue-firecracker@<uid>.service and opens its per-guest vsock listeners."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-firecracker-guest-reads-image-cache",
+          "description": "The VMM boots the cached kernel and initramfs over the shared read-only root, with a RAM overlay for writes."
+        },
+        {
+          "sequence-number": 6,
+          "relationship-unique-id": "rel-firecracker-guest-report-vsock",
+          "description": "The guest reports readiness on port 1024; the provider publishes GuestReady and the static address, and banlieue-controller mirrors it onto the VirtualMachine."
+        },
+        {
+          "sequence-number": 7,
+          "relationship-unique-id": "rel-firecracker-guest-attestation-csr-vsock",
+          "description": "The guest makes its own key and sends a CSR on port 1025; the signer takes only the public key and answers with one short-lived certificate whose subject is attestationSubject."
+        },
+        {
+          "sequence-number": 8,
+          "relationship-unique-id": "rel-firecracker-agent-attests-x509pop",
+          "description": "The in-guest SPIRE agent attests with x509pop against the SPIRE server, which trusts the host CA the administrator asserted in Provider.spec.attestation.hostCa; the agent ID is x509pop/<issuer CN>/<attestationSubject>."
+        }
+      ]
+    },
+    {
+      "unique-id": "flow-import-vmimage-firecracker",
+      "name": "Pull a microvm image into a Firecracker host's cache",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0142). The image is the consumer's own build, pushed to a registry by the consumer's pipeline; each host pulls it by digest and verifies it before it becomes visible.",
+      "transitions": [
+        {
+          "sequence-number": 1,
+          "relationship-unique-id": "rel-consumer-authors-vm-cr",
+          "description": "A VMImage with kind OciArtifact and ref <repository>@sha256:<manifest digest> is applied for providerClass firecracker."
+        },
+        {
+          "sequence-number": 2,
+          "relationship-unique-id": "rel-provider-firecracker-kube-api",
+          "description": "The host provider's VMImage watch fires; it checks the reference against its host config's pinned repository and starts the pull unit over D-Bus.",
+          "direction": "destination-to-source"
+        },
+        {
+          "sequence-number": 3,
+          "relationship-unique-id": "rel-provider-firecracker-registry",
+          "description": "The pull unit fetches the manifest and the kernel, initramfs and root filesystem layers by digest and refuses the image on any mismatch, unknown or out-of-order layer, wrong architecture, length disagreement, over-ceiling layer, or a cmdline that sets a platform argument."
+        },
+        {
+          "sequence-number": 4,
+          "relationship-unique-id": "rel-provider-firecracker-writes-image-cache",
+          "description": "The decompressed, verified files are written to a temporary directory and renamed to images/sha256-<hex>/ only when every layer checked out."
+        },
+        {
+          "sequence-number": 5,
+          "relationship-unique-id": "rel-provider-firecracker-kube-api",
+          "description": "The provider publishes its perProvider row with the resolved manifest digest, or ImportFailed and the reason, and the unit is reset so the next reconcile retries."
+        }
+      ]
     }
   ],
   "controls": {
@@ -4120,7 +4773,7 @@
       ]
     },
     "vm-resource-accounting": {
-      "description": "IMPLEMENTED (ADR-0105, ADR-0106): every Cloud Hypervisor VM a banlieue component runs is under banlieue.slice. Guests (banlieue-ch@, banlieue-swtpm@) are in banlieue-guests.slice, set in the root-owned templates and budgeted by the operator's declared `install --guest-*` flags (ADR-0105); management-cluster nodes are in banlieue-nodes.slice, set by scripts/bootstrap-k0s-cluster.sh (ADR-0106). banlieue.slice is one cgroup for the host's VM total, where an operator bounds guests and nodes together with `systemctl set-property`. On a cgroup v1 host (systemd 239) AllowedCPUs is refused by the installer and --guest-cpu-quota (CPUQuota, a share of time and not cores) is the CPU ceiling (ADR-0139). The provider has no rights on any slice. `banlieue host cloud-hypervisor overhead` (read-only, no root) reports per-VM guest vs host-side CPU from /proc and cgroup counters.",
+      "description": "IMPLEMENTED (ADR-0105, ADR-0106): every Cloud Hypervisor VM a banlieue component runs is under banlieue.slice. Guests (banlieue-ch@, banlieue-swtpm@) are in banlieue-guests.slice, set in the root-owned templates and budgeted by the operator's declared `install --guest-*` flags (ADR-0105); management-cluster nodes are in banlieue-nodes.slice, set by scripts/bootstrap-k0s-cluster.sh (ADR-0106). banlieue.slice is one cgroup for the host's VM total, where an operator bounds guests and nodes together with `systemctl set-property`. On a cgroup v1 host (systemd 239) AllowedCPUs is refused by the installer and --guest-cpu-quota (CPUQuota, a share of time and not cores) is the CPU ceiling (ADR-0139). The provider has no rights on any slice. `banlieue host cloud-hypervisor overhead` (read-only, no root) reports per-VM guest vs host-side CPU from /proc and cgroup counters. DESIGNED, NOT IMPLEMENTED (ADR-0138): a host may also run Firecracker guests in banlieue-firecracker.slice, a SIBLING of banlieue-guests.slice under banlieue.slice with its own declared budget, checked disjoint from the Cloud Hypervisor budget by preflight; each Provider publishes capacity from its own slice.",
       "requirements": [
         {
           "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -4331,6 +4984,13 @@
     "docs/adr/0134-cloud-hypervisor-serves-tenant-namespaces.md",
     "docs/adr/0135-claim-selection-strategies.md",
     "docs/adr/0136-cloud-hypervisor-guests-get-whole-pci-devices-through-vfio.md",
+    "docs/adr/0137-firecracker-provider-class.md",
+    "docs/adr/0138-a-host-may-run-both-vmms-with-split-budgets.md",
+    "docs/adr/0139-hosts-without-systemd-userdb-or-cgroup-v2.md",
+    "docs/adr/0140-firecracker-guests-are-supervised-by-systemd-not-the-jailer.md",
+    "docs/adr/0141-shared-host-provider-layer.md",
+    "docs/adr/0142-microvm-image-and-artifact-contract.md",
+    "docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md",
     "docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md"
   ]
 }

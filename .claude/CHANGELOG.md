@@ -1,5 +1,57 @@
 # Changelog
 
+## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/architecture/calm/architecture.json`: models what ADR-0137 to ADR-0143
+  decide, every addition marked `DESIGNED, NOT IMPLEMENTED (ADR-NNNN)` and no new
+  control carrying an `evidence` path, because none of it exists in `crates/` or
+  `deploy/`. Nodes: `service-provider-firecracker`, `service-firecracker-guest`,
+  `network-firecracker-host`, `service-banlieue-host-firecracker-installer`,
+  `service-provider-host-layer`, `data-asset-firecracker-machine-cr`,
+  `data-asset-microvm-image-artifact`, `data-asset-firecracker-image-cache`,
+  `data-asset-firecracker-attestation-ca`, `system-banlieue-slice`,
+  `system-banlieue-guests-slice`, `system-banlieue-firecracker-slice`. Seven ADRs
+  added to `adrs`. Relationships, controls and two flows
+  (`flow-create-virtualmachine-firecracker`, `flow-import-vmimage-firecracker`)
+  as listed in the file.
+- Existing nodes amended: `network-cloud-hypervisor-host` no longer says a host is
+  one failure domain by itself (ADR-0138: a host may also be a Firecracker host,
+  separate Providers, one failure domain reported by both); the Cloud Hypervisor
+  provider, `data-asset-vmimage-cr` (new `OciArtifact` source kind),
+  `data-asset-provider-cr` (`spec.attestation.hostCa`),
+  `data-asset-infra-machine-cr`, `service-in-guest-agent` and the
+  `vm-resource-accounting` control each gain a `DESIGNED, NOT IMPLEMENTED` sentence;
+  `rel-kube-api-stores-crs` lists the new CR.
+- `docs/src/architecture/system.md`, `docs/src/architecture/flows.md`: regenerated
+  by `make calm-diagrams`.
+- `.github/community/20-firecracker-provider.md`: records the real ADRs (0137,
+  0138, 0140 to 0143, with 0139 as the installer prerequisite) and says the
+  reserved ADR-0116 to ADR-0122 were not used; phase 0 items ticked only where an
+  ADR records the measurement (host support, boot, Kairos, config file vs API,
+  stop) and annotated where only partly measured (jailer, cgroups, network, vsock,
+  overhead); "one VMM per host", the per-member disk copy, the join-token idea, the
+  imagebuilder path and the jailer-based delete are marked superseded with a
+  pointer; phase C is marked superseded for v1 by ADR-0140 (no API socket); the
+  slice and unit names follow ADR-0138 and ADR-0140.
+- `ROADMAPS.md`: roadmap 20 row says design decided and no code exists (still not
+  started).
+
+### Why
+ADD step 2 (CALM) and step 4 (roadmap artefacts) for the seven Firecracker ADRs.
+The threat-model pass is NOT done: ADD does it after implementation, and each of
+ADR-0137 to ADR-0143 says it is due then. `docs/src/security/threat-model.md` and
+its header stamp are untouched on purpose.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (`make calm-validate`: no issues; `make calm-diagrams`
+      regenerated)
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois
