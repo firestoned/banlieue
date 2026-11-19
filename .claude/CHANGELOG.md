@@ -48,6 +48,25 @@ in this file keep the numbers that were true when they were written.
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
+
+## [2026-11-19 16:30] - ADR-0146: Cloud Hypervisor guests may attest with x509pop (Proposed)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md`
+  (Proposed): a Cloud Hypervisor host opts in with `[attestation]`; ADR-0143's CA, `hostCa` assertion,
+  subject (the machine UID) and vsock signer apply as written, on the `vsock.sock_1025` listener beside the
+  install report's `_1024`; one shared `banlieue-attestation-ca` crate for both providers; an opted-in host
+  with no `hostCa` is `Ready=False`; the installer gains the CA stage and flags. The vTPM path is untouched.
+
+### Why
+The vTPM's issuer is the shared host's `swtpm-localca`, state its other tenants' root can replace. A CA
+banlieue creates and only the provider reads narrows the custody, and its name in every agent ID confines a
+compromised host to its own guests.
+
+### Impact
+- [ ] Requires cluster rollout
 - [x] Documentation only
 
 ## [2026-11-19 15:00] - attestationSubject is mirrored machine, VM, claim; ADR-0143 Decision 7
