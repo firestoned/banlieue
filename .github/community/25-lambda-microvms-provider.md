@@ -18,14 +18,14 @@
 > is claimed and refills, and its numbers sit beside Firecracker's and
 > Cloud Hypervisor's in the provider comparison.
 >
-> **Stop condition (if phase 0 says no).** ADR-0155 records why, and this
+> **Stop condition (if phase 0 says no).** ADR-0168 records why, and this
 > roadmap closes as decided rather than done.
 >
 > **Status (2026-11-19): not started.** Nothing in the tree yet. Depends on
 > roadmap 22 phases 0 to C.
 
-Baseline when written: `dca5f45` (2026-11-19). This roadmap takes **ADR-0155
-and ADR-0156** from the block roadmaps 22 to 25 reserve (0145 to 0156).
+Baseline when written: `dca5f45` (2026-11-19). This roadmap takes **ADR-0168
+and ADR-0169** from the block roadmaps 22 to 25 reserve (0158 to 0169).
 
 ## What the service is, as far as it is known
 
@@ -61,7 +61,7 @@ first task is to read the API reference and correct this section.**
 ## Why this is a fit question, not just another provider
 
 Each row is a place where Lambda MicroVMs differ from every backend banlieue
-has, and where ADR-0155 must decide before any code.
+has, and where ADR-0168 must decide before any code.
 
 | Difference | What it collides with |
 | --- | --- |
@@ -74,7 +74,7 @@ has, and where ADR-0155 must decide before any code.
 | **No zones, no subnet.** | Placement is region only; spread across failure domains (ADR-0098) is meaningless on one `Provider`, and network classes do not apply. Egress control (ADR-0109) is whatever the service offers, which phase 0 must find out. |
 | **The image is a Dockerfile, not a disk.** | `banlieue-imagebuilder` builds Kairos disks. A MicroVM `VMImage` is a build context; see "VMImage integration" below. |
 
-The honest alternative ADR-0155 must weigh: this is an agent sandbox
+The honest alternative ADR-0168 must weigh: this is an agent sandbox
 service, and agent sandboxes moved to mediatore (ADR-0097, mediatore
 ADR-0008). mediatore could call Lambda MicroVMs directly and skip banlieue.
 The case for banlieue is one pool and claim model across on-premises
@@ -83,7 +83,7 @@ can burst from one to the other without changing how it claims.
 
 ## VMImage integration
 
-Publishing is roadmap 22's ADR-0149; this roadmap adds the MicroVM kind:
+Publishing is roadmap 22's ADR-0162; this roadmap adds the MicroVM kind:
 
 - [ ] A `VMImage` source kind for a MicroVM build context (a Dockerfile and
       content, by OCI digest or a URL with a digest), declared explicitly,
@@ -115,21 +115,21 @@ Publishing is roadmap 22's ADR-0149; this roadmap adds the MicroVM kind:
 - [ ] Prove the snapshot problem concretely: two MicroVMs from one image
       version, compare boot ID, machine ID, a key generated at build time
       and one generated in the run hook.
-- [ ] Write ADR-0155 (go or no-go, with the fit table above answered). If
+- [ ] Write ADR-0168 (go or no-go, with the fit table above answered). If
       no-go, close this roadmap.
 
-## Phases (only if ADR-0155 says go)
+## Phases (only if ADR-0168 says go)
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | Above; ADR-0155 | ⛔ |
-| A | ADR-0156: the InfraMachine (kind name, `providerID` from the MicroVM ARN, endpoint as `ExternalDNS`, `GuestReady` from the service's running state after the run hook succeeds, `Suspended` mapped both ways, expiry as a terminal reason), with what the class refuses at admission (`tpmEnabled`, `trustedBoot`, `firstBootSealing`, disk images, network classes, a payload over the limit) | ⛔ |
+| 0 | Above; ADR-0168 | ⛔ |
+| A | ADR-0169: the InfraMachine (kind name, `providerID` from the MicroVM ARN, endpoint as `ExternalDNS`, `GuestReady` from the service's running state after the run hook succeeds, `Suspended` mapped both ways, expiry as a terminal reason), with what the class refuses at admission (`tpmEnabled`, `trustedBoot`, `firstBootSealing`, disk images, network classes, a payload over the limit) | ⛔ |
 | B | Client behind a trait, with a fake that **rejects** what the service rejects (resume of a terminated MicroVM, launch from an expired base), per `rules/testing.md` rule 1; live protocol tier (`#[ignore]`, fails loudly without an account) | ⛔ |
 | C | API, CRDs, `lambda-microvms` provider class, `spec.userData` carried as the run-hook payload, `regen-crds`, examples | ⛔ |
 | D | Provider: launch, observe, suspend, resume, terminate, adopt by tag, orphan sweep (roadmap 22), launch-rate quota respected | ⛔ |
 | E | VMImage integration above | ⛔ |
-| F | Pools: expiry treated as reaping, suspended warm members if ADR-0155 chose them, a claim's member identity published for the broker; e2e warm, claim, release, refill | ⛔ |
-| G | Docs and threat model: guide, provider comparison column, threat-model full pass for ADR-0155 and ADR-0156 (shared snapshot state recorded as an accepted risk with its *Revisit when*, not as a control banlieue has) | ⛔ |
+| F | Pools: expiry treated as reaping, suspended warm members if ADR-0168 chose them, a claim's member identity published for the broker; e2e warm, claim, release, refill | ⛔ |
+| G | Docs and threat model: guide, provider comparison column, threat-model full pass for ADR-0168 and ADR-0169 (shared snapshot state recorded as an accepted risk with its *Revisit when*, not as a control banlieue has) | ⛔ |
 
 ## Out of scope
 
@@ -144,7 +144,7 @@ Roadmaps 20 and 22, ADR-0052, 0097, 0108, 0109, 0135 and 0137, and roadmap
 
 ## Definition of done
 
-- [ ] ADR-0155 accepted, either way.
+- [ ] ADR-0168 accepted, either way.
 - [ ] If go: stop condition above verified live (no account ID, ARN or
-      endpoint committed); ADR-0156 accepted with its threat-model pass;
+      endpoint committed); ADR-0169 accepted with its threat-model pass;
       `cargo deny` clean; provider comparison and `ROADMAPS.md` updated.

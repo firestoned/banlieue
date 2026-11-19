@@ -24,8 +24,8 @@
 > InfraMachine's `providerRef` is a `ProviderReference`, and the provider
 > serves tenant namespaces through `ProviderScope`.
 
-Baseline when written: `dca5f45` (2026-11-19). This roadmap takes **ADR-0151
-and ADR-0152** from the block roadmaps 22 to 25 reserve (0145 to 0156).
+Baseline when written: `dca5f45` (2026-11-19). This roadmap takes **ADR-0164
+and ADR-0165** from the block roadmaps 22 to 25 reserve (0158 to 0169).
 
 ## How Azure maps onto banlieue
 
@@ -33,10 +33,10 @@ and ADR-0152** from the block roadmaps 22 to 25 reserve (0145 to 0156).
 | --- | --- |
 | `Provider` | one subscription, one region, one admin-named resource group that banlieue creates into (explicit, never discovered) |
 | failure domain | an availability zone of the region (`1`, `2`, `3`). Logical zone numbers are **per subscription**: zone 1 in one subscription need not be zone 1 in another, so two `Provider`s on different subscriptions must not assume their zones line up |
-| `VMClass` | a VM size (`Standard_D4s_v5`), mapped per `Provider` (ADR-0147) |
+| `VMClass` | a VM size (`Standard_D4s_v5`), mapped per `Provider` (ADR-0160) |
 | storage class | a managed-disk SKU (`Premium_LRS`, `PremiumV2_LRS`, `StandardSSD_ZRS`) |
 | network class | a subnet resource ID and an NSG, per zone |
-| `VMImage` | an image version in an Azure Compute Gallery (roadmap 22, ADR-0149), or a hand-published one by resource ID (`Template`) |
+| `VMImage` | an image version in an Azure Compute Gallery (roadmap 22, ADR-0162), or a hand-published one by resource ID (`Template`) |
 | `spec.userData` | `osProfile.customData` (cloud-init reads it; 64 KiB limit checked at admission) |
 | `tpmEnabled` | Trusted Launch: `securityType: TrustedLaunch`, Secure Boot and vTPM on; the gallery image definition must declare Trusted Launch support |
 | `desiredPowerState: PoweredOff` | deallocate (stops compute billing), not power-off |
@@ -44,7 +44,7 @@ and ADR-0152** from the block roadmaps 22 to 25 reserve (0145 to 0156).
 
 ## Decisions (one ADR each)
 
-### ADR-0151: the Azure InfraMachine and a first-party ARM client
+### ADR-0164: the Azure InfraMachine and a first-party ARM client
 
 - **Kind name.** CAPZ already owns `AzureMachine` (in
   `infrastructure.cluster.x-k8s.io`). A second `AzureMachine` in
@@ -72,7 +72,7 @@ and ADR-0152** from the block roadmaps 22 to 25 reserve (0145 to 0156).
   `Retry-After`. The client honours it; the provider surfaces sustained
   throttling as a condition on the `Provider`.
 
-### ADR-0152: Trusted Launch, the vTPM and its EK certificate
+### ADR-0165: Trusted Launch, the vTPM and its EK certificate
 
 Trusted Launch gives every VM a vTPM, so `tpmEnabled`, first-boot sealing
 (ADR-0088) and the sealing isolation property (roadmap 18 phase B) can hold
@@ -96,7 +96,7 @@ attestation story enough to need their own.
 - [ ] A Kairos image, written as a fixed VHD by roadmap 22's writer,
       published as a gallery image version, boots as a Trusted Launch VM
       and applies `customData` (does Kairos's datasource read Azure's?).
-- [ ] The `GuestReady` transport roadmap 22 picks (ADR-0150) works here, and
+- [ ] The `GuestReady` transport roadmap 22 picks (ADR-0163) works here, and
       its latency is recorded.
 - [ ] EK certificate readable in the guest; chain checked.
 - [ ] Time from create to `GuestReady` for a plain and for a sealed image,
@@ -108,14 +108,14 @@ attestation story enough to need their own.
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | Spike above; ADR-0151 and ADR-0152 written with its results | ⛔ |
+| 0 | Spike above; ADR-0164 and ADR-0165 written with its results | ⛔ |
 | A | ARM client crate: auth from the federated token, VM, NIC, disk, gallery, usages, resource SKUs, operation polling, `Retry-After`; unit tests against a fake that **rejects** what ARM rejects (a create in a zone the size is not offered in, a delete of a missing resource returning 204, not an error), per `rules/testing.md` rule 1; a live protocol tier (`#[ignore]`, fails loudly without a subscription) | ⛔ |
 | B | API: the InfraMachine and its Template, `azure` provider class, admission for what the class refuses (`installMode: Deferred`, ISO images, `customData` over 64 KiB, `tpmEnabled` against an image definition without Trusted Launch), `regen-crds`, examples | ⛔ |
 | C | Provider: create, observe, delete, adopt by tag, power state, zone retry on allocation failure, quota and offered sizes per zone on `Provider.status` | ⛔ |
 | D | Images: gallery image versions published by roadmap 22's publish Job, consumed by digest; `Template` for hand-published versions | ⛔ |
 | E | Controller dispatch and scheduling; `VirtualMachine` status mirrors the infra CR (non-negotiable 6) | ⛔ |
 | F | Pools: a `GuestReady` pool warms, is claimed, releases and refills across two zones; sealed pool on Trusted Launch; sealing isolation test | ⛔ |
-| G | Docs and threat model: guide (federation, resource group, gallery, first VM, first pool), provider comparison column, threat-model full pass for ADR-0151 and ADR-0152 | ⛔ |
+| G | Docs and threat model: guide (federation, resource group, gallery, first VM, first pool), provider comparison column, threat-model full pass for ADR-0164 and ADR-0165 | ⛔ |
 
 ## Out of scope
 
@@ -132,7 +132,7 @@ clients), ADR-0043, 0045, 0049, 0088, 0101 and 0133.
 
 - [ ] Stop condition above, verified live against a real subscription (no
       subscription, tenant or resource ID committed).
-- [ ] ADR-0151 and ADR-0152 accepted, each with its threat-model pass.
+- [ ] ADR-0164 and ADR-0165 accepted, each with its threat-model pass.
 - [ ] Orphan sweep verified: kill the provider mid-create, restart it, and
       nothing is left behind or duplicated.
 - [ ] `cargo deny` clean.
