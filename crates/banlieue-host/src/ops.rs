@@ -116,6 +116,17 @@ impl Cmd {
     }
 }
 
+/// The cgroup hierarchy a host runs (ADR-0139 Decision 2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CgroupMode {
+    /// cgroup v2, the unified hierarchy: every controller, `cpuset` included,
+    /// is enforced by systemd.
+    Unified,
+    /// cgroup v1 or the hybrid layout: no `cpuset` cgroup for systemd, so
+    /// `AllowedCPUs=` is accepted and never enforced.
+    Legacy,
+}
+
 /// Looking at a host. Nothing here changes it.
 pub trait Probe {
     /// What is at `path`, without following a final symlink; `None` if
@@ -150,6 +161,11 @@ pub trait Probe {
     fn query(&self, cmd: &Cmd) -> Option<String>;
     /// Whether the process runs as root.
     fn is_root(&self) -> bool;
+    /// The cgroup hierarchy in use.
+    fn cgroup_mode(&self) -> CgroupMode;
+    /// The running systemd's major version (`239`); `None` if it cannot be
+    /// read.
+    fn systemd_version(&self) -> Option<u32>;
 
     /// Whether anything is at `path`.
     fn exists(&self, path: &Path) -> bool {

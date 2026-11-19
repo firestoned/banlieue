@@ -209,9 +209,12 @@ mod tests {
             st.users.insert("mallory".into(), (2_000_001, 2_000_001));
             st.fs.remove(Path::new("/usr/bin/systemctl"));
         }
+        // Neither `systemd` (userdb) nor `files`/`compat` (files mode,
+        // ADR-0139): no mode can resolve a guest account on this host. A
+        // plain `files` line is not a problem any more: it selects files mode.
         h.put_file(
             "/etc/nsswitch.conf",
-            b"passwd: files\ngroup: files\n",
+            b"passwd: sss\ngroup: sss\n",
             Kind::File,
         );
         h.put_file("/etc/subuid", b"someone:1999000:100000\n", Kind::File);
@@ -916,5 +919,238 @@ mod tests {
         let before = h.read(Path::new(&path)).unwrap();
         install_all(&h, &s, &opts()).await.unwrap();
         assert_eq!(h.read(Path::new(&path)).unwrap(), before);
+    }
+
+    // ----------------------------------- ADR-0139: an old host, cgroup v1
+
+    /// The first real host that is not systemd 252 or newer: systemd 239 on
+    /// the legacy cgroup hierarchy, with the host's own package manager.
+    fn el8_host() -> FakeHost {
+        let h = fake_host();
+        {
+            let mut env = h.env.lock().unwrap();
+            env.systemd_version = Some(239);
+            env.cgroup_unified = false;
+        }
+        h
+    }
+
+    fn accepting_settings(h: &FakeHost, accepted: &[&str]) -> Settings {
+        let args = crate::settings::HostArgs {
+            guest_uid_count: Some(TEST_UID_COUNT),
+            registry_keep_unreferenced: crate::settings::DEFAULT_KEEP_UNREFERENCED,
+            accept_reduced_hardening: accepted.iter().map(ToString::to_string).collect(),
+            ..crate::settings::HostArgs::default()
+        };
+        resolve(&args, h).unwrap()
+    }
+
+    fn unit_text(h: &FakeHost, name: &str) -> String {
+        let path = format!("{SYSTEMD_UNIT_DIR}/{name}");
+        String::from_utf8(h.read(Path::new(&path)).unwrap()).unwrap()
+    }
+
+    const GUEST_UNITS: [&str; 4] = [
+        "banlieue-ch@.service",
+        "banlieue-swtpm@.service",
+        "banlieue-swtpm-setup@.service",
+        "banlieue-ch-import@.service",
+    ];
+
+    #[tokio::test]
+    async fn an_old_host_without_the_acceptance_is_refused_before_anything_is_written() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &[]);
+        let before = h.snapshot();
+        let Err(Error::Preflight(problems)) = install_all(&h, &s, &opts()).await else {
+            panic!("an old host was installed without the acceptance");
+        };
+        let all = problems.join("\n");
+        assert!(all.contains("PrivateIPC"), "{all}");
+        assert!(
+            all.contains("--accept-reduced-hardening=PrivateIPC"),
+            "{all}"
+        );
+        assert_eq!(h.snapshot(), before, "nothing was written");
+        assert!(h.commands().is_empty(), "nothing ran");
+    }
+
+    /// The acceptance is in the host config `install` keeps, so a re-run
+    /// without the flag installs and leaves the record as it was (ADR-0067
+    /// keeps the config, ADR-0139 records the acceptance in it).
+    #[tokio::test]
+    async fn a_rerun_without_the_flag_keeps_the_recorded_acceptance() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        let before = h.read(Path::new(HOST_CONFIG)).unwrap();
+
+        let rerun = resolve(&host_args(), &h).unwrap();
+        assert_eq!(rerun.accepted_reduced, vec!["PrivateIPC".to_string()]);
+        install_all(&h, &rerun, &opts()).await.unwrap();
+        assert_eq!(h.read(Path::new(HOST_CONFIG)).unwrap(), before);
+    }
+
+    /// `--only provider` skips the preflight stage, and must not skip this.
+    #[tokio::test]
+    async fn a_single_stage_does_not_bypass_the_hardening_guard() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        // Settings that accept nothing, however they came about (a re-run
+        // would take the kept acceptance, so build them directly).
+        let mut bare = s.clone();
+        bare.accepted_reduced.clear();
+        let only = Options {
+            only: Some(Stage::Provider),
+            ..opts()
+        };
+        assert!(matches!(
+            install_all(&h, &bare, &only).await,
+            Err(Error::Preflight(_))
+        ));
+    }
+
+    #[test]
+    fn preflight_names_the_acceptance_an_old_host_needs() {
+        let h = el8_host();
+        let Err(Error::Preflight(problems)) = preflight(&h, &accepting_settings(&h, &[])) else {
+            panic!("preflight passed");
+        };
+        assert!(
+            problems.iter().any(|p| p.contains("PrivateIPC")),
+            "{problems:?}"
+        );
+        preflight(&h, &accepting_settings(&h, &["PrivateIPC"])).unwrap();
+    }
+
+    /// An old host with the acceptance gets a complete install: files-mode
+    /// accounts, units without the directive it cannot enforce, the
+    /// acceptance recorded in the host config, and the self-test green.
+    #[tokio::test]
+    async fn an_old_host_installs_with_files_accounts_and_a_recorded_acceptance() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        assert_eq!(s.guest_accounts, crate::accounts::GuestAccounts::Files);
+        install_all(&h, &s, &opts()).await.unwrap();
+
+        assert!(
+            !h.exists(Path::new("/etc/userdb")),
+            "no userdb on this host"
+        );
+        for uid in s.uid_base..=s.uid_end() {
+            let line = h.getent("passwd", &format!("banlieue-g{uid}")).unwrap();
+            assert!(line.contains(&format!(":{uid}:{uid}:")), "{line}");
+        }
+        assert_eq!(count(&h, "useradd --system --uid"), TEST_UID_COUNT as usize);
+        assert_eq!(
+            count(&h, "groupadd --system --gid"),
+            TEST_UID_COUNT as usize
+        );
+
+        for unit in GUEST_UNITS {
+            let text = unit_text(&h, unit);
+            assert!(!text.contains("PrivateIPC="), "{unit}");
+            assert!(text.contains("ProtectSystem=strict"), "{unit}");
+        }
+        let config = HostConfig::parse(&String::from_utf8_lossy(
+            &h.read(Path::new(HOST_CONFIG)).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            config.accepted_reduced_hardening(),
+            ["PrivateIPC".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn an_old_host_install_is_idempotent() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        let (st, ran) = (without_serial(h.snapshot()), h.commands().len());
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(without_serial(h.snapshot()), st);
+        let new: Vec<String> = h.commands().into_iter().skip(ran).collect();
+        assert!(
+            new.iter()
+                .all(|c| !c.starts_with("useradd") && !c.starts_with("groupadd")),
+            "{new:?}"
+        );
+    }
+
+    /// A new host keeps every directive and records no acceptance.
+    #[tokio::test]
+    async fn a_new_host_keeps_private_ipc_and_records_nothing() {
+        let h = fake_host();
+        let s = accepting_settings(&h, &[]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        for unit in GUEST_UNITS {
+            assert!(unit_text(&h, unit).contains("\nPrivateIPC=yes\n"), "{unit}");
+        }
+        let config = HostConfig::parse(&String::from_utf8_lossy(
+            &h.read(Path::new(HOST_CONFIG)).unwrap(),
+        ))
+        .unwrap();
+        assert!(config.hardening.is_none());
+        assert!(h.exists(Path::new("/etc/userdb")));
+        assert_eq!(count(&h, "groupadd"), 0);
+    }
+
+    /// The acceptance reaches an existing host config without `--force`
+    /// (which would rotate the EK CA).
+    #[tokio::test]
+    async fn a_rerun_records_a_new_acceptance_without_force() {
+        let h = fake_host();
+        install_all(&h, &accepting_settings(&h, &[]), &opts())
+            .await
+            .unwrap();
+        {
+            let mut env = h.env.lock().unwrap();
+            env.systemd_version = Some(239);
+        }
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        let before = serial(&h);
+        install_all(&h, &s, &opts()).await.unwrap();
+        let config = HostConfig::parse(&String::from_utf8_lossy(
+            &h.read(Path::new(HOST_CONFIG)).unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(
+            config.accepted_reduced_hardening(),
+            ["PrivateIPC".to_string()]
+        );
+        assert!(!unit_text(&h, "banlieue-ch@.service").contains("PrivateIPC="));
+        // No EK CA rotation: only the self-test advanced the serial.
+        assert_eq!(serial(&h), before + 1);
+    }
+
+    #[tokio::test]
+    async fn an_old_host_dry_run_changes_nothing() {
+        let h = el8_host();
+        let s = accepting_settings(&h, &["PrivateIPC"]);
+        let before = h.snapshot();
+        let dry = DryRun::new(&h);
+        let o = Options {
+            dry_run: true,
+            ..opts()
+        };
+        install(&dry, &Canned::good(), &release(), &s, &o, &all_present)
+            .await
+            .unwrap();
+        assert_eq!(h.snapshot(), before);
+        assert!(h.commands().is_empty());
+    }
+
+    /// The CPU quota reaches the slice on a host that cannot pin.
+    #[tokio::test]
+    async fn a_cpu_quota_is_installed_on_a_cgroup_v1_host() {
+        let h = el8_host();
+        let mut s = accepting_settings(&h, &["PrivateIPC"]);
+        s.guest_slice.cpu_quota = Some("4800%".into());
+        install_all(&h, &s, &opts()).await.unwrap();
+        let slice = unit_text(&h, "banlieue-guests.slice");
+        assert!(slice.contains("CPUQuota=4800%"), "{slice}");
+        assert!(!slice.contains("AllowedCPUs"), "{slice}");
     }
 }

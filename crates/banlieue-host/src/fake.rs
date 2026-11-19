@@ -10,7 +10,7 @@
 //! `swtpm_setup` creates the CA
 //! and writes an EK certificate, `systemctl enable --now` starts a unit.
 
-use crate::ops::{Cmd, Host, Kind, Owner, Probe, Stat};
+use crate::ops::{CgroupMode, Cmd, Host, Kind, Owner, Probe, Stat};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -22,6 +22,8 @@ pub const SELFTEST_EK_DER: &[u8] = include_bytes!("fixtures/ek-rsa2048-selftest.
 
 /// The provider user's ids when the fake `useradd` creates it.
 const FAKE_SYSTEM_ID: u32 = 998;
+/// The systemd a modern fake host runs.
+const FAKE_SYSTEMD_VERSION: u32 = 252;
 /// The kvm group's id.
 const FAKE_KVM_GID: u32 = 993;
 
@@ -68,6 +70,10 @@ pub struct Env {
     pub nss_systemd: bool,
     /// Free bytes by path prefix.
     pub free: BTreeMap<PathBuf, u64>,
+    /// `systemctl --version`'s major number; `None` when unreadable.
+    pub systemd_version: Option<u32>,
+    /// cgroup v2 (the unified hierarchy).
+    pub cgroup_unified: bool,
 }
 
 impl Default for Env {
@@ -80,6 +86,8 @@ impl Default for Env {
             root: true,
             nss_systemd: true,
             free: BTreeMap::new(),
+            systemd_version: Some(FAKE_SYSTEMD_VERSION),
+            cgroup_unified: true,
         }
     }
 }
@@ -266,18 +274,8 @@ impl FakeHost {
     fn simulate(&self, cmd: &Cmd) -> io::Result<String> {
         let args: Vec<&str> = cmd.args.iter().map(String::as_str).collect();
         match (cmd.program.as_str(), args.as_slice()) {
-            ("useradd", [.., name]) => {
-                self.state
-                    .lock()
-                    .unwrap()
-                    .users
-                    .insert((*name).to_string(), (FAKE_SYSTEM_ID, FAKE_SYSTEM_ID));
-                self.state
-                    .lock()
-                    .unwrap()
-                    .groups
-                    .insert((*name).to_string(), (FAKE_SYSTEM_ID, BTreeSet::new()));
-            }
+            ("useradd", [.., name]) => self.useradd(&args, name)?,
+            ("groupadd", [.., name]) => self.groupadd(&args, name)?,
             ("usermod", ["-aG", group, user]) => {
                 let mut s = self.state.lock().unwrap();
                 let g = s
@@ -343,6 +341,58 @@ impl FakeHost {
             (p, _) => return Err(io::Error::other(format!("fake: unexpected command {p}"))),
         }
         Ok(String::new())
+    }
+
+    /// The value after `flag`, as a number.
+    fn numeric_flag(args: &[&str], flag: &str) -> Option<u32> {
+        args.iter()
+            .position(|a| *a == flag)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+    }
+
+    /// `groupadd [--system] [--gid N] name`: as the real one, a name or a gid
+    /// already in use is an error.
+    fn groupadd(&self, args: &[&str], name: &str) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        let gid = Self::numeric_flag(args, "--gid").unwrap_or(FAKE_SYSTEM_ID);
+        if s.groups.contains_key(name) {
+            return Err(io::Error::other(format!("groupadd: group '{name}' exists")));
+        }
+        if Self::numeric_flag(args, "--gid")
+            .is_some_and(|g| s.groups.values().any(|(id, _)| *id == g))
+        {
+            return Err(io::Error::other(format!("groupadd: GID {gid} exists")));
+        }
+        s.groups.insert(name.to_string(), (gid, BTreeSet::new()));
+        Ok(())
+    }
+
+    /// `useradd [--uid N] [--gid G | --user-group] name`: as the real one,
+    /// a name or uid in use is an error, and `--gid` must name a group that
+    /// exists.
+    fn useradd(&self, args: &[&str], name: &str) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        if s.users.contains_key(name) {
+            return Err(io::Error::other(format!("useradd: user '{name}' exists")));
+        }
+        let explicit_uid = Self::numeric_flag(args, "--uid");
+        if explicit_uid.is_some_and(|u| s.users.values().any(|(id, _)| *id == u)) {
+            return Err(io::Error::other("useradd: UID is not unique"));
+        }
+        let uid = explicit_uid.unwrap_or(FAKE_SYSTEM_ID);
+        if let Some(gid) = Self::numeric_flag(args, "--gid") {
+            if !s.groups.values().any(|(id, _)| *id == gid) {
+                return Err(io::Error::other(format!(
+                    "useradd: group {gid} does not exist"
+                )));
+            }
+            s.users.insert(name.to_string(), (uid, gid));
+            return Ok(());
+        }
+        s.users.insert(name.to_string(), (uid, uid));
+        s.groups.insert(name.to_string(), (uid, BTreeSet::new()));
+        Ok(())
     }
 
     /// `swtpm_setup`, as the provider's user: first use creates the CA it
@@ -496,6 +546,17 @@ impl Probe for FakeHost {
 
     fn is_root(&self) -> bool {
         self.env.lock().unwrap().root
+    }
+
+    fn cgroup_mode(&self) -> CgroupMode {
+        if self.env.lock().unwrap().cgroup_unified {
+            return CgroupMode::Unified;
+        }
+        CgroupMode::Legacy
+    }
+
+    fn systemd_version(&self) -> Option<u32> {
+        self.env.lock().unwrap().systemd_version
     }
 }
 

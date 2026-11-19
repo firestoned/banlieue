@@ -376,4 +376,277 @@ lan = "br0"
         }
         assert!(resolve_fresh(&args(&[]), &h).is_ok());
     }
+
+    // ------------------------------------------- ADR-0139: quota and refusal
+
+    fn legacy(h: &FakeHost) {
+        let mut env = h.env.lock().unwrap();
+        env.cgroup_unified = false;
+        env.systemd_version = Some(239);
+    }
+
+    #[test]
+    fn a_cpu_quota_is_a_slice_setting_after_the_weight_and_before_memory() {
+        let h = FakeHost::debian();
+        let s = resolve(
+            &args(&[
+                "--guest-cpus",
+                "0-3",
+                "--guest-cpu-weight",
+                "200",
+                "--guest-cpu-quota",
+                "4800%",
+                "--guest-memory-max",
+                "400G",
+                "--guest-tasks-max",
+                "30000",
+            ]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.guest_slice.cpu_quota.as_deref(), Some("4800%"));
+        assert_eq!(
+            s.guest_slice.limits(),
+            "AllowedCPUs=0-3\nCPUWeight=200\nCPUQuota=4800%\nMemoryMax=400G\nTasksMax=30000\n"
+        );
+    }
+
+    #[test]
+    fn a_quota_alone_is_a_bounded_slice() {
+        let h = FakeHost::debian();
+        let s = resolve(&args(&["--guest-cpu-quota", "100%"]), &h).unwrap();
+        assert!(!s.guest_slice.is_unbounded());
+        assert_eq!(s.guest_slice.limits(), "CPUQuota=100%\n");
+    }
+
+    /// A positive integer percentage, nothing else: the value goes into a
+    /// root-owned unit.
+    #[test]
+    fn a_cpu_quota_outside_the_grammar_is_refused() {
+        let h = FakeHost::debian();
+        for bad in [
+            "",
+            "%",
+            "0%",
+            "00%",
+            "48",
+            "4800",
+            "-5%",
+            "+5%",
+            "1.5%",
+            "4800 %",
+            " 4800%",
+            "4800%%",
+            "50%\nExecStart=/bin/sh",
+            "50%;1",
+            "18446744073709551616%",
+            "infinity",
+        ] {
+            // The `=` form: a value that starts with `-` must reach `resolve`
+            // as a value, not be read by clap as a flag (which would exit the
+            // whole test process).
+            let flag = format!("--guest-cpu-quota={bad}");
+            match resolve(&args(&[flag.as_str()]), &h) {
+                Err(Error::Setting { name, .. }) => {
+                    assert_eq!(name, "--guest-cpu-quota", "{bad:?}")
+                }
+                other => panic!("{bad:?}: {other:?}"),
+            }
+        }
+    }
+
+    /// ADR-0139 Decision 2, measured on systemd 239 with cgroup v1: no
+    /// cpuset cgroup exists, so `AllowedCPUs=` would be accepted, shown and
+    /// never enforced. It is refused, and the message names the way out.
+    #[test]
+    fn guest_cpus_is_refused_on_cgroup_v1() {
+        let h = FakeHost::debian();
+        legacy(&h);
+        let Err(Error::Setting { name, why }) = resolve(&args(&["--guest-cpus", "0-3"]), &h) else {
+            panic!("--guest-cpus accepted on cgroup v1");
+        };
+        assert_eq!(name, "--guest-cpus");
+        assert!(why.contains("cgroup v1"), "{why}");
+        assert!(why.contains("--guest-cpu-quota"), "{why}");
+    }
+
+    #[test]
+    fn guest_cpus_is_refused_below_the_systemd_that_has_the_setting() {
+        let h = FakeHost::debian();
+        h.env.lock().unwrap().systemd_version = Some(MIN_SYSTEMD_ALLOWED_CPUS - 1);
+        assert!(matches!(
+            resolve(&args(&["--guest-cpus", "0-3"]), &h),
+            Err(Error::Setting {
+                name: "--guest-cpus",
+                ..
+            })
+        ));
+        h.env.lock().unwrap().systemd_version = Some(MIN_SYSTEMD_ALLOWED_CPUS);
+        resolve(&args(&["--guest-cpus", "0-3"]), &h).unwrap();
+    }
+
+    #[test]
+    fn guest_cpus_is_accepted_on_the_unified_hierarchy() {
+        let h = FakeHost::debian();
+        resolve(&args(&["--guest-cpus", "0-3"]), &h).unwrap();
+    }
+
+    /// Measured: systemd 239 maps `CPUWeight=` to `cpu.shares`, and
+    /// `MemoryMax=`, `TasksMax=` and `CPUQuota=` are enforced on v1 too.
+    #[test]
+    fn every_other_budget_flag_works_on_cgroup_v1() {
+        let h = FakeHost::debian();
+        legacy(&h);
+        let s = resolve(
+            &args(&[
+                "--guest-cpu-weight",
+                "50",
+                "--guest-cpu-quota",
+                "4800%",
+                "--guest-memory-max",
+                "250G",
+                "--guest-tasks-max",
+                "1000",
+            ]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(
+            s.guest_slice.limits(),
+            "CPUWeight=50\nCPUQuota=4800%\nMemoryMax=250G\nTasksMax=1000\n"
+        );
+    }
+
+    #[test]
+    fn the_guest_accounts_are_derived_and_the_reason_kept() {
+        let modern = FakeHost::debian();
+        let s = resolve(&args(&[]), &modern).unwrap();
+        assert_eq!(s.guest_accounts, GuestAccounts::Userdb);
+        assert!(!s.accounts_reason.is_empty());
+
+        let old = FakeHost::debian();
+        legacy(&old);
+        let s = resolve(&args(&[]), &old).unwrap();
+        assert_eq!(s.guest_accounts, GuestAccounts::Files);
+        assert!(s.accounts_reason.contains("239"), "{}", s.accounts_reason);
+    }
+
+    #[test]
+    fn an_explicit_guest_accounts_wins_but_is_checked() {
+        let modern = FakeHost::debian();
+        let s = resolve(&args(&["--guest-accounts", "files"]), &modern).unwrap();
+        assert_eq!(s.guest_accounts, GuestAccounts::Files);
+
+        let old = FakeHost::debian();
+        legacy(&old);
+        assert!(matches!(
+            resolve(&args(&["--guest-accounts", "userdb"]), &old),
+            Err(Error::Setting {
+                name: "--guest-accounts",
+                ..
+            })
+        ));
+        assert_eq!(
+            resolve(&args(&["--guest-accounts", "files"]), &old)
+                .unwrap()
+                .guest_accounts,
+            GuestAccounts::Files
+        );
+    }
+
+    #[test]
+    fn accepted_hardening_is_normalized_and_checked_for_known_names() {
+        let h = FakeHost::debian();
+        let s = resolve(
+            &args(&["--accept-reduced-hardening", "PrivateIPC,PrivateIPC"]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.accepted_reduced, vec!["PrivateIPC".to_string()]);
+        assert!(resolve(&args(&[]), &h).unwrap().accepted_reduced.is_empty());
+        assert!(matches!(
+            resolve(&args(&["--accept-reduced-hardening", "ProtectSystem"]), &h),
+            Err(Error::Setting {
+                name: "--accept-reduced-hardening",
+                ..
+            })
+        ));
+    }
+
+    // ------------------------ ADR-0139 against the config install keeps
+
+    /// `KEPT`, with the acceptance ADR-0139 records.
+    fn kept_accepting_private_ipc() -> FakeHost {
+        let h = kept_host();
+        let text = format!("{KEPT}\n[hardening]\naccepted_reduced = [\"PrivateIPC\"]\n");
+        h.put_file(crate::paths::HOST_CONFIG, text.as_bytes(), Kind::File);
+        h
+    }
+
+    /// A config written before ADR-0139 has no `[hardening]` and must load.
+    #[test]
+    fn a_kept_config_from_before_the_hardening_section_resolves_to_nothing_accepted() {
+        let h = kept_host();
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert!(s.accepted_reduced.is_empty());
+    }
+
+    /// The acceptance is recorded in the config, so a plain re-run on the
+    /// host that still needs it does not demand the flag again.
+    #[test]
+    fn a_kept_acceptance_stands_when_no_flag_is_given_and_the_host_still_lacks_it() {
+        let h = kept_accepting_private_ipc();
+        legacy(&h);
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert_eq!(s.accepted_reduced, vec!["PrivateIPC".to_string()]);
+    }
+
+    /// A systemd upgrade makes the acceptance stale; it is dropped, never
+    /// carried as a claim the host no longer needs.
+    #[test]
+    fn a_kept_acceptance_the_host_no_longer_needs_is_dropped() {
+        let h = kept_accepting_private_ipc();
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert!(s.accepted_reduced.is_empty());
+    }
+
+    /// The flag is the operator's statement for this run and is checked
+    /// against the host's facts by the preflight, so it replaces the kept
+    /// list instead of contradicting it.
+    #[test]
+    fn a_hardening_flag_replaces_the_kept_acceptance_and_is_not_a_contradiction() {
+        let h = kept_host();
+        legacy(&h);
+        let s = resolve(&args(&["--accept-reduced-hardening", "PrivateIPC"]), &h).unwrap();
+        assert_eq!(s.accepted_reduced, vec!["PrivateIPC".to_string()]);
+
+        let h = kept_accepting_private_ipc();
+        let s = resolve(&args(&["--accept-reduced-hardening", "PrivateIPC"]), &h).unwrap();
+        assert_eq!(s.accepted_reduced, vec!["PrivateIPC".to_string()]);
+    }
+
+    /// `--force` regenerates from the flags alone.
+    #[test]
+    fn a_fresh_resolve_ignores_the_kept_acceptance() {
+        let h = kept_accepting_private_ipc();
+        legacy(&h);
+        let s = resolve_fresh(&args(&[]), &h).unwrap();
+        assert!(s.accepted_reduced.is_empty());
+    }
+
+    /// Account mode and the CPU quota are not recorded in the host config,
+    /// so they cannot contradict it.
+    #[test]
+    fn the_adr_0139_flags_are_not_contradictions_of_a_kept_config() {
+        let h = kept_accepting_private_ipc();
+        legacy(&h);
+        let s = resolve(
+            &args(&["--guest-accounts", "files", "--guest-cpu-quota", "400%"]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.guest_accounts, GuestAccounts::Files);
+        assert_eq!(s.guest_slice.cpu_quota.as_deref(), Some("400%"));
+        assert_eq!(s.provider_name, "baz");
+    }
 }

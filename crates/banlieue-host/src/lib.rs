@@ -24,11 +24,13 @@
 //! reconcile path, and no reconcile path can reach this crate, because the
 //! provider crate does not depend on it (`boundary_tests.rs`).
 
+pub mod accounts;
 pub mod dryrun;
 pub mod error;
 #[cfg(test)]
 pub mod fake;
 pub mod fetch;
+pub mod hardening;
 pub mod ops;
 pub mod overhead;
 pub mod paths;

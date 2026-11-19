@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-10-22
 - **Deciders:** Erick Bourgeois
+- **Amended by:** [ADR-0139](0139-hosts-without-systemd-userdb-or-cgroup-v2.md): Decision 2 (the budget flags: `--guest-cpus` refused where not enforced, `--guest-cpu-quota` added)
 - **Related:** [ADR-0063](0063-cloud-hypervisor-host-supervision.md) (guests are
   systemd template units), [ADR-0067](0067-banlieue-host-install-subcommand.md)
   and [ADR-0084](0084-host-install-release-sources-and-versions.md) (the

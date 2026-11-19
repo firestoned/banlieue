@@ -107,13 +107,20 @@ The limits exist only if you declare them to `install`:
 
 | Flag | Slice setting |
 | --- | --- |
-| `--guest-cpus 0-15,32-47` | `AllowedCPUs=` |
-| `--guest-cpu-weight 200` | `CPUWeight=` (1–10000; systemd's default is 100) |
+| `--guest-cpus 0-15,32-47` | `AllowedCPUs=` (cgroup v2 only: **refused** on cgroup v1, where it would be accepted and never enforced) |
+| `--guest-cpu-weight 200` | `CPUWeight=` (1–10000; systemd's default is 100; honoured on cgroup v1 as `cpu.shares`) |
+| `--guest-cpu-quota 4800%` | `CPUQuota=` (a positive percentage: 48 CPUs' worth of time; v1 and v2) |
 | `--guest-memory-max 400G` (or `60%`) | `MemoryMax=` |
 | `--guest-tasks-max 30000` | `TasksMax=` |
 
 An unset flag emits no line, so that dimension is unbounded, and `install`
-says so. The slice is a ceiling, not a reservation: it does not keep other
+says so. A flag whose setting the host would silently ignore is refused with a
+message instead of written (ADR-0139): `--guest-cpus` on cgroup v1 (a RHEL 8
+host, systemd 239). Use `--guest-cpu-quota` there: it is a **share of time,
+not a set of cores**, so guests are not kept off other workloads' cores and
+share SMT siblings with them; `install` says so when it is used instead of
+`--guest-cpus`. On a cgroup v2 host both may be set (a set, and a ceiling
+inside it). `MemoryMax` and `TasksMax` work on both. The slice is a ceiling, not a reservation: it does not keep other
 workloads off the CPUs it allows. It is root-owned and the polkit rule never
 allows `set-property` on it, so the provider cannot lift it.
 
@@ -247,7 +254,7 @@ recreates:
 
 systemd refuses `User=`/`Group=` for a numeric id that the user database
 cannot resolve: the unit fails before `exec` with status **217/USER**. The
-bootstrap therefore registers the whole guest range (default 1024 uids from
+installer therefore registers the whole guest range (default 1024 uids from
 2000000) as systemd *userdb* drop-ins, which `nss-systemd` serves to
 `getent`, systemd and everything else. For each uid:
 
@@ -268,6 +275,43 @@ confirms the first uid resolves:
 ```sh
 getent passwd 2000000     # banlieue-g2000000:x:2000000:2000000:banlieue guest:/:/usr/sbin/nologin
 ```
+
+### Hosts without userdb: `--guest-accounts files`
+
+systemd's userdb arrived in 245; a RHEL 8 host (systemd 239) has no
+`userdbctl`, and `libnss_systemd` does not read `/etc/userdb`. `install`
+takes `--guest-accounts userdb|files` (`BANLIEUE_HOST_GUEST_ACCOUNTS`). Unset,
+it is derived from the host (systemd 245 or newer **and** a `systemd` source
+for `passwd` and `group`: userdb; otherwise files), and it prints which and why.
+An explicit `userdb` on a host that cannot do it is refused.
+
+`files` creates one user `banlieue-g<uid>` and one private group of the same
+number per uid with the host's own `groupadd` and `useradd` (system account,
+no home, no login shell, no password, `--no-log-init`); it never edits
+`/etc/passwd` or `/etc/group` by hand, and an existing record with the right
+name and number is kept. A guest cannot tell the modes apart. The default
+range adds 2048 lines to the host's databases; `preflight` prints the count,
+and `--guest-uid-count` lowers it. The `nsswitch.conf` check is per mode
+(`userdb`: `systemd`; `files`: `files` or `compat`), and the installer never
+edits that file, which `authselect` often manages. There is no uninstall verb:
+to remove the accounts, `userdel` and `groupdel` only the `banlieue-g` names
+inside your range.
+
+## Directives an old systemd cannot enforce
+
+A unit directive an old systemd does not know is not an error there: it logs
+`Unknown lvalue` once and the unit starts without it. Every directive in the
+templates with a minimum systemd version is a named constant
+(`crates/banlieue-host/src/hardening.rs`); today only `PrivateIPC=` (248)
+exceeds RHEL 8's 239. On an older host `install` and `preflight` list what
+will not be enforced and **refuse** unless you pass
+`--accept-reduced-hardening=PrivateIPC` (comma list, the exact set; a list for
+what the host does enforce is refused too). The acceptance is written to
+`[hardening] accepted_reduced` in `/etc/banlieue/cloud-hypervisor.toml`, kept
+current by a re-run without `--force`, and the line is dropped from the
+installed units so the journal carries no warning. What stays shared on such a
+host is SysV IPC and POSIX message queues; `ReadOnlyPaths=/dev` still keeps
+`/dev/shm` read-only (measured on 239).
 
 ## Directories and permissions
 

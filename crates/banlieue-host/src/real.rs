@@ -8,7 +8,7 @@
 //! user planted in one of its own directories can make the installer, which
 //! runs as root, change a file it did not mean to.
 
-use crate::ops::{Cmd, Host, Kind, Owner, Probe, Stat};
+use crate::ops::{CgroupMode, Cmd, Host, Kind, Owner, Probe, Stat};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::{self, OpenOptions};
@@ -36,6 +36,8 @@ const SBIN_DIRS: [&str; 4] = ["/usr/local/sbin", "/usr/sbin", "/sbin", "/usr/bin
 const ANY_EXECUTE: u32 = 0o111;
 /// Where systemd, as the running init, leaves this directory.
 const SYSTEMD_RUNNING_MARKER: &str = "/run/systemd/system";
+/// Present only on the unified (cgroup v2) hierarchy.
+const UNIFIED_CGROUP_MARKER: &str = "/sys/fs/cgroup/cgroup.controllers";
 
 /// The host this process runs on.
 #[derive(Debug, Default)]
@@ -215,6 +217,18 @@ impl Probe for RealHost {
 
     fn is_root(&self) -> bool {
         rustix::process::geteuid().is_root()
+    }
+
+    fn cgroup_mode(&self) -> CgroupMode {
+        if Path::new(UNIFIED_CGROUP_MARKER).exists() {
+            return CgroupMode::Unified;
+        }
+        CgroupMode::Legacy
+    }
+
+    fn systemd_version(&self) -> Option<u32> {
+        self.query(&Cmd::new("systemctl", &["--version"]))
+            .and_then(|out| crate::hardening::parse_systemd_version(&out))
     }
 }
 

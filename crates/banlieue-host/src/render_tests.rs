@@ -29,6 +29,9 @@ mod tests {
             registry: None,
             allow_virtualized: false,
             guest_slice: crate::settings::GuestSlice::default(),
+            guest_accounts: crate::accounts::GuestAccounts::Userdb,
+            accounts_reason: "test".into(),
+            accepted_reduced: vec![],
         }
     }
 
@@ -132,11 +135,11 @@ mod tests {
     /// file already naming the release is not rewritten (ADR-0084
     /// Decision 5).
     #[test]
-    fn with_vmm_replaces_only_the_vmm_section() {
+    fn with_managed_replaces_only_the_vmm_section() {
         let h = FakeHost::debian();
         let pinned = Release::pinned();
         let text = host_config(&settings(), &h, &pinned).unwrap();
-        assert_eq!(with_vmm(&text, &pinned).unwrap(), None);
+        assert_eq!(with_managed(&text, &pinned, &[]).unwrap(), None);
 
         let newer = Release::new(
             "v54.0",
@@ -145,7 +148,7 @@ mod tests {
             source(&pinned.artifacts[1]),
             source(&pinned.artifacts[2]),
         );
-        let updated = with_vmm(&text, &newer).unwrap().unwrap();
+        let updated = with_managed(&text, &newer, &[]).unwrap().unwrap();
         let (before, after) = (
             HostConfig::parse(&text).unwrap(),
             HostConfig::parse(&updated).unwrap(),
@@ -165,7 +168,7 @@ mod tests {
         );
         assert!(updated.starts_with("# banlieue Cloud Hypervisor host configuration."));
         assert!(matches!(
-            with_vmm("not = [toml", &newer),
+            with_managed("not = [toml", &newer, &[]),
             Err(Error::Config(_))
         ));
     }
@@ -207,6 +210,7 @@ mod tests {
                 cpus: Some("0-15".into()),
                 cpu_weight: Some(200),
                 memory_max: Some("400G".into()),
+                cpu_quota: None,
                 tasks_max: None,
             },
             ..settings()
@@ -253,5 +257,73 @@ mod tests {
             crate::paths::VMS_SLICE_UNIT,
             banlieue_provider_cloud_hypervisor::systemd::VMS_SLICE
         );
+    }
+
+    // ------------------------------------------- accepted hardening (ADR-0139)
+
+    fn accepted() -> Vec<String> {
+        vec!["PrivateIPC".to_string()]
+    }
+
+    /// The accepted list is written into the file the provider reads, and
+    /// reads back; with none accepted the file has no `[hardening]` at all.
+    #[test]
+    fn the_accepted_reduction_is_written_into_the_host_config() {
+        let h = FakeHost::debian();
+        let plain = host_config(&settings(), &h, &Release::pinned()).unwrap();
+        assert!(!plain.contains("hardening"), "{plain}");
+        let s = Settings {
+            accepted_reduced: accepted(),
+            ..settings()
+        };
+        let text = host_config(&s, &h, &Release::pinned()).unwrap();
+        assert!(text.contains("[hardening]"), "{text}");
+        let config = HostConfig::parse(&text).unwrap();
+        assert_eq!(config.accepted_reduced_hardening(), accepted().as_slice());
+    }
+
+    /// An existing host config keeps everything but what the installer owns,
+    /// and what it owns now includes the acceptance: a re-run that changes it
+    /// must reach the file the provider reads, without `--force`.
+    #[test]
+    fn a_rerun_updates_the_accepted_list_and_nothing_else() {
+        let h = FakeHost::debian();
+        let pinned = Release::pinned();
+        let text = host_config(&settings(), &h, &pinned).unwrap();
+        assert_eq!(with_managed(&text, &pinned, &[]).unwrap(), None);
+
+        let updated = with_managed(&text, &pinned, &accepted()).unwrap().unwrap();
+        let (before, after) = (
+            HostConfig::parse(&text).unwrap(),
+            HostConfig::parse(&updated).unwrap(),
+        );
+        assert_eq!(after.accepted_reduced_hardening(), accepted().as_slice());
+        assert_eq!(
+            HostConfig {
+                hardening: None,
+                ..after.clone()
+            },
+            before
+        );
+        // Unchanged now: nothing to write.
+        assert_eq!(with_managed(&updated, &pinned, &accepted()).unwrap(), None);
+        // And dropping the acceptance removes the section again.
+        let cleared = with_managed(&updated, &pinned, &[]).unwrap().unwrap();
+        assert!(!cleared.contains("hardening"), "{cleared}");
+    }
+
+    #[test]
+    fn a_cpu_quota_renders_in_the_slice() {
+        let h = FakeHost::debian();
+        let s = Settings {
+            guest_slice: crate::settings::GuestSlice {
+                cpu_quota: Some("4800%".into()),
+                ..crate::settings::GuestSlice::default()
+            },
+            ..settings()
+        };
+        let text = render(&GUEST_SLICE, &values(&s, &h)).unwrap();
+        assert!(text.contains("[Slice]\nCPUQuota=4800%\n"), "{text}");
+        assert!(!text.contains("AllowedCPUs"));
     }
 }

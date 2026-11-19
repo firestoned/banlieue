@@ -65,9 +65,31 @@ pub struct HostConfig {
     pub storage_classes: BTreeMap<String, PathBuf>,
     /// Network class name to bridge.
     pub network_classes: BTreeMap<String, String>,
+    /// Guest-sandbox directives this host cannot enforce and whose absence
+    /// the operator accepted at install time (ADR-0139 Decision 4). Absent
+    /// means none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardening: Option<HardeningSection>,
+}
+
+/// `[hardening]`: what the operator accepted not to have (ADR-0139).
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HardeningSection {
+    /// Unit directives (`PrivateIPC`) this host's systemd does not enforce.
+    pub accepted_reduced: Vec<String>,
 }
 
 impl HostConfig {
+    /// The directives the operator accepted this host not enforcing; empty
+    /// when none (ADR-0139).
+    #[must_use]
+    pub fn accepted_reduced_hardening(&self) -> &[String] {
+        self.hardening
+            .as_ref()
+            .map_or(&[], |h| h.accepted_reduced.as_slice())
+    }
+
     /// This host's field manager: the Cloud Hypervisor class scoped to the
     /// `Provider` this host serves (ADR-0087).
     ///
@@ -287,6 +309,13 @@ impl HostConfig {
         for (name, bridge) in &self.network_classes {
             require_class_name(name)?;
             require_interface_name(&format!("network_classes.{name}"), bridge)?;
+        }
+        for name in self.accepted_reduced_hardening() {
+            if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {
+                return invalid(format!(
+                    "hardening.accepted_reduced: {name:?} is not a unit directive name"
+                ));
+            }
         }
         Ok(())
     }

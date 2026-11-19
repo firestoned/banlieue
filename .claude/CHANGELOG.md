@@ -22,6 +22,65 @@ cgroup v1 host with a 4800% quota per VMM.
 - [ ] Breaking change
 - [x] Requires provider rollout on cgroup v1 hosts (capacity drops to the quota)
 
+## [2026-11-18 19:00] - ADR-0139 phase 1: the installer on hosts without userdb or cgroup v2
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-host/src/accounts.rs` (new): `--guest-accounts userdb|files`
+  (`BANLIEUE_HOST_GUEST_ACCOUNTS`). Unset, derived from facts (systemd 245 or
+  newer and a `systemd` NSS source for passwd and group: userdb; else files),
+  printed with the reason; an explicit `userdb` on a host that cannot do it is
+  refused. `files` creates `banlieue-g<uid>` users and same-number private
+  groups with the host's `groupadd` and `useradd` (system, no home, no login
+  shell, no password, `--no-log-init`), idempotent, conflicts are errors.
+  The `nsswitch.conf` preflight is per mode and the file is never edited.
+- `crates/banlieue-host/src/hardening.rs` (new): directives with a minimum
+  systemd version are named constants (`PRIVATE_IPC`, 248); a test fails when a
+  unit uses a directive recorded in neither list. On an older host `install` and
+  `preflight` refuse unless `--accept-reduced-hardening` names exactly the set
+  the host lacks; the guard also applies to `--only` stages. The accepted list is
+  written to `[hardening] accepted_reduced` in the host config
+  (`HostConfig::hardening`, `banlieue-provider-cloud-hypervisor`), kept current
+  by a re-run without `--force` (`render::with_vmm` became `with_managed`), and
+  the line is dropped from the installed units so the journal has no
+  `Unknown lvalue` warning.
+- `crates/banlieue-host/src/settings.rs`: `--guest-cpu-quota`
+  (`CPUQuota=`, strict `N%` grammar); `--guest-cpus` is refused on cgroup v1 and
+  on systemd before 244 (my addition: `AllowedCPUs=` is unknown there too).
+  `--guest-cpu-weight`, memory and tasks stay allowed on v1 (measured).
+- `ops::Probe` gained `cgroup_mode` and `systemd_version` (real, dry-run and
+  fake); `status` prints them. The fake `useradd` and new `groupadd` reject
+  duplicates, as the real tools do.
+- CALM model, threat model (full pass, stamp 2026-11-18, ADR-0139: TB-9, TB-11,
+  A-14, section 7.11 and three new accepted risks in section 8), the host
+  guides, and ADR-0063 and ADR-0105 pointers to ADR-0139.
+
+### Why
+RHEL 8 hosts (systemd 239, cgroup v1) failed the installer in four places, none
+a defect of the host; ADR-0139 makes the gaps either work or visible.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+Interaction with the kept host config (ADR-0067, `settings::accepted_hardening`):
+with no `--accept-reduced-hardening`, the `[hardening]` list the kept config
+records stands for the directives the host still lacks (stale entries after a
+systemd upgrade are dropped), so a plain re-run does not demand the flag
+again; a flag replaces the kept list instead of contradicting it (it is
+already refused unless it names exactly what the host lacks); `install
+--force` ignores the kept list. A kept config without `[hardening]` (written
+before ADR-0139) loads and means nothing accepted. `--guest-accounts` and the
+slice flags are not recorded in the host config, so they cannot contradict it.
+
+Not done (follow-ups): publishing the accepted list in `Provider.status`
+(banlieue-api change), ADR-0138's cross-VMM preflight, the Firecracker provider,
+any compensation for `PrivateIPC`, an uninstall verb (the crate has none).
+Threat model pass: full, stamp advanced to ADR-0139; 0137 and 0138 are Proposed.
+
 ## [2026-11-18 10:30] - vSphere provider compiles in 21 s instead of 12 min; duplicated code folded into the SDK
 
 **Author:** Erick Bourgeois

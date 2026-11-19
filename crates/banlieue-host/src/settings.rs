@@ -4,8 +4,10 @@
 //! `BANLIEUE_HOST_*` environment variable, resolved against the host for
 //! the defaults.
 
+use crate::accounts::{self, GuestAccounts};
 use crate::error::Error;
-use crate::ops::Probe;
+use crate::hardening;
+use crate::ops::{CgroupMode, Probe};
 use crate::paths::HOST_CONFIG;
 use banlieue_provider_cloud_hypervisor::host_config::HostConfig;
 use clap::Args;
@@ -39,6 +41,8 @@ pub const MIN_CPU_WEIGHT: u32 = 1;
 pub const MAX_CPU_WEIGHT: u32 = 10_000;
 /// The largest percentage a `MemoryMax=N%` budget may name.
 pub const MAX_MEMORY_PERCENT: u32 = 100;
+/// The first systemd with `AllowedCPUs=` (the cpuset controller on v2).
+pub const MIN_SYSTEMD_ALLOWED_CPUS: u32 = 244;
 /// Size suffixes systemd reads as powers of 1024.
 const SIZE_SUFFIXES: [char; 4] = ['K', 'M', 'G', 'T'];
 
@@ -104,6 +108,8 @@ pub struct HostArgs {
     pub allow_virtualized_host: bool,
     /// CPUs the guests may run on together (`AllowedCPUs=` on the guests
     /// slice, ADR-0105), a cpuset list such as `0-15,32-47`. Unset: any.
+    /// Refused on cgroup v1 and on systemd before 244, which would accept
+    /// it and never enforce it (ADR-0139): use `--guest-cpu-quota` there.
     #[arg(long, env = "BANLIEUE_HOST_GUEST_CPUS", value_name = "CPUSET")]
     pub guest_cpus: Option<String>,
     /// The guests' CPU share against other workloads (`CPUWeight=`, 1-10000;
@@ -119,6 +125,26 @@ pub struct HostArgs {
     /// (`TasksMax=`). Unset: each guest's own limit applies.
     #[arg(long, env = "BANLIEUE_HOST_GUEST_TASKS_MAX", value_name = "COUNT")]
     pub guest_tasks_max: Option<u64>,
+    /// A ceiling on the CPU time all guests get together (`CPUQuota=`, ADR-0139):
+    /// a positive percentage such as `4800%`, meaning 48 CPUs' worth of
+    /// time. A share of time, not a set of cores; works on cgroup v1 and v2.
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_CPU_QUOTA", value_name = "PERCENT")]
+    pub guest_cpu_quota: Option<String>,
+    /// How guest uids become accounts (ADR-0139). Unset: derived from the
+    /// host (systemd 245 or newer with the `systemd` NSS source: userdb;
+    /// otherwise files).
+    #[arg(long, env = "BANLIEUE_HOST_GUEST_ACCOUNTS", value_enum)]
+    pub guest_accounts: Option<GuestAccounts>,
+    /// Unit directives this host's systemd cannot enforce, which the
+    /// operator accepts running without (ADR-0139). Must name exactly the
+    /// set the host lacks; recorded in the host config.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ACCEPT_REDUCED_HARDENING",
+        value_delimiter = ',',
+        value_name = "DIRECTIVE"
+    )]
+    pub accept_reduced_hardening: Vec<String>,
 }
 
 /// The guests' shared budget on a host that runs other workloads
@@ -130,6 +156,8 @@ pub struct GuestSlice {
     pub cpus: Option<String>,
     /// `CPUWeight=`.
     pub cpu_weight: Option<u32>,
+    /// `CPUQuota=`, a percentage such as `4800%`.
+    pub cpu_quota: Option<String>,
     /// `MemoryMax=`.
     pub memory_max: Option<String>,
     /// `TasksMax=`.
@@ -153,6 +181,9 @@ impl GuestSlice {
         }
         if let Some(v) = self.cpu_weight {
             out.push_str(&format!("CPUWeight={v}\n"));
+        }
+        if let Some(v) = &self.cpu_quota {
+            out.push_str(&format!("CPUQuota={v}\n"));
         }
         if let Some(v) = &self.memory_max {
             out.push_str(&format!("MemoryMax={v}\n"));
@@ -207,6 +238,12 @@ pub struct Settings {
     pub allow_virtualized: bool,
     /// The guests' shared budget.
     pub guest_slice: GuestSlice,
+    /// How guest accounts are registered (ADR-0139).
+    pub guest_accounts: GuestAccounts,
+    /// Why that mode: the facts it was derived from, or the flag.
+    pub accounts_reason: String,
+    /// Directives the operator accepted this host not enforcing, sorted.
+    pub accepted_reduced: Vec<String>,
 }
 
 impl Settings {
@@ -302,9 +339,52 @@ fn memory_max(raw: &str) -> Result<String, Error> {
     ))
 }
 
+/// A CPU quota: a positive integer and `%`, nothing else.
+fn cpu_quota(raw: &str) -> Result<String, Error> {
+    const NAME: &str = "--guest-cpu-quota";
+    let ok = raw.strip_suffix('%').is_some_and(|p| {
+        !p.starts_with('0')
+            && p.chars().all(|c| c.is_ascii_digit())
+            && p.parse::<u64>().is_ok_and(|n| n > 0)
+    });
+    if ok {
+        return Ok(raw.to_string());
+    }
+    Err(bad(
+        NAME,
+        format!("{raw:?}: not a positive percentage like 4800%"),
+    ))
+}
+
+/// Refuse `--guest-cpus` where the host would accept it and never enforce it
+/// (ADR-0139 Decision 2).
+fn check_cpuset_enforced(probe: &dyn Probe) -> Result<(), Error> {
+    const NAME: &str = "--guest-cpus";
+    if probe.cgroup_mode() == CgroupMode::Legacy {
+        return Err(bad(
+            NAME,
+            "AllowedCPUs= is not enforced on cgroup v1 (no cpuset cgroup is created, so \
+             nothing would be pinned); use --guest-cpu-quota for a ceiling, a share of time \
+             and not cores",
+        ));
+    }
+    if let Some(v) = probe.systemd_version()
+        && v < MIN_SYSTEMD_ALLOWED_CPUS
+    {
+        return Err(bad(
+            NAME,
+            format!(
+                "AllowedCPUs= needs systemd {MIN_SYSTEMD_ALLOWED_CPUS} or newer, this host has {v}; \
+                 use --guest-cpu-quota"
+            ),
+        ));
+    }
+    Ok(())
+}
+
 /// Validate the budget flags (ADR-0105): each value ends up in a root-owned
 /// unit file, so it is checked before it is rendered.
-fn guest_slice(args: &HostArgs) -> Result<GuestSlice, Error> {
+fn guest_slice(args: &HostArgs, probe: &dyn Probe) -> Result<GuestSlice, Error> {
     if let Some(w) = args.guest_cpu_weight
         && !(MIN_CPU_WEIGHT..=MAX_CPU_WEIGHT).contains(&w)
     {
@@ -316,9 +396,13 @@ fn guest_slice(args: &HostArgs) -> Result<GuestSlice, Error> {
     if args.guest_tasks_max == Some(0) {
         return Err(bad("--guest-tasks-max", "0 would forbid every guest"));
     }
+    if args.guest_cpus.is_some() {
+        check_cpuset_enforced(probe)?;
+    }
     Ok(GuestSlice {
         cpus: args.guest_cpus.as_deref().map(cpuset).transpose()?,
         cpu_weight: args.guest_cpu_weight,
+        cpu_quota: args.guest_cpu_quota.as_deref().map(cpu_quota).transpose()?,
         memory_max: args
             .guest_memory_max
             .as_deref()
@@ -445,6 +529,34 @@ fn agree_registry(
     }
 }
 
+/// The directives the operator accepts this host not enforcing.
+///
+/// A flag is the operator's statement for this run and replaces whatever the
+/// kept config records: `[hardening]` is a section the installer keeps
+/// current (like `[vmm]`), and the preflight refuses a list that is not
+/// exactly what the host lacks, so it needs no `--force`. With no flag, the
+/// kept acceptance stands for the directives the host still does not
+/// enforce, so a plain re-run does not demand the flag again; entries the
+/// host now enforces (a systemd upgrade) are dropped.
+fn accepted_hardening(
+    args: &HostArgs,
+    probe: &dyn Probe,
+    kept: Option<&HostConfig>,
+) -> Result<Vec<String>, Error> {
+    let given = hardening::accepted(&args.accept_reduced_hardening)
+        .map_err(|why| bad("--accept-reduced-hardening", why))?;
+    let Some(kept) = kept.filter(|_| given.is_empty()) else {
+        return Ok(given);
+    };
+    let mut recorded =
+        hardening::accepted(kept.accepted_reduced_hardening()).map_err(Error::KeptConfig)?;
+    if let Some(version) = probe.systemd_version() {
+        let lacking = hardening::unenforced(version);
+        recorded.retain(|name| lacking.contains(&name.as_str()));
+    }
+    Ok(recorded)
+}
+
 fn resolve_with(
     args: &HostArgs,
     probe: &dyn Probe,
@@ -546,6 +658,8 @@ fn resolve_with(
     } else {
         given_registry
     };
+    let (guest_accounts, accounts_reason) = accounts::choose(args.guest_accounts, probe)?;
+    let accepted_reduced = accepted_hardening(args, probe, kept)?;
     Ok(Settings {
         provider_name,
         namespace,
@@ -555,7 +669,10 @@ fn resolve_with(
         uid_count,
         registry,
         allow_virtualized: args.allow_virtualized_host,
-        guest_slice: guest_slice(args)?,
+        guest_slice: guest_slice(args, probe)?,
+        guest_accounts,
+        accounts_reason,
+        accepted_reduced,
     })
 }
 
