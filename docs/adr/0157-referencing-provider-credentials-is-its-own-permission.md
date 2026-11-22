@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0157: Referencing a Provider's credentials is its own permission, checked when the connection changes
 
-- **Status:** Proposed
-- **Date:** 2026-11-19
+- **Status:** Accepted
+- **Date:** 2026-11-22
+- **Proposed:** 2026-11-19
 - **Deciders:** Erick Bourgeois
 - **Related:** Amends the `banlieue-provider-credentialsref-authorization` admission policy
   (security review 2026-07-31, CHAIN-001; `deploy/admission/provider-credentialsref-authorization.yaml`).
@@ -83,9 +84,11 @@ attacker's endpoint, or stripped of its server verification, delivers the creden
   says so, and the grant is documented beside the policy.
 - A principal that could already `get` the Secret is unaffected.
 - `oldObject` is null on `CREATE`, so the rule keeps checking every create.
-- Follow-ups, before this ADR is implemented: the policy change and its message; admission tests
-  against a real API server for a label update without `get` (admitted), an endpoint, CA or
+- Implemented with: the policy change and its message
+  (`deploy/admission/provider-credentialsref-authorization.yaml`); admission tests against a real
+  API server (`crates/banlieue-controller/tests/live_credentialsref_policy.rs`,
+  `make credentialsref-policy-live-test`) for a label update without `get` (admitted), an endpoint, CA or
   `insecureSkipTLSVerify` change with an unchanged `credentialsRef` and no `get` (refused), a create
   and an update by a principal with `reference` only (admitted), and a principal with neither
-  (refused); CALM; the threat model's CHAIN-001 row and A-1. faubourg then grants its controller
+  (refused); CALM; the threat model's confused-deputy row. faubourg then grants its controller
   `reference` on Secrets in the provider namespace and amends its ADR-0018.

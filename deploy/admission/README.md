@@ -21,7 +21,7 @@ rotate.
 | `provider-attestation-ektrustbundle.yaml` | `Provider.spec.attestation.ekTrustBundle` sets exactly one of `inline` / `configMapRef` / `secretRef` ([ADR-0049](../../docs/adr/0049-attestation-trust-anchors.md) Decision 10). |
 | `provider-attestation-hostca.yaml` | `Provider.spec.attestation.hostCa` sets exactly one of `inline` / `configMapRef` / `secretRef` ([ADR-0143](../../docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md) Decision 2). The single-certificate and no-private-key rules stay in `ProviderAttestation::validate`. |
 | `provider-connection.yaml` | `Provider.spec.connection.endpoint` is an absolute URL, `https://` for vsphere/proxmox, no userinfo or fragment; `insecureSkipTLSVerify: true` requires the opt-in annotation `banlieue.io/allow-insecure-tls: "true"` (security review 2026-07-31). |
-| `provider-credentialsref-authorization.yaml` | The principal creating/updating a `Provider` must be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CEL `authorizer`; security review 2026-07-31). |
+| `provider-credentialsref-authorization.yaml` | Whoever creates a `Provider`, or changes its `spec.connection`, must be authorized to `get` or to `reference` the Secret named by `spec.connection.credentialsRef` (CEL `authorizer`; security review 2026-07-31, ADR-0157). A write that leaves the connection alone is not checked. `make credentialsref-policy-live-test`. |
 | `virtualmachine-userdata-authorization.yaml` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (CEL `authorizer`; [ADR-0042](../../docs/adr/0042-userdata-reference-authorization.md)). |
 | `capi-bootstrap-data-authorization.yaml` | The principal setting a Cluster API `Machine`'s `spec.bootstrap.dataSecretName` or `spec.bootstrap.configRef` (or the same under a `MachineSet`/`MachineDeployment`'s `spec.template.spec`) must be authorized to `get` that Secret or bootstrap config, checked when the field is set or changed, or carried over by an update that switches `infrastructureRef` to banlieue (CEL `authorizer`; [ADR-0129](../../docs/adr/0129-capi-inframachines-receive-the-machines-bootstrap-data.md) Decision 5). Only Machines whose `infrastructureRef` is a banlieue InfraMachine are matched. Matches nothing on a cluster without Cluster API. |
 | `machine-provider-ref.yaml` | Only `banlieue-controller` (`system:serviceaccount:banlieue-system:banlieue-controller`) sets or changes `spec.providerRef.namespace` on any of the four machine kinds (`VSphereMachine`, `LibvirtMachine`, `ProxmoxMachine`, `CloudHypervisorMachine`) or their templates ([ADR-0133](../../docs/adr/0133-shared-provider-serves-tenant-namespaces.md) Decision 6). A machine naming a provider in the provider namespace is a placement that skipped scheduling; without this a tenant could put a VM on a shared backend on their own say-so. **Required on any cluster that serves tenant namespaces from a shared provider.** `make provider-ref-policy-live-test` checks it against a real API server. |
@@ -74,6 +74,18 @@ Notes:
   `virtualmachine-userdata-authorization.yaml` need an apiserver new enough to
   support the CEL `authorizer` variable in admission policies; on an older
   apiserver those files are rejected while the rest still apply.
+- **`reference` on a Secret** (ADR-0157) lets a principal name it in a
+  Provider's connection without reading it. It is as strong as `get` toward the
+  endpoint: whoever holds it and may write Providers can have banlieue present
+  that credential to an endpoint of their choice. Grant it by exact
+  `resourceNames`, or to a controller that bounds what it names itself, for
+  example faubourg's, whose own policy admits only `faubourg-` Secrets:
+
+  ```yaml
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["reference"]      # names a Secret; reads nothing
+  ```
 - **`virtualmachine-userdata-authorization.yaml` changes who may create a
   `VirtualMachine` that references user-data.** Any automation (CI, GitOps)
   creating VMs must itself hold `get` on the referenced Secret/ConfigMap.
