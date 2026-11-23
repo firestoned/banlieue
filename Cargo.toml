@@ -76,7 +76,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Prometheus metrics on every role (ADR-0091). The Prometheus project's own
 # client: OpenMetrics text encoding, no HTTP server and no TLS of its own (the
 # SDK serves the registry from its hand-rolled listener).
-prometheus-client = "0.25"
+prometheus-client = "0.26"
 
 # OpenTelemetry trace export, opt-in through the standard OTEL_* environment
 # (ADR-0092). OTLP over HTTP/protobuf only: no `grpc-tonic`, so no tonic and
