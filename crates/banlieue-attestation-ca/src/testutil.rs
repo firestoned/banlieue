@@ -1,7 +1,9 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
 //! Test fixtures: CSRs the way a guest would make them, and ones a hostile
-//! guest would. Test-only.
+//! guest would. Test-only, and the `testing` feature's, which uses only a
+//! part of it.
+#![allow(dead_code)]
 
 use std::path::Path;
 use std::str::FromStr;
@@ -107,4 +109,141 @@ pub(crate) fn wrong_curve_csr(key: &SigningKey) -> String {
     req.info.public_key.algorithm.parameters =
         Some(x509_cert::der::Any::encode_from(&p384).unwrap());
     req.to_pem(LineEnding::LF).unwrap()
+}
+
+/// What an upstream PKI put in the intermediate it signed for a host: the
+/// good defaults, and the knobs a test turns to make one wrong.
+pub(crate) struct UpstreamOpts {
+    pub ca: bool,
+    pub path_len: Option<u8>,
+    pub key_cert_sign: bool,
+    pub not_before: SystemTime,
+    pub not_after: SystemTime,
+    /// The subject CN, when it is not the request's.
+    pub subject_cn: Option<String>,
+    /// A key to certify instead of the request's.
+    pub certify: Option<SigningKey>,
+}
+
+impl UpstreamOpts {
+    pub(crate) fn good() -> Self {
+        Self {
+            ca: true,
+            path_len: Some(0),
+            key_cert_sign: true,
+            not_before: now() - Duration::from_secs(3600),
+            not_after: now() + Duration::from_secs(365 * 86_400),
+            subject_cn: None,
+            certify: None,
+        }
+    }
+}
+
+struct UpstreamProfile {
+    issuer: Name,
+    subject: Name,
+    opts_ca: bool,
+    path_len: Option<u8>,
+    key_cert_sign: bool,
+}
+
+impl x509_cert::builder::profile::BuilderProfile for UpstreamProfile {
+    fn get_issuer(&self, _subject: &Name) -> Name {
+        self.issuer.clone()
+    }
+
+    fn get_subject(&self) -> Name {
+        self.subject.clone()
+    }
+
+    fn build_extensions(
+        &self,
+        _spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
+        _issuer_spk: x509_cert::spki::SubjectPublicKeyInfoRef<'_>,
+        tbs: &x509_cert::certificate::TbsCertificate,
+    ) -> x509_cert::builder::Result<Vec<x509_cert::ext::Extension>> {
+        use x509_cert::ext::ToExtension;
+        use x509_cert::ext::pkix::{KeyUsage, KeyUsages};
+        let mut exts = Vec::new();
+        let basic = BasicConstraints {
+            ca: self.opts_ca,
+            path_len_constraint: self.path_len,
+        };
+        exts.push((true, &basic).to_extension(tbs.subject(), &exts)?);
+        let usage = if self.key_cert_sign {
+            KeyUsage(KeyUsages::KeyCertSign.into())
+        } else {
+            KeyUsage(KeyUsages::DigitalSignature.into())
+        };
+        exts.push((true, &usage).to_extension(tbs.subject(), &exts)?);
+        Ok(exts)
+    }
+}
+
+/// Sign `csr_pem` the way an upstream PKI's `sign-intermediate` would:
+/// issuer `issuer_cn` under `issuer_key`, shaped by `opts`. Returns one PEM
+/// certificate.
+pub(crate) fn upstream_sign(
+    csr_pem: &str,
+    issuer_key: &SigningKey,
+    issuer_cn: &str,
+    opts: &UpstreamOpts,
+) -> String {
+    use x509_cert::builder::CertificateBuilder;
+    use x509_cert::serial_number::SerialNumber;
+    use x509_cert::time::{Time, Validity};
+    let req = CertReq::from_pem(csr_pem.as_bytes()).unwrap();
+    let spki = match &opts.certify {
+        Some(k) => x509_cert::spki::SubjectPublicKeyInfo::from_key(k.verifying_key()).unwrap(),
+        None => req.info.public_key.clone(),
+    };
+    let subject = match &opts.subject_cn {
+        Some(cn) => Name::from_str(&format!("CN={cn}")).unwrap(),
+        None => req.info.subject.clone(),
+    };
+    let profile = UpstreamProfile {
+        issuer: Name::from_str(&format!("CN={issuer_cn}")).unwrap(),
+        subject,
+        opts_ca: opts.ca,
+        path_len: opts.path_len,
+        key_cert_sign: opts.key_cert_sign,
+    };
+    let validity = Validity::new(
+        Time::try_from(opts.not_before).unwrap(),
+        Time::try_from(opts.not_after).unwrap(),
+    );
+    let serial = SerialNumber::new(&[0x42, 0x17]).unwrap();
+    CertificateBuilder::new(profile, serial, validity, spki)
+        .unwrap()
+        .build::<_, DerSignature>(issuer_key)
+        .unwrap()
+        .to_pem(LineEnding::LF)
+        .unwrap()
+}
+
+/// A self-signed upstream root: its key and its PEM certificate.
+pub(crate) fn upstream_root(cn: &str) -> (SigningKey, String) {
+    let key = new_key();
+    let csr = csr_for(&key, &format!("CN={cn}"));
+    let opts = UpstreamOpts {
+        path_len: None,
+        ..UpstreamOpts::good()
+    };
+    let pem = upstream_sign(&csr, &key, cn, &opts);
+    (key, pem)
+}
+
+/// A subordinate upstream CA signed by `parent`: its key and PEM certificate.
+pub(crate) fn upstream_intermediate(
+    cn: &str,
+    parent_key: &SigningKey,
+    parent_cn: &str,
+) -> (SigningKey, String) {
+    let key = new_key();
+    let csr = csr_for(&key, &format!("CN={cn}"));
+    let opts = UpstreamOpts {
+        path_len: Some(1),
+        ..UpstreamOpts::good()
+    };
+    (key, upstream_sign(&csr, parent_key, parent_cn, &opts))
 }

@@ -201,5 +201,82 @@ mod tests {
         let info = h.attestation_ca(Path::new(CA_DIR)).unwrap();
         assert_eq!(info.name, "bar");
         assert!(!info.not_after.is_empty());
+        // A self-signed CA lives ten years.
+        assert!(info.days_remaining > 3000, "{}", info.days_remaining);
+    }
+
+    #[test]
+    fn days_until_counts_whole_days_and_goes_negative_when_expired() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let day = Duration::from_secs(86_400);
+        assert_eq!(crate::attestation::days_until(now + day * 10, now), 10);
+        assert_eq!(
+            crate::attestation::days_until(now + day * 10 - Duration::from_secs(1), now),
+            9
+        );
+        assert_eq!(crate::attestation::days_until(now, now), 0);
+        assert_eq!(
+            crate::attestation::days_until(now - Duration::from_secs(1), now),
+            -1
+        );
+        assert_eq!(crate::attestation::days_until(now - day * 3, now), -3);
+    }
+
+    #[test]
+    fn the_expiry_phrase_says_expired_not_a_negative_number() {
+        assert_eq!(crate::attestation::expiry_phrase(30), "30 days left");
+        assert_eq!(crate::attestation::expiry_phrase(0), "0 days left");
+        assert_eq!(crate::attestation::expiry_phrase(-1), "EXPIRED");
+    }
+
+    #[test]
+    fn the_csr_admin_action_names_the_request_the_name_and_the_import_flag() {
+        let lines = crate::attestation::csr_admin_action(
+            Path::new("/var/lib/banlieue/attestation-ca-pending"),
+            "bar",
+        )
+        .join("\n");
+        assert!(lines.contains("/var/lib/banlieue/attestation-ca-pending/ca.csr"));
+        assert!(lines.contains("common name: bar"));
+        assert!(lines.contains("--attestation-ca-import"));
+        assert!(lines.contains("path length 0"));
+        assert!(
+            !lines.contains("ca.key"),
+            "the key is never named as a deliverable"
+        );
+    }
+
+    #[test]
+    fn the_fake_makes_a_pending_request_that_loads_and_names_itself() {
+        let h = host_with_provider_user();
+        h.create_pending_attestation_ca(
+            Path::new("/var/lib/banlieue/attestation-ca-pending"),
+            "bar",
+            &banlieue(),
+        )
+        .unwrap();
+        assert_eq!(
+            h.pending_attestation_ca(Path::new("/var/lib/banlieue/attestation-ca-pending"))
+                .unwrap(),
+            "bar"
+        );
+        // Never replaced, and a bad name is refused.
+        assert!(
+            h.create_pending_attestation_ca(
+                Path::new("/var/lib/banlieue/attestation-ca-pending"),
+                "baz",
+                &banlieue()
+            )
+            .is_err()
+        );
+        assert!(
+            h.create_pending_attestation_ca(
+                Path::new("/var/lib/banlieue/other-pending"),
+                "bad name",
+                &banlieue()
+            )
+            .is_err()
+        );
     }
 }

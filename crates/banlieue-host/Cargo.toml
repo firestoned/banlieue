@@ -43,6 +43,7 @@ toml = "1"
 x509-parser.workspace = true
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+banlieue-attestation-ca = { path = "../banlieue-attestation-ca", features = ["testing"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util"] }
 # Fixture /proc and cgroup trees for `overhead`. Already a workspace dependency.
 tempfile.workspace = true

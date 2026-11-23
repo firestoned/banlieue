@@ -78,6 +78,7 @@ mod tests {
             bridges_present: ["lan".to_string()].into(),
             vtpm: false,
             ek_ca_pem: None,
+            ca_not_after: None,
             capacity: HostCapacity {
                 cpus: Some(32),
                 cpu_model: Some("Intel(R) Xeon(R) CPU E5-2630 v3 @ 2.40GHz".into()),
@@ -603,6 +604,112 @@ mod tests {
             st.failure_domains.is_empty(),
             "nothing may be scheduled here"
         );
+    }
+
+    // ------------------------------------------- an expired CA (ADR-0146 Decision 7)
+
+    use std::time::{Duration, SystemTime};
+
+    const DAY: Duration = Duration::from_secs(86_400);
+
+    fn facts_with_ca_expiring(at: SystemTime) -> HostFacts {
+        HostFacts {
+            ca_not_after: Some(at),
+            ..healthy()
+        }
+    }
+
+    #[test]
+    fn a_ca_with_no_expiry_to_report_holds_nothing() {
+        assert_eq!(host_ca_expiry_hold(None, SystemTime::now()), None);
+    }
+
+    #[test]
+    fn a_ca_before_its_not_after_holds_nothing() {
+        let now = SystemTime::now();
+        assert_eq!(host_ca_expiry_hold(Some(now + DAY), now), None);
+    }
+
+    #[test]
+    fn a_ca_at_or_past_its_not_after_holds_every_guest() {
+        let now = SystemTime::now();
+        for not_after in [now, now - DAY] {
+            let hold = host_ca_expiry_hold(Some(not_after), now).expect("expired");
+            assert_eq!(hold.reason(), "HostCaExpired");
+            assert!(hold.message().contains("rotat"), "{}", hold.message());
+        }
+    }
+
+    #[test]
+    fn an_opted_in_host_whose_ca_has_expired_is_not_ready() {
+        let facts = facts_with_ca_expiring(SystemTime::now() - DAY);
+        let st = compute_status(
+            &asserting(inline_ca()),
+            &with_attestation(config()),
+            &facts,
+            1,
+        );
+        let (status, reason, _) = ready_triple(&st);
+        assert_eq!(
+            (status.as_str(), reason.as_str()),
+            ("False", "HostCaExpired")
+        );
+        assert!(
+            st.failure_domains.is_empty(),
+            "nothing may be scheduled here"
+        );
+    }
+
+    #[test]
+    fn an_unexpired_ca_leaves_the_host_ready() {
+        let facts = facts_with_ca_expiring(SystemTime::now() + DAY);
+        let st = compute_status(
+            &asserting(inline_ca()),
+            &with_attestation(config()),
+            &facts,
+            1,
+        );
+        assert_eq!(ready_triple(&st).1, "Reconciled");
+    }
+
+    #[test]
+    fn a_missing_host_ca_is_reported_before_an_expired_one() {
+        let facts = facts_with_ca_expiring(SystemTime::now() - DAY);
+        let st = compute_status(&servable(), &with_attestation(config()), &facts, 1);
+        assert_eq!(ready_triple(&st).1, "HostCaMissing");
+    }
+
+    #[test]
+    fn a_host_that_did_not_opt_in_never_reports_an_expired_ca() {
+        let facts = facts_with_ca_expiring(SystemTime::now() - DAY);
+        let st = compute_status(&servable(), &config(), &facts, 1);
+        assert_ne!(ready_triple(&st).1, "HostCaExpired");
+    }
+
+    #[test]
+    fn the_expiry_is_read_from_ca_crt_alone() {
+        let t = tempfile::tempdir().unwrap();
+        let dir = t.path().join("ca");
+        let ca = banlieue_attestation_ca::AttestationCa::create(&dir, "host-01", None).unwrap();
+        let got = ca_not_after(&dir).expect("a readable certificate");
+        let want = ca.not_after();
+        let skew = got
+            .duration_since(want)
+            .or_else(|e| Ok::<_, ()>(e.duration()))
+            .unwrap();
+        assert!(skew < Duration::from_secs(2), "{skew:?}");
+        // Without the key the certificate is still enough: the reconciler
+        // never needs to read the private key to know when it expires.
+        std::fs::remove_file(dir.join("ca.key")).unwrap();
+        assert!(ca_not_after(&dir).is_some());
+    }
+
+    #[test]
+    fn an_unreadable_or_absent_ca_certificate_has_no_expiry_to_report() {
+        let t = tempfile::tempdir().unwrap();
+        assert_eq!(ca_not_after(&t.path().join("nothing")), None);
+        std::fs::write(t.path().join("ca.crt"), "not a certificate").unwrap();
+        assert_eq!(ca_not_after(t.path()), None);
     }
 
     /// An `ekTrustBundle` alone anchors vTPM guests, not signed ones.

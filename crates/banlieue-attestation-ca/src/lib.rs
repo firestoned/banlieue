@@ -16,12 +16,14 @@
 
 mod ca;
 mod name;
+mod pending;
 mod ratelimit;
 mod serve;
 mod signer;
 
-pub use ca::{AttestationCa, CaError};
+pub use ca::{AttestationCa, CaError, certificate_not_after};
 pub use name::{MAX_NAME_LEN, NameError, validate_name};
+pub use pending::{MAX_IMPORTED_CA_VALIDITY, MAX_IMPORTED_CHAIN, PendingCa};
 pub use ratelimit::RateLimit;
 pub use serve::{OutcomeCounts, Outcomes, ServeConfig, serve};
 pub use signer::{
@@ -30,5 +32,7 @@ pub use signer::{
 
 #[cfg(test)]
 mod openssl_tests;
-#[cfg(test)]
+#[cfg(feature = "testing")]
+pub mod testing;
+#[cfg(any(test, feature = "testing"))]
 mod testutil;

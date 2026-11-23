@@ -270,3 +270,25 @@ fn remove_files_with_nothing_there_is_success() {
     fs::create_dir_all(&dir).unwrap();
     AttestationCa::remove_files(&dir).unwrap();
 }
+
+#[test]
+fn certificate_not_after_reads_the_certificate_without_the_key() {
+    let (_t, dir) = ca_dir();
+    let ca = AttestationCa::create(&dir, "host-01", None).unwrap();
+    fs::remove_file(dir.join("ca.key")).unwrap();
+    assert_eq!(certificate_not_after(&dir), Some(ca.not_after()));
+}
+
+#[test]
+fn certificate_not_after_is_none_for_nothing_garbage_or_a_symlink() {
+    let (_t, dir) = ca_dir();
+    assert_eq!(certificate_not_after(&dir), None);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("ca.crt"), b"not a certificate").unwrap();
+    assert_eq!(certificate_not_after(&dir), None);
+    fs::remove_file(dir.join("ca.crt")).unwrap();
+    let real = dir.join("real.crt");
+    fs::write(&real, b"x").unwrap();
+    symlink(&real, dir.join("ca.crt")).unwrap();
+    assert_eq!(certificate_not_after(&dir), None);
+}

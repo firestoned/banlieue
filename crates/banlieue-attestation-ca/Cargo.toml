@@ -12,6 +12,10 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
+[features]
+# Test support for crates that need a signed host CA without a real PKI: `testing::upstream_sign`.
+testing = []
+
 [dependencies]
 p256.workspace = true
 x509-cert.workspace = true

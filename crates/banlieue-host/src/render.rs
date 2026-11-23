@@ -280,7 +280,14 @@ pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result
         storage_classes: s.storage.iter().cloned().collect(),
         network_classes: s.network.iter().cloned().collect(),
         hardening: hardening_section(&s.accepted_reduced),
-        attestation: s.attestation.as_ref().map(|a| attestation::section(a.ttl)),
+        // Only the self-signed route: a request or an import writes the section
+        // itself, once there is a CA for the provider to load (ADR-0146
+        // Decision 7), so a regenerated config never names a CA that is not there.
+        attestation: s
+            .attestation
+            .as_ref()
+            .filter(|a| a.route == crate::settings::CaRoute::SelfSigned)
+            .map(|a| attestation::section(a.ttl)),
     };
     serialize(&config)
 }

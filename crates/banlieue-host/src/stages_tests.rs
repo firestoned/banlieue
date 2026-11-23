@@ -1192,6 +1192,8 @@ mod tests {
                 "ttl" => a.attestation_certificate_ttl = Some(pair[1].into()),
                 "on" => a.attestation = true,
                 "rotate" => a.rotate_attestation_ca = true,
+                "csr" => a.attestation_ca_csr = true,
+                "import" => a.attestation_ca_import = Some(pair[1].into()),
                 other => panic!("{other}"),
             }
         }
@@ -1300,6 +1302,500 @@ mod tests {
             .unwrap();
         assert!(config_text(&h).contains("certificate_ttl_secs = 1800"));
         assert_eq!(ca_crt(&h), cert);
+    }
+
+    // ------------------------------- the CSR route (ADR-0146 Decision 7)
+
+    const PENDING_DIR: &str = "/var/lib/banlieue/attestation-ca-pending";
+    const PENDING_KEY: &str = "/var/lib/banlieue/attestation-ca-pending/ca.key";
+    const PENDING_CSR: &str = "/var/lib/banlieue/attestation-ca-pending/ca.csr";
+    const SIGNED: &str = "/root/signed.pem";
+
+    /// What an administrator's PKI would send back for the pending request.
+    fn signed_for_pending(h: &FakeHost) -> Vec<u8> {
+        let csr = String::from_utf8(h.read(Path::new(PENDING_CSR)).unwrap()).unwrap();
+        banlieue_attestation_ca::testing::upstream_sign_csr(&csr, std::time::SystemTime::now())
+            .into_bytes()
+    }
+
+    fn put_signed(h: &FakeHost, bytes: &[u8]) {
+        h.put_dir("/root");
+        h.put_file(SIGNED, bytes, crate::ops::Kind::File);
+    }
+
+    #[tokio::test]
+    async fn the_csr_route_writes_a_request_and_neither_a_certificate_nor_a_section() {
+        let h = fake_host();
+        let s = attest_settings(&h, &["csr", "1", "name", "bar"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(
+            mode_owner(&h, PENDING_DIR),
+            (0o700, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(
+            mode_owner(&h, PENDING_KEY),
+            (0o600, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(
+            mode_owner(&h, PENDING_CSR),
+            (0o644, "banlieue".into(), "banlieue".into())
+        );
+        assert!(!h.exists(Path::new(CA_CRT)), "no certificate yet");
+        assert!(!h.exists(Path::new(CA_KEY)), "the live CA is not touched");
+        assert!(
+            !config_text(&h).contains("[attestation]"),
+            "an unsigned request must not look configured, or the provider would stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn importing_the_signed_certificate_installs_the_ca_and_writes_the_section() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["csr", "1", "name", "bar"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        put_signed(&h, &signed_for_pending(&h));
+
+        let s = attest_settings(&h, &["import", SIGNED, "ttl", "2h"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+        assert_eq!(
+            mode_owner(&h, CA_KEY),
+            (0o600, "banlieue".into(), "banlieue".into())
+        );
+        assert_eq!(
+            mode_owner(&h, CA_CRT),
+            (0o644, "banlieue".into(), "banlieue".into())
+        );
+        assert!(
+            !h.exists(Path::new(PENDING_KEY)),
+            "the key moved, not copied"
+        );
+        assert!(config_text(&h).contains("certificate_ttl_secs = 7200"));
+        assert!(h.exists(Path::new("/var/lib/banlieue/attestation-ca/ca-chain.pem")));
+    }
+
+    #[tokio::test]
+    async fn a_refused_certificate_installs_nothing_and_leaves_the_request() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["csr", "1", "name", "bar"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        put_signed(&h, b"not a certificate");
+
+        let s = attest_settings(&h, &["import", SIGNED]);
+        let err = install_all(&h, &s, &opts()).await.err().unwrap();
+
+        assert!(err.to_string().contains("rejected"), "{err}");
+        assert!(!h.exists(Path::new(CA_CRT)));
+        assert!(h.exists(Path::new(PENDING_KEY)), "the request stays");
+        assert!(!config_text(&h).contains("[attestation]"));
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_signed_file_is_an_error_not_a_panic() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["csr", "1", "name", "bar"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        let s = attest_settings(&h, &["import", "/root/missing.pem"]);
+        assert!(install_all(&h, &s, &opts()).await.is_err());
+        assert!(h.exists(Path::new(PENDING_KEY)));
+    }
+
+    #[tokio::test]
+    async fn rotating_by_csr_keeps_the_live_ca_serving_until_the_import() {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "bar"]), &opts())
+            .await
+            .unwrap();
+        let (cert, key) = (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap());
+
+        let s = attest_settings(&h, &["csr", "1", "rotate", "1", "name", "baz"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(
+            (ca_crt(&h), h.read(Path::new(CA_KEY)).unwrap()),
+            (cert, key),
+            "the live CA is untouched while a request is pending"
+        );
+        assert!(h.exists(Path::new(PENDING_KEY)));
+
+        put_signed(&h, &signed_for_pending(&h));
+        let s = attest_settings(&h, &["import", SIGNED, "rotate", "1"]);
+        install_all(&h, &s, &opts()).await.unwrap();
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "baz");
+        assert!(!h.exists(Path::new(PENDING_KEY)));
+    }
+
+    // ------------------------------ OpenBao signing (ADR-0146 Decision 8)
+
+    use crate::error::Error as HostError;
+    use crate::openbao::{Credential, Pki, SignRequest};
+    use crate::settings::{CaRoute as Route, OpenBaoAuth};
+
+    const SA_TOKEN_PATH: &str = "/etc/banlieue/credentials/token";
+    const SA_TOKEN: &str = "sa.jwt.value\n";
+    const BAO_TOKEN_FILE: &str = "/root/bao.token";
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Answer {
+        Good,
+        Refuse,
+        Hostile,
+    }
+
+    /// What the installer asked, and a scripted answer.
+    struct CannedPki {
+        answer: std::sync::Mutex<Answer>,
+        asked: std::sync::Mutex<Vec<(String, String, String, Credential)>>,
+    }
+
+    impl CannedPki {
+        fn new(answer: Answer) -> Self {
+            Self {
+                answer: std::sync::Mutex::new(answer),
+                asked: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+
+        fn set(&self, answer: Answer) {
+            *self.answer.lock().unwrap() = answer;
+        }
+
+        fn asked(&self) -> Vec<(String, String, String, Credential)> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait]
+    impl Pki for CannedPki {
+        async fn sign_intermediate(&self, req: &SignRequest<'_>) -> Result<String, HostError> {
+            self.asked.lock().unwrap().push((
+                req.csr_pem.to_string(),
+                req.common_name.to_string(),
+                req.ttl.to_string(),
+                req.credential.clone(),
+            ));
+            match *self.answer.lock().unwrap() {
+                Answer::Good => Ok(banlieue_attestation_ca::testing::upstream_sign_csr(
+                    req.csr_pem,
+                    std::time::SystemTime::now(),
+                )),
+                Answer::Refuse => Err(HostError::Pki("login refused (HTTP 403)".into())),
+                Answer::Hostile => {
+                    Ok("-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n".into())
+                }
+            }
+        }
+    }
+
+    async fn install_via(
+        h: &FakeHost,
+        pki: &dyn Pki,
+        s: &Settings,
+        o: &Options,
+    ) -> Result<(), HostError> {
+        install_with_pki(h, &Canned::good(), pki, &release(), s, o, &all_present).await
+    }
+
+    fn bao_settings(h: &FakeHost, extra: &[&str]) -> Settings {
+        let mut a = host_args();
+        a.attestation_ca_name = Some("bar".into());
+        a.attestation_ca_openbao_addr = Some("https://bao.example.com:8200".into());
+        a.attestation_ca_openbao_mount = Some("pki-node-attestation".into());
+        a.attestation_ca_openbao_auth_mount = Some("computefabric-test-v2".into());
+        a.attestation_ca_openbao_role = Some("ch-host-ca-bar".into());
+        for pair in extra.chunks(2) {
+            match pair[0] {
+                "name" => a.attestation_ca_name = Some(pair[1].into()),
+                "rotate" => a.rotate_attestation_ca = true,
+                "token-file" => {
+                    a.attestation_ca_openbao_auth_mount = None;
+                    a.attestation_ca_openbao_role = None;
+                    a.attestation_ca_openbao_token_file = Some(pair[1].into());
+                }
+                other => panic!("{other}"),
+            }
+        }
+        resolve(&a, h).unwrap()
+    }
+
+    fn with_sa_token(h: &FakeHost) {
+        h.put_file(SA_TOKEN_PATH, SA_TOKEN.as_bytes(), crate::ops::Kind::File);
+    }
+
+    /// A host that has been installed once (so the credentials directory exists).
+    async fn installed(h: &FakeHost) {
+        install_all(h, &settings(h), &opts()).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_openbao_route_logs_in_as_the_service_account_and_installs_the_signed_ca() {
+        let h = fake_host();
+        installed(&h).await;
+        with_sa_token(&h);
+        let pki = CannedPki::new(Answer::Good);
+
+        install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+            .await
+            .unwrap();
+
+        let asked = pki.asked();
+        assert_eq!(asked.len(), 1);
+        let (csr, cn, ttl, cred) = &asked[0];
+        assert!(csr.contains("BEGIN CERTIFICATE REQUEST"), "{csr}");
+        assert_eq!((cn.as_str(), ttl.as_str()), ("bar", "8760h"));
+        assert_eq!(
+            *cred,
+            Credential::Jwt {
+                auth_mount: "computefabric-test-v2".into(),
+                role: "ch-host-ca-bar".into(),
+                jwt: "sa.jwt.value".into(), // trimmed
+            }
+        );
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+        assert_eq!(
+            mode_owner(&h, CA_KEY),
+            (0o600, "banlieue".into(), "banlieue".into())
+        );
+        assert!(!h.exists(Path::new(PENDING_KEY)), "the request is consumed");
+        assert!(config_text(&h).contains("[attestation]"));
+    }
+
+    #[tokio::test]
+    async fn without_the_service_account_token_the_request_stays_and_the_fix_is_named() {
+        let h = fake_host();
+        installed(&h).await;
+        let pki = CannedPki::new(Answer::Good);
+
+        let err = install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+            .await
+            .err()
+            .unwrap();
+
+        let text = err.to_string();
+        assert!(
+            text.contains("bootstrap") && text.contains(SA_TOKEN_PATH),
+            "{text}"
+        );
+        assert!(pki.asked().is_empty(), "no request without an identity");
+        assert!(h.exists(Path::new(PENDING_KEY)), "the key is not wasted");
+        assert!(!h.exists(Path::new(CA_CRT)));
+        assert!(!config_text(&h).contains("[attestation]"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_or_multi_line_service_account_token_is_refused() {
+        for bad in ["", "   \n", "a\nb\n"] {
+            let h = fake_host();
+            installed(&h).await;
+            h.put_file(SA_TOKEN_PATH, bad.as_bytes(), crate::ops::Kind::File);
+            let pki = CannedPki::new(Answer::Good);
+            assert!(
+                install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+                    .await
+                    .is_err(),
+                "{bad:?}"
+            );
+            assert!(pki.asked().is_empty(), "{bad:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_signing_installs_nothing_and_a_rerun_signs_the_same_request() {
+        let h = fake_host();
+        installed(&h).await;
+        with_sa_token(&h);
+        let pki = CannedPki::new(Answer::Refuse);
+        assert!(
+            install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+                .await
+                .is_err()
+        );
+        assert!(!h.exists(Path::new(CA_CRT)));
+        assert!(h.exists(Path::new(PENDING_KEY)));
+        assert!(!config_text(&h).contains("[attestation]"));
+
+        pki.set(Answer::Good);
+        install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+            .await
+            .unwrap();
+        let asked = pki.asked();
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].0, asked[1].0, "the same request, not a new key");
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+    }
+
+    #[tokio::test]
+    async fn a_hostile_answer_is_refused_by_the_import_and_leaves_the_request() {
+        let h = fake_host();
+        installed(&h).await;
+        with_sa_token(&h);
+        let pki = CannedPki::new(Answer::Hostile);
+        let err = install_via(&h, &pki, &bao_settings(&h, &[]), &opts())
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("rejected"), "{err}");
+        assert!(!h.exists(Path::new(CA_CRT)));
+        assert!(h.exists(Path::new(PENDING_KEY)));
+        assert!(!config_text(&h).contains("[attestation]"));
+    }
+
+    #[tokio::test]
+    async fn the_token_file_route_sends_the_token_and_removes_the_file() {
+        let h = fake_host();
+        installed(&h).await;
+        h.put_dir("/root");
+        h.put_file(BAO_TOKEN_FILE, b"s.one-use\n", crate::ops::Kind::File);
+        let pki = CannedPki::new(Answer::Good);
+
+        install_via(
+            &h,
+            &pki,
+            &bao_settings(&h, &["token-file", BAO_TOKEN_FILE]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(pki.asked()[0].3, Credential::Token("s.one-use".into()));
+        assert!(
+            !h.exists(Path::new(BAO_TOKEN_FILE)),
+            "a spent token is not left lying"
+        );
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+    }
+
+    #[tokio::test]
+    async fn the_token_file_is_removed_even_when_the_signing_fails() {
+        let h = fake_host();
+        installed(&h).await;
+        h.put_dir("/root");
+        h.put_file(BAO_TOKEN_FILE, b"s.one-use\n", crate::ops::Kind::File);
+        let pki = CannedPki::new(Answer::Refuse);
+        assert!(
+            install_via(
+                &h,
+                &pki,
+                &bao_settings(&h, &["token-file", BAO_TOKEN_FILE]),
+                &opts()
+            )
+            .await
+            .is_err()
+        );
+        assert!(!h.exists(Path::new(BAO_TOKEN_FILE)));
+        assert!(h.exists(Path::new(PENDING_KEY)));
+    }
+
+    #[tokio::test]
+    async fn a_missing_token_file_is_an_error_naming_it() {
+        let h = fake_host();
+        installed(&h).await;
+        let pki = CannedPki::new(Answer::Good);
+        let err = install_via(
+            &h,
+            &pki,
+            &bao_settings(&h, &["token-file", BAO_TOKEN_FILE]),
+            &opts(),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains(BAO_TOKEN_FILE), "{err}");
+        assert!(pki.asked().is_empty());
+    }
+
+    #[tokio::test]
+    async fn rotating_by_openbao_replaces_the_live_ca_under_a_new_name() {
+        let h = fake_host();
+        install_all(&h, &attest_settings(&h, &["name", "old"]), &opts())
+            .await
+            .unwrap();
+        with_sa_token(&h);
+        let pki = CannedPki::new(Answer::Good);
+        let s = bao_settings(&h, &["name", "bar", "rotate", "1"]);
+        install_via(&h, &pki, &s, &opts()).await.unwrap();
+        assert_eq!(h.attestation_ca(Path::new(CA_DIR)).unwrap().name, "bar");
+    }
+
+    #[tokio::test]
+    async fn a_dry_run_asks_nobody_and_changes_nothing() {
+        let h = fake_host();
+        installed(&h).await;
+        with_sa_token(&h);
+        let before = without_serial(h.state.lock().unwrap().clone());
+        let pki = CannedPki::new(Answer::Good);
+        let dry = DryRun::new(&h);
+        let o = Options {
+            dry_run: true,
+            ..Options::default()
+        };
+        install_with_pki(
+            &dry,
+            &Canned::good(),
+            &pki,
+            &release(),
+            &bao_settings(&h, &[]),
+            &o,
+            &all_present,
+        )
+        .await
+        .unwrap();
+        assert!(pki.asked().is_empty(), "a dry run makes no network call");
+        assert_eq!(before, without_serial(h.state.lock().unwrap().clone()));
+        let _ = Route::SelfSigned;
+        let _ = OpenBaoAuth::TokenFile("x".into());
+    }
+
+    #[tokio::test]
+    async fn the_default_install_has_no_pki_and_says_so() {
+        let h = fake_host();
+        installed(&h).await;
+        with_sa_token(&h);
+        // `install` (not `install_with_pki`) carries no OpenBao client.
+        let err = install(
+            &h,
+            &Canned::good(),
+            &release(),
+            &bao_settings(&h, &[]),
+            &opts(),
+            &all_present,
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("OpenBao"), "{err}");
+        assert!(h.exists(Path::new(PENDING_KEY)));
+    }
+
+    #[tokio::test]
+    async fn a_plain_rerun_ignores_a_pending_request() {
+        let h = fake_host();
+        install_all(
+            &h,
+            &attest_settings(&h, &["csr", "1", "name", "bar"]),
+            &opts(),
+        )
+        .await
+        .unwrap();
+        let before = h.read(Path::new(PENDING_KEY)).unwrap();
+        install_all(&h, &settings(&h), &opts()).await.unwrap();
+        assert_eq!(before, h.read(Path::new(PENDING_KEY)).unwrap());
+        assert!(!h.exists(Path::new(CA_CRT)));
     }
 
     /// `--force` regenerates the host config and rotates the EK CA; it must

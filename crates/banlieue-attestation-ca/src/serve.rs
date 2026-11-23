@@ -87,7 +87,9 @@ impl Outcomes {
             Err(SignError::BadSignature) => &self.bad_signature,
             Err(SignError::RateLimited) => &self.rate_limited,
             Err(SignError::Malformed) => &self.malformed,
-            Err(SignError::InvalidSubject | SignError::Internal) => &self.internal,
+            Err(SignError::InvalidSubject | SignError::CaExpired | SignError::Internal) => {
+                &self.internal
+            }
         };
         counter.fetch_add(1, Ordering::Relaxed);
     }

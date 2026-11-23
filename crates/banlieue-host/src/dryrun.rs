@@ -74,6 +74,9 @@ impl Probe for DryRun<'_> {
     fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String> {
         self.inner.attestation_ca(dir)
     }
+    fn pending_attestation_ca(&self, dir: &Path) -> Result<String, String> {
+        self.inner.pending_attestation_ca(dir)
+    }
 }
 
 impl Host for DryRun<'_> {
@@ -114,6 +117,40 @@ impl Host for DryRun<'_> {
             dir.display(),
             owner.user,
             owner.group
+        ));
+        Ok(())
+    }
+    fn create_pending_attestation_ca(
+        &self,
+        dir: &Path,
+        name: &str,
+        owner: &Owner,
+    ) -> io::Result<()> {
+        say(format!(
+            "create a pending attestation CA request for {name} in {} (owned by {}:{}; the key is never printed)",
+            dir.display(),
+            owner.user,
+            owner.group
+        ));
+        Ok(())
+    }
+    fn import_attestation_ca(
+        &self,
+        pending_dir: &Path,
+        ca_dir: &Path,
+        _signed: &[u8],
+        replace: bool,
+        _owner: &Owner,
+    ) -> io::Result<()> {
+        say(format!(
+            "import the signed attestation CA certificate for the request in {} into {}{}",
+            pending_dir.display(),
+            ca_dir.display(),
+            if replace {
+                " (replacing the live CA)"
+            } else {
+                ""
+            }
         ));
         Ok(())
     }

@@ -234,6 +234,12 @@ impl Probe for RealHost {
     fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String> {
         crate::attestation::inspect(dir)
     }
+
+    fn pending_attestation_ca(&self, dir: &Path) -> Result<String, String> {
+        banlieue_attestation_ca::PendingCa::load(dir)
+            .map(|p| p.common_name().to_string())
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// A `Command` for `cmd`, through `runuser` when it names a user.
@@ -327,6 +333,41 @@ impl Host for RealHost {
         )
         .map(drop)
         .map_err(|e| with_path(io::Error::other(e.to_string()), dir))
+    }
+
+    fn create_pending_attestation_ca(
+        &self,
+        dir: &Path,
+        name: &str,
+        owner: &Owner,
+    ) -> io::Result<()> {
+        let (uid, gid) = self.ids(owner)?;
+        banlieue_attestation_ca::PendingCa::create(dir, name, Some((uid.as_raw(), gid.as_raw())))
+            .map(drop)
+            .map_err(|e| with_path(io::Error::other(e.to_string()), dir))
+    }
+
+    fn import_attestation_ca(
+        &self,
+        pending_dir: &Path,
+        ca_dir: &Path,
+        signed: &[u8],
+        replace: bool,
+        owner: &Owner,
+    ) -> io::Result<()> {
+        let (uid, gid) = self.ids(owner)?;
+        let pending = banlieue_attestation_ca::PendingCa::load(pending_dir)
+            .map_err(|e| with_path(io::Error::other(e.to_string()), pending_dir))?;
+        pending
+            .import(
+                ca_dir,
+                &String::from_utf8_lossy(signed),
+                std::time::SystemTime::now(),
+                replace,
+                Some((uid.as_raw(), gid.as_raw())),
+            )
+            .map(drop)
+            .map_err(|e| with_path(io::Error::other(e.to_string()), ca_dir))
     }
 
     fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()> {

@@ -32,6 +32,7 @@ pub mod error;
 pub mod fake;
 pub mod fetch;
 pub mod hardening;
+pub mod openbao;
 pub mod ops;
 pub mod overhead;
 pub mod paths;
@@ -186,14 +187,39 @@ pub async fn run(cli: Cli) -> Result<(), Error> {
                 Some(dir) => Box::new(fetch::FromDir { dir }),
                 None => Box::new(fetch::Download::new()),
             };
+            // The OpenBao client exists only for the one route that uses it.
+            let pki: Box<dyn openbao::Pki> = match s.attestation.as_ref().map(|p| &p.route) {
+                Some(settings::CaRoute::OpenBao(bao)) => {
+                    Box::new(openbao::OpenBao::new(&bao.addr, &bao.mount)?)
+                }
+                _ => Box::new(openbao::NoPki),
+            };
             if o.dry_run {
                 let dry = dryrun::DryRun::new(&host);
-                return stages::install(&dry, fetch.as_ref(), &release, &s, &o, &facts).await;
+                return stages::install_with_pki(
+                    &dry,
+                    fetch.as_ref(),
+                    pki.as_ref(),
+                    &release,
+                    &s,
+                    &o,
+                    &facts,
+                )
+                .await;
             }
             if !ops::Probe::is_root(&host) {
                 return Err(Error::NotRoot("install"));
             }
-            stages::install(&host, fetch.as_ref(), &release, &s, &o, &facts).await
+            stages::install_with_pki(
+                &host,
+                fetch.as_ref(),
+                pki.as_ref(),
+                &release,
+                &s,
+                &o,
+                &facts,
+            )
+            .await
         }
     }
 }

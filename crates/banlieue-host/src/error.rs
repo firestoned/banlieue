@@ -51,6 +51,11 @@ pub enum Error {
         why: String,
     },
     /// A template kept a placeholder no value filled.
+    /// OpenBao could not sign the attestation CA's request (ADR-0146
+    /// Decision 8). Names the step and the HTTP status; never a body, a
+    /// token or the request.
+    #[error("OpenBao: {0}")]
+    Pki(String),
     #[error("template {template}: no value for {placeholder}")]
     Template {
         /// The template.
