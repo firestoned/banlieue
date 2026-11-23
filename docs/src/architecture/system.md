@@ -94,6 +94,8 @@ flowchart LR
     service-ch-attestation-signer["In-provider attestation signer (vsock, per guest)"]
     service-ch-guest-attestation-helper["Guest-side attestation helper (mediatore, not decided here)"]
     service-spire-server-x509pop["SPIRE server x509pop bundle (mediatore, external)"]
+    data-asset-ch-attestation-ca-pending["Pending attestation CA request (Cloud Hypervisor host, CSR route)"]
+    external-attestation-pki["Node-attestation PKI mount (administrator-operated, e.g. OpenBao)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -275,6 +277,13 @@ flowchart LR
     actor-platform-operator --> service-spire-server-x509pop
     actor-platform-operator --> data-asset-ch-attestation-ca
     service-provider-cloud-hypervisor --> data-asset-provider-cr
+    actor-platform-operator --> service-banlieue-host-installer
+    actor-platform-operator --> data-asset-ch-attestation-ca-pending
+    actor-platform-operator --> external-attestation-pki
+    actor-platform-operator --> data-asset-ch-attestation-ca
+    service-banlieue-host-installer --> external-attestation-pki
+    service-banlieue-host-installer --> data-asset-ch-attestation-ca-pending
+    service-banlieue-host-installer --> data-asset-ch-attestation-ca
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

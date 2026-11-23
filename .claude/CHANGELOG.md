@@ -1,5 +1,122 @@
 # Changelog
 
+## [2026-11-20 20:00] - ADR-0146 Decision 8 implemented: the installer has OpenBao sign the host CA in one run
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-host/src/openbao.rs` (new, tests in `openbao_tests.rs`): `OpenBao`, a client for one
+  exchange: log in to a JWT auth mount with the host's ServiceAccount token (or use a one-use token),
+  post the pending request to `<mount>/root/sign-intermediate` with exactly five parameters
+  (`csr`, `common_name`, `max_path_length` 0, `ttl`, `use_csr_values` false), revoke the token. HTTPS
+  only, the host's trust store, no redirect, 10 s and 30 s timeouts, a 1 MiB reply cap; a mount, auth
+  mount or role that could leave its place is refused; an error names the step and HTTP status and never a
+  body; `Credential`'s `Debug` redacts. `Pki` is the trait the installer takes, `NoPki` the default.
+- `crates/banlieue-host/src/{settings,stages,lib,error}.rs`: `--attestation-ca-openbao-addr`, `-mount`,
+  `-auth-mount`, `-role`, `-token-file`, `-ca-ttl`, `CaRoute::OpenBao`, `install_with_pki`,
+  `attestation_openbao` (reuses a pending request, reads the secret from a file, removes a token file
+  whether or not the signing worked, imports through the same checks, writes the section last),
+  `Error::Pki`. `--dry-run` makes no call.
+- `crates/banlieue-attestation-ca/src/{signer,serve}.rs`: a signer under an expired CA refuses
+  (`SignError::CaExpired`), found while writing the threat-model rows for `HostCaExpired`.
+- `docs/src/guides/cloud-hypervisor-host.md`: a section on having a PKI sign the CA (one run with OpenBao, what
+  OpenBao must enforce, a host with no cluster identity, by hand, `HostCaExpired`, a symptom table) and the
+  new flags in the table. `docs/adr/0146-*.md`: Decisions 7 and 8 marked implemented, the token file only
+  (no stdin). `docs/architecture/calm/architecture.json` and `docs/src/architecture/*`: the installer's
+  exchange modelled, the earlier wording corrected.
+- `docs/src/security/threat-model.md`: the full pass for Decisions 7 and 8. Stamp advanced to 2026-11-20. New:
+  TB-22, A-27, A-28, a §2 row, two §4 rows, rows in TB-11 and TB-21, §7.34, eight §8 rows, one §9 bullet.
+  Walked: every section; trigger questions answered in the header.
+
+### Why
+ADR-0146 Decision 8: one command on the host, no secret carried by hand, a name pinned to the host's own
+identity. Tests were written first; the HTTP client is tested against a throwaway loopback server.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only (a new opt-in installer route; no default changes)
+- [ ] Documentation only
+
+### Not done, on purpose
+- **The OpenBao side** (the pinned policy, the JWT role, the uniqueness check, the role's deletion, the audit
+  alert) is the OpenBao repository's and is unbuilt and unverified; the threat model says so (section 8).
+- **No run against a real OpenBao and no run on a real host.** The tree is tested against fakes only.
+
+
+## [2026-11-20 17:00] - ADR-0146 Decision 7 implemented: a host CA signed by an upstream PKI, by CSR
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-attestation-ca/src/pending.rs` (new, tests in `pending_tests.rs`):
+  `PendingCa::create` (key and PKCS#10 request in a pending directory, `0700`/`0600`/`0644`,
+  no certificate), `PendingCa::load`, and `PendingCa::import`, which checks the signed
+  certificate (the pending key, the request's name, `CA:TRUE` with path length 0 and
+  `keyCertSign`, validity and a ten-year cap, chain links, at most eight certificates)
+  before writing anything, then moves the key (never copies it) and writes `ca.crt` (the host
+  CA alone) and `ca-chain.pem` (host CA and intermediates, never the root). A refusal leaves
+  the pending directory and any live CA as they were.
+- `crates/banlieue-attestation-ca/src/{ca,signer,lib}.rs`: `CaError::Rejected`,
+  `AttestationCa::{chain_pem, not_after, is_expired}`, `certificate_not_after` (reads
+  `ca.crt` alone), `load` reads `ca-chain.pem`, `remove_files` removes it, and the signer's
+  reply is the leaf followed by the chain. A self-signed CA's reply is unchanged.
+- `crates/banlieue-attestation-ca/{Cargo.toml,src/testing.rs,src/testutil.rs}`: a `testing`
+  feature (`upstream_sign_csr`) so other crates can play the upstream PKI in tests.
+- `crates/banlieue-host/src/{settings,stages,ops,real,fake,dryrun,attestation,paths,render}.rs`:
+  `--attestation-ca-csr` and `--attestation-ca-import FILE`, `CaRoute`, the pending request's
+  directory, two `Host` methods (`create_pending_attestation_ca`, `import_attestation_ca`) and
+  `Probe::pending_attestation_ca`, with real, fake (through the crate's own checks) and
+  dry-run implementations. A request writes no `[attestation]` section, so an unsigned request
+  never makes the provider stop; the section is written by the import. `preflight` and `status`
+  report a pending request and the CA's days remaining, and `preflight` refuses an expired CA.
+- `crates/banlieue-provider-cloud-hypervisor/src/provider.rs`: `HostCaHold::Expired`
+  (reason `HostCaExpired`), `host_ca_expiry_hold`, `ca_not_after`, `HostFacts::ca_not_after`;
+  an opted-in host whose CA is past its `notAfter` is `Ready=False` and starts no guest.
+
+### Why
+ADR-0146 Decision 7: an organisation's PKI can sign the host's CA without the key leaving the
+host, so the SPIRE bundle holds one root and each signing is audited. Tests were written first.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Config change only (a new opt-in installer route; the self-signed default is unchanged)
+- [ ] Documentation only
+
+
+## [2026-11-20 13:30] - ADR-0146 amended: the CA certificate may be signed by an upstream CA, by CSR
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md`:
+  ADD step 1 for the CSR route. New Decision 7: `--attestation-ca-csr` makes the key on
+  the host and a request in a pending directory, an administrator signs it on a PKI mount
+  dedicated to node-attestation CAs (never the SVID-signing root), `--attestation-ca-import`
+  verifies and installs it, `ca.crt` stays the host CA alone so `hostCa` and its admission
+  rule are unchanged, and the signer's reply carries the chain. Records the rejected
+  alternatives (the key delivered in a Secret; reusing the SPIRE server's CA) and the
+  open points (the wire framing needs mediatore ADR-0049 Decision 6's agreement, the
+  pending request's cap, an expiry for abandoned requests). No code, CALM or threat-model
+  change yet.
+
+- Decision 8 added the same day: the installer may have the request signed by OpenBao in one
+  run, logging in as the host's own ServiceAccount to a role that yields a five-minute,
+  single-use, address-bound token able to sign one request whose name, path length and TTL are
+  pinned (seven layers, listed in the ADR; the OpenBao side is the OpenBao repository's). A
+  token-file fallback covers a host with no cluster identity. The controller deliberately has no
+  part in it. Decision 7 also tightened: `ca-chain.pem` holds the host CA and intermediates
+  and never the root, and a rotation import removes the old files only after every check has
+  passed.
+
+### Why
+The self-signed CA needs one bundle edit per host and leaves no signing record. A PKI
+signature fixes both without moving the key off the host or giving the host a credential.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
 
 **Author:** Erick Bourgeois

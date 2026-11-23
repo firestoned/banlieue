@@ -879,7 +879,7 @@
       "unique-id": "service-banlieue-host-installer",
       "node-type": "service",
       "name": "banlieue host cloud-hypervisor (installer)",
-      "description": "`banlieue host cloud-hypervisor {preflight,status,selftest,install}` (alias `ch`; ADR-0067, amended by ADR-0084, which also put the backend in the command): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. It installs no OS packages on any distribution (ADR-0084 Decision 1): preflight checks, by command, for the systemd, swtpm and swtpm-tools pieces the host supplies through its own package manager or image build. Stages: the VMM, ch-remote and firmware, each from its own URL (github.com by default, or an operator mirror such as an Artifactory VCS remote), at the pinned version or any version the client's version gate accepts, and verified against a sha256 before any is installed (compiled pin, operator flag, or GitHub's published asset digest); the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type, with its [vmm] section kept in step with the installed release); the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon. Has a read-only `overhead` verb that samples every VM's threads (banlieue guests, k0s nodes, libvirt scopes) and splits host CPU into guest, vCPU host-side, VMM and swtpm time, plus banlieue.slice's kernel total (ADR-0106)."
+      "description": "`banlieue host cloud-hypervisor {preflight,status,selftest,install}` (alias `ch`; ADR-0067, amended by ADR-0084, which also put the backend in the command): the same banlieue binary, run once as root by an operator or a cloud-init payload, prepares a KVM host for the Cloud Hypervisor provider. It installs no OS packages on any distribution (ADR-0084 Decision 1): preflight checks, by command, for the systemd, swtpm and swtpm-tools pieces the host supplies through its own package manager or image build. Stages: the VMM, ch-remote and firmware, each from its own URL (github.com by default, or an operator mirror such as an Artifactory VCS remote), at the pinned version or any version the client's version gate accepts, and verified against a sha256 before any is installed (compiled pin, operator flag, or GitHub's published asset digest); the banlieue user, guest uid records, directories and the host config (rendered from the provider's own HostConfig type, with its [vmm] section kept in step with the installed release); the per-host EK CA, the polkit rule, the template units and the provider unit. Read-only verbs cannot write by construction; install is idempotent and writes every file by temp-and-rename. Lives in the banlieue-host crate, which the provider crate does not depend on, so no reconcile path can reach it (ADR-0011). Never creates a bridge, has no SSH client, and exits when done: it is not a daemon. Has a read-only `overhead` verb that samples every VM's threads (banlieue guests, k0s nodes, libvirt scopes) and splits host CPU into guest, vCPU host-side, VMM and swtpm time, plus banlieue.slice's kernel total (ADR-0106). IMPLEMENTED (ADR-0146 Decision 7): crates/banlieue-attestation-ca/src/pending.rs, crates/banlieue-host/src/stages.rs. Gains --attestation-ca-csr (key and CSR into a pending directory, no [attestation] section) and --attestation-ca-import FILE (verifies the signed certificate against the pending key before installing it). IMPLEMENTED (ADR-0146 Decision 8): --attestation-ca-openbao-* flags make the request, log in to OpenBao as the host's own ServiceAccount (or with a one-use token file), have it signed and import the result in one run: crates/banlieue-host/src/{openbao,stages,settings}.rs."
     },
     {
       "unique-id": "service-vmm-release-source",
@@ -1117,7 +1117,7 @@
       "unique-id": "data-asset-ch-attestation-ca",
       "node-type": "data-asset",
       "name": "Per-host attestation CA (Cloud Hypervisor host)",
-      "description": "PROPOSED (ADR-0146), not yet implemented. A signing CA banlieue creates at install, only on a host that opts in with an [attestation] section in its host config (ADR-0146 Decision 1, 5; ADR-0143 Decision 1): EC P-256, made as the provider's user at <state root>/attestation-ca/{ca.key (0600), ca.crt (0644)}, directory 0700, never overwritten by a re-run, rotated only by an explicit flag that issues a new name. The key is never readable by a guest uid. Unlike swtpm-localca, which a shared host's other tenants' root can read and replace, its custody is the provider's alone; its common name is in every agent ID it signs, so a compromised host speaks only for its own guests (mediatore ADR-0049 Decision 2). It still trusts the host that signs: this is custody and blast radius, not a claim that x509pop outranks a trusted TPM."
+      "description": "PROPOSED (ADR-0146), not yet implemented. A signing CA banlieue creates at install, only on a host that opts in with an [attestation] section in its host config (ADR-0146 Decision 1, 5; ADR-0143 Decision 1): EC P-256, made as the provider's user at <state root>/attestation-ca/{ca.key (0600), ca.crt (0644)}, directory 0700, never overwritten by a re-run, rotated only by an explicit flag that issues a new name. The key is never readable by a guest uid. Unlike swtpm-localca, which a shared host's other tenants' root can read and replace, its custody is the provider's alone; its common name is in every agent ID it signs, so a compromised host speaks only for its own guests (mediatore ADR-0049 Decision 2). It still trusts the host that signs: this is custody and blast radius, not a claim that x509pop outranks a trusted TPM. IMPLEMENTED (ADR-0146 Decision 7): crates/banlieue-attestation-ca/src/pending.rs, crates/banlieue-host/src/stages.rs. The CA certificate may instead be signed by an upstream PKI by CSR: the key is still made on the host as the provider's user and never leaves it, and the PKI only ever sees a public request. ca.crt stays the host CA alone (so hostCa is still one certificate); the chain above it is a public ca-chain.pem the signer appends to its reply."
     },
     {
       "unique-id": "service-ch-attestation-signer",
@@ -1146,6 +1146,18 @@
       "node-type": "service",
       "name": "SPIRE server x509pop bundle (mediatore, external)",
       "description": "PROPOSED (ADR-0146), not yet implemented. The SPIRE server's x509pop node attestor trusts a bundle of per-host attestation CAs, a new trust-anchor class beside the per-host EK issuers (mediatore ADR-0049). The administrator copies each host's ca.crt into the bundle, with a name unique across it (unchecked by banlieue; mediatore ADR-0050 moves uniqueness to the issuer). Not shipped by banlieue and not a banlieue binary."
+    },
+    {
+      "unique-id": "data-asset-ch-attestation-ca-pending",
+      "node-type": "data-asset",
+      "name": "Pending attestation CA request (Cloud Hypervisor host, CSR route)",
+      "description": "IMPLEMENTED (ADR-0146 Decision 7): crates/banlieue-attestation-ca/src/pending.rs, crates/banlieue-host/src/stages.rs. Between --attestation-ca-csr and --attestation-ca-import a host holds a key with no certificate: <state root>/attestation-ca-pending/{ca.key (0600), ca.csr (0644)}, directory 0700, owned by the provider's user, in a directory of its own so a pending request cannot disturb a live CA. It writes no [attestation] section, so the provider does not start a signer for it. ca.csr is public. The key is a key at rest like the live CA's, for as long as a request stays unsigned; whether an abandoned request needs its own expiry is open (ADR-0146 Consequences)."
+    },
+    {
+      "unique-id": "external-attestation-pki",
+      "node-type": "service",
+      "name": "Node-attestation PKI mount (administrator-operated, e.g. OpenBao)",
+      "description": "Outside banlieue and outside every host: a PKI mount (OpenBao) dedicated to node-attestation CAs, never the root whose CAs sign SVIDs (x509pop trusts everything under its bundle, so reusing the SVID root would let each SPIRE server's own CA vouch for a node). An administrator, or on ADR-0146 Decision 8's route the installer holding a five-minute one-use token, has a host's CSR signed on it as an intermediate with max_path_length=0 and keyCertSign only; its audit log records each signing. The OpenBao side (the policy pinning the CA's name, path length and ttl, the JWT login role bound to the host's ServiceAccount, the uniqueness check, the role's deletion) is the OpenBao repository's and is not in this repository. banlieue holds no standing credential for it and runs no client in any service: the one caller is the installer, once per onboarding."
     }
   ],
   "relationships": [
@@ -3598,6 +3610,96 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-ch-operator-signs-host-ca-csr",
+      "description": "IMPLEMENTED (ADR-0146 Decision 7): crates/banlieue-attestation-ca/src/pending.rs, crates/banlieue-host/src/stages.rs. The installer writes ca.csr; the administrator signs it on the node-attestation PKI mount and returns the certificate and chain; the installer verifies and installs it. The key never leaves the host, and neither the host nor banlieue holds a credential for the PKI. On Decision 8's route the installer does the signing exchange itself (rel-installer-signs-host-ca-via-openbao).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": [
+            "service-banlieue-host-installer",
+            "data-asset-ch-attestation-ca-pending",
+            "external-attestation-pki",
+            "data-asset-ch-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "attestation-ca-import-verified": {
+          "description": "Nothing is installed until the signed certificate's public key is the pending key's, its common name is the request's and inside the name alphabet, it is CA:TRUE with pathLenConstraint 0 and keyCertSign, and it has not expired; any failure leaves the pending directory and any live CA untouched. Planned in crates/banlieue-host and crates/banlieue-attestation-ca; none of it exists yet.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-17"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-installer-signs-host-ca-via-openbao",
+      "description": "IMPLEMENTED (ADR-0146 Decision 8): the installer, as root, once, logs in to OpenBao with the host's own ServiceAccount token (or a one-use token file), posts the pending request to the node-attestation mount's root/sign-intermediate, revokes its token and imports the reply through the same checks as a certificate carried over by hand. The controller and the provider have no part in it: a controller able to request signing for any host would be one credential able to mint a CA for every host.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-host-installer",
+          "nodes": [
+            "external-attestation-pki",
+            "data-asset-ch-attestation-ca-pending",
+            "data-asset-ch-attestation-ca"
+          ]
+        }
+      },
+      "controls": {
+        "openbao-exchange-bounded": {
+          "description": "HTTPS to a bare origin only, the host's trust store, no way to skip verification outside tests, no redirects, 10 s connect and 30 s request timeouts, a 1 MiB reply cap, secrets read from files and never argv or the environment, an error that names the step and HTTP status and never a body, the OpenBao token revoked after use and a token file removed once used; the reply is only text for import, which checks the pending key, the name, CA:TRUE with path length 0, keyCertSign, validity and the chain before anything is installed. Existing: crates/banlieue-host/src/openbao.rs, crates/banlieue-host/src/stages.rs (attestation_openbao), crates/banlieue-attestation-ca/src/pending.rs.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-8"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "IA-5"
+              }
+            },
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "SC-12"
+              }
+            }
+          ]
+        },
+        "openbao-policy-pins-the-name": {
+          "description": "The policy that lets a host's token sign only a CA under that host's own name, path length 0 and a fixed ttl, bound to the host's ServiceAccount, with a five-minute one-use address-bound token and deletion of the role after the import. NOT in this repository and not verified: it is the OpenBao repository's onboarding script (ADR-0146 Decision 8, layers 1 to 5), a threat-model section 8 row until it exists.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53",
+                "control": "AC-6"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -4676,7 +4778,7 @@
         {
           "sequence-number": 1,
           "relationship-unique-id": "rel-ch-operator-asserts-host-ca",
-          "description": "The installer made the CA; the administrator asserts ca.crt as Provider.spec.attestation.hostCa and adds it to the SPIRE server's x509pop bundle. Until then the opted-in host is Ready=False/HostCaMissing."
+          "description": "The installer made the CA; the administrator asserts ca.crt as Provider.spec.attestation.hostCa and adds it to the SPIRE server's x509pop bundle. Until then the opted-in host is Ready=False/HostCaMissing. Alternatively (Decision 7) the installer wrote a CSR, the administrator had it signed on the node-attestation PKI mount, and the signed ca.crt was imported, or (Decision 8) the installer had OpenBao sign it in one run, logging in as the host's own ServiceAccount; the SPIRE bundle then holds that mount's root, and the signer's reply carries the chain."
         },
         {
           "sequence-number": 2,
