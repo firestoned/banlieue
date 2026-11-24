@@ -1158,6 +1158,78 @@
       "node-type": "service",
       "name": "Node-attestation PKI mount (administrator-operated, e.g. OpenBao)",
       "description": "Outside banlieue and outside every host: a PKI mount (OpenBao) dedicated to node-attestation CAs, never the root whose CAs sign SVIDs (x509pop trusts everything under its bundle, so reusing the SVID root would let each SPIRE server's own CA vouch for a node). An administrator, or on ADR-0146 Decision 8's route the installer holding a five-minute one-use token, has a host's CSR signed on it as an intermediate with max_path_length=0 and keyCertSign only; its audit log records each signing. The OpenBao side (the policy pinning the CA's name, path length and ttl, the JWT login role bound to the host's ServiceAccount, the uniqueness check, the role's deletion) is the OpenBao repository's and is not in this repository. banlieue holds no standing credential for it and runs no client in any service: the one caller is the installer, once per onboarding."
+    },
+    {
+      "unique-id": "service-provider-azure",
+      "node-type": "service",
+      "name": "banlieue-provider-azure",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164). In-cluster provider for the `azure` class, Deployment Managed like vSphere and Proxmox (ADR-0158 Decision 2): one workload per Provider, one Provider per subscription and region. Watches its Provider, AzureVirtualMachines (in its own and its served tenant namespaces, ADR-0133) and VMImages. Talks to Azure Resource Manager through the first-party `banlieue-azure` client (typed requests per resource, pinned api-versions, long-running operations stored and observed on later reconciles, Retry-After honoured on every verb). Authenticates by workload identity federation only: its projected ServiceAccount token is exchanged at Entra ID; it holds no Secret and its Role reads none (ADR-0159). Publishes per-zone failure domains (offered sizes minus the subscription's restrictions, ADR-0160) and quota headroom as capacity (ADR-0161); reads GuestReady from the VM's provisioning state (ADR-0163); runs the tag-scoped orphan sweep (ADR-0158 Decision 5). Nothing of this exists in crates/ or deploy/ yet."
+    },
+    {
+      "unique-id": "service-azure-image-publisher",
+      "node-type": "service",
+      "name": "Azure image publish Job",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162). A Job in the imagebuild namespace with its own federated identity, separate from the provider's: verifies the VMImage's source digest, writes a fixed VHD (raw disk plus a 512-byte footer, no qemu-img), uploads it to a managed disk opened for upload through a one-hour write SAS with Put Page (all-zero chunks skipped, parallel streams), snapshots it with diskControllerTypes SCSI,NVMe, registers a Compute Gallery image version (TrustedLaunch when the image needs a vTPM, explicit end-of-life, deletion not blocked), deletes the upload disk and snapshot, and records the version ID, source digest and minimum OS disk size on the VMImage's per-Provider status."
+    },
+    {
+      "unique-id": "network-azure-arm",
+      "node-type": "network",
+      "name": "Azure Resource Manager (external)",
+      "description": "Microsoft's control plane for the subscription: virtual machines, NICs, disks, snapshots, Compute Gallery image definitions and versions, usages and resource SKUs. External to banlieue. Negotiates classic ECDH only today (no X25519MLKEM768, measured 2026-11-23); throttles deletes early on a new subscription.",
+      "interfaces": [
+        {
+          "unique-id": "azure-arm-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-entra-id",
+      "node-type": "network",
+      "name": "Microsoft Entra ID token endpoint (external)",
+      "description": "Exchanges a federated assertion (a Kubernetes ServiceAccount token) for an access token of the managed identity or app registration whose federated credential names that issuer, subject and audience. Fetches the issuer's discovery document and JWKS to verify the assertion. Classic ECDH only today.",
+      "interfaces": [
+        {
+          "unique-id": "entra-token-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-sa-issuer-publication",
+      "node-type": "network",
+      "name": "Published ServiceAccount issuer (operator-provided)",
+      "description": "The management cluster's ServiceAccount issuer, published where Entra ID (and AWS STS) can fetch it: the OIDC discovery document and the JWKS as two static JSON files on any HTTPS host, with the API server's --service-account-issuer set to that URL. A prerequisite banlieue states but does not provide (ADR-0159 Decision 2). Verified with a public blob container 2026-11-24. The JWKS must be re-published when the cluster's signing key rotates.",
+      "interfaces": [
+        {
+          "unique-id": "sa-issuer-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "data-asset-azure-virtual-machine-cr",
+      "node-type": "data-asset",
+      "name": "AzureVirtualMachine Custom Resource",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164). infrastructure.banlieue.io/v1alpha1 InfraMachine for the azure class (short name azvm; deliberately not CAPZ's AzureMachine). CAPI v1beta2 contract: providerID azure:///subscriptions/.../virtualMachines/<name>, addresses (the NIC's private IP), failureDomain (the zone), initialization.provisioned. Carries the operation handle of an in-flight create or delete, guestInstalled (sticky) and the vTPM's AK certificate (ADR-0165)."
+    },
+    {
+      "unique-id": "system-azure-guest",
+      "node-type": "system",
+      "name": "Azure Trusted Launch guest",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163, ADR-0165). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. The image reads customData from the local provisioning disk, never configures the accelerated-networking VF, and reports Ready to the host-local WireServer only from active mode after user data is applied. No public IP; the subnet has no default outbound access."
     }
   ],
   "relationships": [
@@ -1173,7 +1245,8 @@
             "service-provider-vsphere",
             "service-provider-proxmox",
             "service-provider-libvirt",
-            "service-banlieue-imagebuilder"
+            "service-banlieue-imagebuilder",
+            "service-provider-azure"
           ]
         }
       }
@@ -1193,7 +1266,8 @@
             "service-provider-proxmox",
             "service-provider-libvirt",
             "service-banlieue-imagebuilder",
-            "service-kairos-operator"
+            "service-kairos-operator",
+            "service-provider-azure"
           ]
         }
       }
@@ -3700,6 +3774,294 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-provider-azure-kube-api",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): watches its Provider, AzureVirtualMachines and VMImages; server-side-applies Provider status (failure domains, quota headroom, throttling), machine status and its perProvider VMImage row. Same CRD-only contract as every provider.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-azure"
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": [
+              "kube-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-provider-no-secret-reads": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159 Decision 1): the per-Provider Role grants no get on any Secret: a federated cloud Provider sets no credentialsRef. The only credential is the projected ServiceAccount token the operator mounts with the cloud audience.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "IA-5"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-azure-entra-id",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): exchanges its projected ServiceAccount token (audience api://AzureADTokenExchange, 1 hour, kubelet-refreshed) for an ARM access token of the Provider's managed identity. Verified end to end 2026-11-24 from a throwaway cluster: 0.6 s exchange; another ServiceAccount (AADSTS700213) and another audience (AADSTS700212) refused.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-azure"
+          },
+          "destination": {
+            "node": "network-entra-id",
+            "interfaces": [
+              "entra-token-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-federated-identity-binding": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): the federated credential binds exactly one issuer, one subject (the provider's ServiceAccount) and one audience; nothing else in the cluster can act as the Provider's identity.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-2",
+                  "IA-8",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        },
+        "azure-access-token-lifetime-accepted-gap": {
+          "description": "ACCEPTED GAP, not a control (ADR-0159 Consequences): the exchanged ARM token is valid for 24 hours while the ServiceAccount token lasts 10 minutes to 1 hour, so deleting the provider pod does not revoke a token it already holds. Mitigation: held in memory only, never logged or persisted. Revisit when Entra ID offers shorter managed-identity token lifetimes or continuous access evaluation for this flow.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-12",
+                  "IA-5"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        },
+        "azure-no-pq-key-exchange-accepted-gap": {
+          "description": "ACCEPTED GAP, not a control (ADR-0159 Decision 5): Entra ID negotiates classic ECDH only (measured 2026-11-23); the client offers X25519MLKEM768 first and upgrades when the endpoint does. Revisit at each quarterly measurement.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-8",
+                  "SC-13"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-entra-id-fetches-sa-issuer",
+      "description": "Entra ID fetches the published discovery document and JWKS to verify a ServiceAccount assertion (ADR-0159 Decision 2). The publication is public by design: it contains public keys only.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-entra-id"
+          },
+          "destination": {
+            "node": "network-sa-issuer-publication",
+            "interfaces": [
+              "sa-issuer-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {}
+    },
+    {
+      "unique-id": "rel-provider-azure-arm",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-azure"
+          },
+          "destination": {
+            "node": "network-azure-arm",
+            "interfaces": [
+              "azure-arm-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-ownership-tags": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0158 Decision 4-5): every resource carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider; the provider deletes only what carries its owner's UID, adopts instead of duplicating, and sweeps tagged orphans after a grace period. Tag names avoid '/', which Azure rejects.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "CM-8",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0158-shape-of-a-cloud-provider-class.md"
+              }
+            }
+          ]
+        },
+        "azure-rg-scoped-role": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159 Decision 3): the provider's identity holds a custom role scoped to the Provider's resource group with only the actions ADR-0164 lists; it cannot create or delete images (the publisher's identity can).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        },
+        "azure-arm-no-pq-accepted-gap": {
+          "description": "ACCEPTED GAP, not a control (ADR-0159 Decision 5): ARM negotiates classic ECDH only (measured 2026-11-23 from two networks). Revisit at each quarterly measurement.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-8",
+                  "SC-13"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-azure-image-publisher-arm",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162): upload disk, write SAS, Put Page upload, snapshot, gallery image definition and version, deletion of its temporaries; all tagged.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-azure-image-publisher"
+          },
+          "destination": {
+            "node": "network-azure-arm",
+            "interfaces": [
+              "azure-arm-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-publisher-separate-identity": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 1, ADR-0159 Decision 3): the publisher has its own federated identity and policy; the runtime provider cannot register or delete images. The write SAS is requested per upload, valid one hour, and revoked when the upload ends.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-5",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "azure-published-digest": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 6): the source digest is verified before upload and recorded on the version (banlieue-source-sha256); a provider boots only a version whose digest matches the VMImage.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SI-7"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-azure-guest-wireserver-ready",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163): the guest posts Ready to the host-local WireServer (168.63.129.16, goal state then health) once in active mode with its user data applied; Azure then marks the VM Succeeded, which the provider reads through ARM as GuestReady. banlieue's side is read-only; no credential in the guest. Verified on real VMs 2026-11-23/24.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-azure-guest"
+          },
+          "destination": {
+            "node": "network-azure-arm"
+          }
+        }
+      },
+      "protocol": "HTTP",
+      "controls": {
+        "azure-guestready-read-only": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163 Decision 1): banlieue only reads provisioningState through ARM; it opens no channel into the guest.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-7",
+                  "AC-4"
+                ],
+                "evidence": "docs/adr/0163-guestready-on-a-cloud.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-controller-applies-azure-virtual-machine",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): banlieue-controller schedules a VirtualMachine onto an azure Provider (a mapped instance size usable in the zone, quota headroom) and applies an AzureVirtualMachine naming the zone, size, OS disk size, network class and the gallery image version from the VMImage's perProvider row. installMode Deferred, ISO images and an OS disk below the image's floor are refused at admission.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-azure-virtual-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -5357,6 +5719,14 @@
     "docs/adr/0144-sandbox-segment-and-egress-gateways-on-a-cloud-hypervisor-host.md",
     "docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md",
     "docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md",
-    "docs/adr/0157-referencing-provider-credentials-is-its-own-permission.md"
+    "docs/adr/0157-referencing-provider-credentials-is-its-own-permission.md",
+    "docs/adr/0158-shape-of-a-cloud-provider-class.md",
+    "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md",
+    "docs/adr/0160-a-vmclass-becomes-an-instance-size-by-explicit-mapping.md",
+    "docs/adr/0161-capacity-on-a-cloud-is-quota.md",
+    "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md",
+    "docs/adr/0163-guestready-on-a-cloud.md",
+    "docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md",
+    "docs/adr/0165-trusted-launch-vtpm-identity-on-azure.md"
   ]
 }

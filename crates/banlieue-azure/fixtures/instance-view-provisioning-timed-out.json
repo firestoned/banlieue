@@ -1,0 +1,17 @@
+{
+  "computerName": "banlieue-00000000-0000-0000-0000-000000000009",
+  "hyperVGeneration": "V2",
+  "statuses": [
+    {
+      "code": "ProvisioningState/failed/OSProvisioningTimedOut",
+      "level": "Error",
+      "displayStatus": "Provisioning failed",
+      "message": "OS Provisioning for VM 'banlieue-00000000-0000-0000-0000-000000000009' did not finish in the allotted time. The VM may still finish provisioning successfully. Please check provisioning state later. Also, make sure the image has been properly prepared (generalized)."
+    },
+    {
+      "code": "PowerState/running",
+      "level": "Info",
+      "displayStatus": "VM running"
+    }
+  ]
+}

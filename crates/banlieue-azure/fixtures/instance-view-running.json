@@ -1,0 +1,105 @@
+{
+  "bootDiagnostics": {},
+  "computerName": "spike-router",
+  "disks": [
+    {
+      "name": "spike-router_OsDisk_1_8d3e0b36c11b4de4a092964662b7ba0f",
+      "statuses": [
+        {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Provisioning succeeded",
+          "level": "Info",
+          "time": "2026-11-24T01:10:13.0399439+00:00"
+        }
+      ]
+    }
+  ],
+  "extensions": [
+    {
+      "name": "AADSSHLoginForLinux",
+      "statuses": [
+        {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Provisioning succeeded",
+          "level": "Info",
+          "message": "Plugin enabled"
+        }
+      ],
+      "type": "Microsoft.Azure.ActiveDirectory.AADSSHLoginForLinux",
+      "typeHandlerVersion": "1.0.3600.2"
+    },
+    {
+      "name": "enablevmAccess",
+      "statuses": [
+        {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Provisioning succeeded",
+          "level": "Info",
+          "message": "Enable succeeded."
+        }
+      ],
+      "type": "Microsoft.OSTCExtensions.VMAccessForLinux",
+      "typeHandlerVersion": "1.5.25"
+    }
+  ],
+  "hyperVGeneration": "V2",
+  "osName": "debian",
+  "osVersion": "13",
+  "statuses": [
+    {
+      "code": "ProvisioningState/succeeded",
+      "displayStatus": "Provisioning succeeded",
+      "level": "Info",
+      "time": "2026-11-24T03:23:51.4877562+00:00"
+    },
+    {
+      "code": "PowerState/running",
+      "displayStatus": "VM running",
+      "level": "Info"
+    }
+  ],
+  "vmAgent": {
+    "extensionHandlers": [
+      {
+        "status": {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Ready",
+          "level": "Info",
+          "message": "Plugin enabled"
+        },
+        "type": "Microsoft.Azure.ActiveDirectory.AADSSHLoginForLinux",
+        "typeHandlerVersion": "1.0.3600.2"
+      },
+      {
+        "status": {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Ready",
+          "level": "Info",
+          "message": "Plugin enabled"
+        },
+        "type": "Microsoft.OSTCExtensions.VMAccessForLinux",
+        "typeHandlerVersion": "1.5.25"
+      },
+      {
+        "status": {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Ready",
+          "level": "Info",
+          "message": "Plugin enabled"
+        },
+        "type": "Microsoft.CPlat.Core.RunCommandLinux",
+        "typeHandlerVersion": "1.0.12"
+      }
+    ],
+    "statuses": [
+      {
+        "code": "ProvisioningState/succeeded",
+        "displayStatus": "Ready",
+        "level": "Info",
+        "message": "Guest Agent is running",
+        "time": "2026-11-24T13:16:26+00:00"
+      }
+    ],
+    "vmAgentVersion": "2.16.0.2"
+  }
+}

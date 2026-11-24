@@ -1,5 +1,168 @@
 # Changelog
 
+## [2026-11-24 08:00] - banlieue-azure: the ArmApi trait and a fake that refuses what ARM refused (ADR-0164 Decision 4, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure/src/api.rs`: `ArmApi`, the interface reconcilers
+  depend on (`Arc<dyn ArmApi>`): NIC put/address/delete, VM
+  put/instance view/delete/power (`Start`, `Deallocate`, `PowerOff`,
+  `Restart`), disk delete, operation status, resource SKUs, usages,
+  resource listing. Asynchronous calls return `Option<OperationHandle>`;
+  deleting what is gone is `Ok(None)`.
+- `crates/banlieue-azure/src/fake.rs`: `FakeArm`, in memory, its size
+  catalogue and quota lines taken from the captured spike responses. It
+  refuses, as ARM did in the spike: a size restricted in the zone
+  (`NotAvailableForSubscription`); an NVMe-only size from an image that does
+  not declare NVMe (`InvalidParameter`, and the NIC stays behind); an OS
+  disk below the image (`ResizeDiskError`); a tag name with `/`; a create
+  beyond quota (`QuotaExceeded`, with the captured figures); a VM whose NIC
+  does not exist; deleting a NIC in use (`NicInUse`); power actions on a VM
+  whose provisioning failed; a burst of deletes (`Throttled`, 1 s). It
+  allows deleting what is gone, and deleting a VM removes its NIC and OS
+  disk. Test hooks: `guest_reports_ready`, `fail_provisioning`,
+  `use_captured_quota`, `set_delete_burst`, `refill_delete_budget`,
+  `register_image`. Quota usage reflects the VMs the fake holds.
+- `fake_tests.rs`: 16 tests; 86 in the crate.
+
+### Dependencies
+`async-trait` (workspace); `tokio` as a dev-dependency (workspace). Neither
+new to the lockfile.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-24 07:00] - banlieue-azure: reading ARM responses (ADR-0160, ADR-0161, ADR-0163, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure/src/types.rs` (tests first, `types_tests.rs`):
+  - `parse_resource_skus` and `ResourceSku::usable_zones`: offered zones
+    minus the subscription's `Zone` restrictions, none under a `Location`
+    restriction; vCPUs, family, disk controller types (SCSI when absent).
+  - `parse_usages` and `vcpu_headroom`: the smaller of regional `cores` and
+    the family's headroom, never negative, family matched
+    case-insensitively.
+  - `parse_instance_view`: `Provisioning` (`Failed { reason }` keeps
+    `OSProvisioningTimedOut`) and `Power`; `guest_ready` is `Succeeded`, so
+    sticky across deallocation.
+  - `primary_private_ip` from a NIC.
+  - `parse_resources` with `createdTime`, and `orphans`: tagged for this
+    Provider, owner UID not live, older than the grace; a resource with no
+    creation time is never swept.
+  - `same_resource_id`: case-insensitive, because ARM upper-cased a resource
+    group name inside disk IDs.
+- `crates/banlieue-azure/fixtures/`: real ARM responses from the spike
+  subscription (instance views, NIC, resource SKUs, usages, resource list),
+  GUIDs and account names replaced by placeholders; one instance view written
+  from the recorded `OSProvisioningTimedOut` status. `README.md` says which.
+- 18 tests; 70 in the crate.
+
+### Dependencies
+`jiff` (workspace, already locked) for `createdTime`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-24 05:30] - banlieue-azure: the ARM client's pure core (ADR-0164, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure` (new workspace member, `publish = false`): the first
+  increment of the first-party Azure Resource Manager client, protocol only
+  (no `kube`, no banlieue API types), written tests first. Each test encodes
+  what ARM did in the roadmap 23 phase 0 spike.
+  - `tags.rs`: `banlieue-owner-uid`, `banlieue-owner-kind`,
+    `banlieue-provider`; Azure's name rules (no `<>%&\?/`, 512/256/50
+    limits); `owns` by exact UID; extra (policy-required) tags merged but
+    never overriding ownership (ADR-0158).
+  - `error.rs`: `classify` turns status and `{"error":{code,message}}` into
+    `Throttled`, `NotFound`, `SkuNotAvailable`, `AllocationFailed`,
+    `QuotaExceeded`, `Conflict`, `Unauthorized`, `Forbidden`,
+    `InvalidRequest`, `Server`; placement codes decide before status;
+    messages capped at 512 characters.
+  - `retry.rs`: `Retry-After` in seconds, clamped 1 to 300 s, default 5 s.
+  - `operation.rs`: `Azure-AsyncOperation` (preferred) / `Location` handles,
+    **refusing any URL off the configured Resource Manager endpoint** (the
+    handle is polled with the bearer token); `InProgress`/`Succeeded`/
+    `Failed{code}`/`Canceled`.
+  - `vm.rs`: the VM body that booted (NVMe controller, `diskSizeGB`,
+    `deleteOption: Delete`, Trusted Launch, boot diagnostics always on,
+    `provisionVMAgent: false`, `customData` up to 65,535 bytes) and the NIC
+    body; UID-derived names.
+  - `token.rs`: the Entra ID client-credentials exchange with a
+    ServiceAccount assertion; tenant validated so it cannot change the URL
+    path; `AccessToken` never printed; refresh 5 minutes before expiry;
+    `AADSTSnnnnnn` codes kept.
+- `Cargo.toml`: workspace member `crates/banlieue-azure`.
+
+### Dependencies
+None new to the lockfile: `base64`, `serde`, `serde_json`, `thiserror`
+(workspace) and `form_urlencoded` (already locked through banlieue-proxmox).
+
+### Why
+Roadmap 23 phase A. The provider and the image publisher (ADR-0162) need a
+typed ARM client; no maintained Rust crate covers the Compute and Network
+planes (ADR-0164).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-24 04:30] - Azure phase 0: ADR-0158 to ADR-0165 (Proposed), CALM model, roadmaps 22 and 23
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0158` to `docs/adr/0165` (new, all **Proposed**): roadmap 22's
+  shared cloud decisions (0158 provider shape, ownership tags and orphan
+  sweep; 0159 workload identity federation; 0160 instance-size mapping; 0161
+  quota as capacity; 0162 publishing a `VMImage` into a cloud; 0163
+  `GuestReady` on a cloud) and roadmap 23's (0164 `AzureVirtualMachine` and a
+  first-party ARM client; 0165 the Trusted Launch vTPM, which has no EK
+  certificate). Each records what a live phase 0 spike on a real Azure
+  subscription measured (2026-11-22 to 2026-11-24); no subscription, tenant,
+  host or tailnet identifier is in them.
+- `docs/architecture/calm/architecture.json`: models the Azure provider, the
+  image publish Job, ARM, the Entra ID token endpoint, the published
+  ServiceAccount issuer, the `AzureVirtualMachine` CR and the Trusted Launch
+  guest, all `DESIGNED, NOT IMPLEMENTED`; three controls are recorded as
+  ACCEPTED GAPs (no post-quantum key exchange at ARM and Entra ID; a 24-hour
+  exchanged access token). The provider joins the management-cluster and
+  single-binary groupings; ADR-0158 to ADR-0165 added to `adrs`.
+  `make calm-validate`: 0 errors, 0 warnings.
+- `docs/src/architecture/system.md`: regenerated by `make calm-diagrams`.
+- `.github/community/23-azure-provider.md`: status and phase 0 checkboxes
+  from the spike (four of five done; the sealed-image timing open; the EK
+  certificate item answered differently).
+- `.github/community/22-public-cloud-foundation.md`: status, phase 0 row
+  (Azure half answered, AWS half open).
+- `ROADMAPS.md`: rows 22 and 23 to 🔶.
+
+### Why
+Roadmap 23 depends on roadmap 22, and both gate their code on a phase 0
+spike. The spike found requirements no document states (NVMe declared on
+both the image definition and the snapshot; the OS disk sized above the
+image; Azure tags without `/`; no EK certificate on the vTPM; a guest ready
+handshake Kairos does not perform), so the ADRs record them before any code.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-23 20:30] - Fix: a tenant VM placed on one Cloud Hypervisor host is never moved to another, and a host never reuses a guest uid it still holds
 
 **Author:** Erick Bourgeois

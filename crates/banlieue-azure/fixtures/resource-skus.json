@@ -1,0 +1,256 @@
+{
+  "value": [
+    {
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "DiskControllerTypes",
+          "value": "NVMe"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "8"
+        }
+      ],
+      "family": "standardDav6Family",
+      "locationInfo": [
+        {
+          "location": "eastus2",
+          "zoneDetails": [
+            {
+              "capabilities": [
+                {
+                  "name": "UltraSSDAvailable",
+                  "value": "True"
+                }
+              ],
+              "name": [
+                "2",
+                "4",
+                "3"
+              ]
+            }
+          ],
+          "zones": [
+            "2",
+            "4",
+            "1",
+            "3"
+          ]
+        }
+      ],
+      "locations": [
+        "eastus2"
+      ],
+      "name": "Standard_D2as_v6",
+      "resourceType": "virtualMachines",
+      "restrictions": [
+        {
+          "reasonCode": "NotAvailableForSubscription",
+          "restrictionInfo": {
+            "locations": [
+              "eastus2"
+            ],
+            "zones": [
+              "2",
+              "3"
+            ]
+          },
+          "type": "Zone",
+          "values": [
+            "eastus2"
+          ]
+        }
+      ],
+      "size": "D2as_v6",
+      "tier": "Standard"
+    },
+    {
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "DiskControllerTypes",
+          "value": "NVMe"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "8"
+        }
+      ],
+      "family": "StandardDsv6Family",
+      "locationInfo": [
+        {
+          "location": "eastus2",
+          "zoneDetails": [
+            {
+              "capabilities": [
+                {
+                  "name": "UltraSSDAvailable",
+                  "value": "True"
+                }
+              ],
+              "name": [
+                "4",
+                "2",
+                "3"
+              ]
+            }
+          ],
+          "zones": [
+            "4",
+            "2",
+            "3"
+          ]
+        }
+      ],
+      "locations": [
+        "eastus2"
+      ],
+      "name": "Standard_D2s_v6",
+      "resourceType": "virtualMachines",
+      "restrictions": [
+        {
+          "reasonCode": "NotAvailableForSubscription",
+          "restrictionInfo": {
+            "locations": [
+              "eastus2"
+            ],
+            "zones": [
+              "2",
+              "4",
+              "3"
+            ]
+          },
+          "type": "Zone",
+          "values": [
+            "eastus2"
+          ]
+        }
+      ],
+      "size": "D2s_v6",
+      "tier": "Standard"
+    },
+    {
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "2"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "DiskControllerTypes",
+          "value": "NVMe"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "8"
+        }
+      ],
+      "family": "StandardDsv7Family",
+      "locationInfo": [
+        {
+          "location": "eastus2",
+          "zoneDetails": [
+            {
+              "capabilities": [
+                {
+                  "name": "UltraSSDAvailable",
+                  "value": "True"
+                }
+              ],
+              "name": [
+                "2",
+                "4",
+                "3"
+              ]
+            }
+          ],
+          "zones": [
+            "2",
+            "4",
+            "3",
+            "1"
+          ]
+        }
+      ],
+      "locations": [
+        "eastus2"
+      ],
+      "name": "Standard_D2s_v7",
+      "resourceType": "virtualMachines",
+      "restrictions": [],
+      "size": "D2s_v7",
+      "tier": "Standard"
+    },
+    {
+      "capabilities": [
+        {
+          "name": "vCPUs",
+          "value": "1"
+        },
+        {
+          "name": "HyperVGenerations",
+          "value": "V2"
+        },
+        {
+          "name": "DiskControllerTypes",
+          "value": "NVMe"
+        },
+        {
+          "name": "MemoryGB",
+          "value": "2"
+        }
+      ],
+      "family": "StandardFalsv7Family",
+      "locationInfo": [
+        {
+          "location": "eastus2",
+          "zoneDetails": [
+            {
+              "capabilities": [
+                {
+                  "name": "UltraSSDAvailable",
+                  "value": "True"
+                }
+              ],
+              "name": [
+                "2",
+                "4"
+              ]
+            }
+          ],
+          "zones": [
+            "2",
+            "4",
+            "1"
+          ]
+        }
+      ],
+      "locations": [
+        "eastus2"
+      ],
+      "name": "Standard_F1als_v7",
+      "resourceType": "virtualMachines",
+      "restrictions": [],
+      "size": "F1als_v7",
+      "tier": "Standard"
+    }
+  ]
+}
