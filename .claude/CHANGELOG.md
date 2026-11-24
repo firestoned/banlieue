@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-11-23 20:30] - Fix: a tenant VM placed on one Cloud Hypervisor host is never moved to another, and a host never reuses a guest uid it still holds
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: `placement_candidates`. While a VM records no
+  `status.scheduled` but its infra CR already exists, the scheduler is given only the Provider that CR names
+  (when it is still a candidate). `existing_machine_provider` reads the CR (one GET per kind, only on that path).
+  `status_mirror.rs`: `InfraMachineRead::provider_name`, from `spec.providerRef`.
+- `crates/banlieue-provider-cloud-hypervisor/src/{reconciler,hostfs,host,fake}.rs`: `uids_on_host`,
+  `hostfs::run_root_uids` and `HostOps::uids_in_use`. A new guest's uid avoids every uid with a run directory
+  on the host, as well as those its machines record.
+- Tests first, red on main: four in `virtualmachine_tests.rs`, two in `reconciler_tests.rs`, two in
+  `hostfs_tests.rs`.
+
+### Why
+Found live on a homelab: two `VirtualMachinePool`s in tenant namespaces, members spread by preferred
+anti-affinity over three Cloud Hypervisor hosts shared through `namespaceSelector`.
+1. The reconciler applies the infra CR, then writes `status.scheduled`; the apply wakes the VM again. A pass
+   that read the VM before the status write landed scheduled it afresh, anti-affinity (now counting a sibling)
+   chose another host, and the re-applied CR moved `providerRef` under a guest the first host had already
+   started. The first host stopped looking at the machine (it was no longer ours) and left its guest running;
+   the second fought it over `spec.providerID` (409).
+2. That orphaned guest held its uid, vTPM state and run directory on the first host, but no machine of that
+   host recorded the uid, so the ledger handed it out again: `swtpm-setup@<uid>` re-manufactured the vTPM of a
+   running gateway in the provider's home namespace, and deleting the tenant machines later stopped that
+   gateway's unit. Two gateways had to be recreated.
+
+The first fix removes the cause; the second makes a host safe against any guest it holds that no machine
+records (an orphan from before this fix, or a teardown that did not finish).
+
+### Impact
+- [x] Requires cluster rollout (the controller image, and the provider binary on every Cloud Hypervisor host)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Not done, on purpose
+- An orphaned guest is not torn down by the host that holds it: it keeps its uid until an operator removes it.
+  Stopping a guest no machine names is a decision for a person, not a reconcile.
+- `providerRef` is not made immutable at admission. With the first fix nothing rewrites it; an admission rule
+  would turn a future regression into a refused write instead of a moved machine, and belongs with the
+  machine-provider-ref policy if it is wanted.
+
 ## [2026-11-23 09:00] - Pre-lay image: rebuild the apt layer daily (ADR-0113 amendment)
 
 **Author:** Erick Bourgeois

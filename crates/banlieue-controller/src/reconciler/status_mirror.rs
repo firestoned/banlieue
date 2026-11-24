@@ -60,6 +60,11 @@ pub trait InfraMachineRead {
     /// duplicate-address path (ADR-0083), which must still apply a VM's
     /// `desiredPowerState` to an infra CR it otherwise leaves untouched.
     fn desired_power_state(&self) -> &PowerState;
+    /// The `Provider` this infra CR names in `spec.providerRef`: the host or
+    /// backend the machine was placed on. `None` only for a test double.
+    fn provider_name(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// Implements [`InfraMachineRead`] for one infra CR kind. Every kind shares
@@ -118,6 +123,10 @@ macro_rules! impl_infra_machine_read {
 
             fn desired_power_state(&self) -> &PowerState {
                 &self.spec.desired_power_state
+            }
+
+            fn provider_name(&self) -> Option<&str> {
+                Some(self.spec.provider_ref.name.as_str())
             }
         }
     };

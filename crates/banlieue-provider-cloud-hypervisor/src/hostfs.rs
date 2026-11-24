@@ -303,6 +303,33 @@ pub fn remove_machine(plan: &MachinePlan) -> io::Result<()> {
     Ok(())
 }
 
+/// The guest uids with a run directory under `run_root` (see
+/// [`crate::reconciler::uids_on_host`]). Only directories count; a missing run
+/// root holds none.
+///
+/// # Errors
+/// The run root exists but cannot be read.
+pub fn run_root_uids(
+    run_root: &Path,
+    guests: crate::host_config::GuestsSection,
+) -> io::Result<std::collections::BTreeSet<u32>> {
+    let entries = match fs::read_dir(run_root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return Ok(std::collections::BTreeSet::new());
+        }
+        Err(e) => return Err(e),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    Ok(crate::reconciler::uids_on_host(names, guests))
+}
+
 /// Whether anything of this machine is still on disk.
 #[must_use]
 pub fn machine_files_exist(plan: &MachinePlan) -> bool {

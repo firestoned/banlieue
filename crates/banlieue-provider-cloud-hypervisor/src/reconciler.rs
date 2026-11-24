@@ -18,7 +18,7 @@
 
 use crate::error::{Error, Result};
 use crate::host::HostOps;
-use crate::host_config::HostConfig;
+use crate::host_config::{GuestsSection, HostConfig};
 use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
 use crate::plan::{PlanError, UidLedger, plan_machine};
 use crate::provider::{HostCaHold, current_host_ca_hold};
@@ -110,6 +110,24 @@ pub fn used_host_uids(
         .filter(|m| is_ours(m, config))
         .filter(|m| m.uid().as_deref() != Some(except))
         .filter_map(|m| m.status.as_ref().and_then(|s| s.host_uid))
+        .collect()
+}
+
+/// The guest uids a host holds, from its run root's entry names: every name
+/// that is a number inside the guest range. A guest's run directory exists
+/// from its first start until its teardown removes it, so this counts guests
+/// no machine of this host records any more (a machine whose `providerRef`
+/// moved, or whose finalizer ran on another host). Handing such a uid out
+/// again re-manufactured a running guest's vTPM.
+pub fn uids_on_host<I, S>(names: I, guests: GuestsSection) -> BTreeSet<u32>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    names
+        .into_iter()
+        .filter_map(|n| n.as_ref().parse::<u32>().ok())
+        .filter(|uid| guests.contains(*uid))
         .collect()
 }
 
@@ -240,7 +258,14 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
     let Some(host_uid) = previous.and_then(|s| s.host_uid) else {
         // Every namespace this host serves: guest uids are one pool per host.
         let all = ctx.machines().list(&ListParams::default()).await?.items;
-        let used = used_host_uids(&all, &ctx.config, &uid);
+        let mut used = used_host_uids(&all, &ctx.config, &uid);
+        // And what is on the host: a guest no machine of ours records still
+        // holds its uid, its vTPM state and its run directory.
+        used.extend(
+            ctx.host
+                .uids_in_use(&ctx.config.paths.run_root, ctx.config.guests)
+                .await?,
+        );
         let Some(host_uid) = ctx.uids.assign(&uid, &used, ctx.config.guests) else {
             let st = failure_status(
                 previous,

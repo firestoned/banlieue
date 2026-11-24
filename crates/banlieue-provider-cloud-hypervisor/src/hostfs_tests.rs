@@ -558,4 +558,34 @@ lan = "br0"
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "FILE=b.raw\n");
         assert!(!dir.path().join("units").join("import-x.env.tmp").exists());
     }
+
+    #[test]
+    fn run_root_uids_reads_the_directories_under_the_run_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guests = crate::host_config::GuestsSection {
+            uid_base: 2_000_000,
+            uid_count: 1024,
+        };
+        std::fs::create_dir(dir.path().join("2000000")).unwrap();
+        std::fs::create_dir(dir.path().join("2000007")).unwrap();
+        std::fs::write(dir.path().join("2000009"), b"a file, not a guest").unwrap();
+        assert_eq!(
+            run_root_uids(dir.path(), guests).unwrap(),
+            [2_000_000, 2_000_007].into()
+        );
+    }
+
+    #[test]
+    fn a_missing_run_root_holds_no_uid() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let guests = crate::host_config::GuestsSection {
+            uid_base: 2_000_000,
+            uid_count: 1024,
+        };
+        assert!(
+            run_root_uids(&dir.path().join("absent"), guests)
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

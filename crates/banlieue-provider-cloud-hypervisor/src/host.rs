@@ -41,6 +41,13 @@ pub trait HostOps: Send + Sync {
     async fn remove_files(&self, plan: &MachinePlan) -> Result<()>;
     /// Whether any of the machine's files remain.
     async fn files_exist(&self, plan: &MachinePlan) -> bool;
+    /// The guest uids this host holds a run directory for under `run_root`,
+    /// whether or not a machine still records them.
+    async fn uids_in_use(
+        &self,
+        run_root: &std::path::Path,
+        guests: crate::host_config::GuestsSection,
+    ) -> Result<std::collections::BTreeSet<u32>>;
 
     /// Get the vTPM's directories ready (ADR-0065); a no-op without one.
     async fn prepare_tpm(&self, plan: &MachinePlan) -> Result<()>;
@@ -202,6 +209,15 @@ impl HostOps for RealHost {
 
     async fn files_exist(&self, plan: &MachinePlan) -> bool {
         hostfs::machine_files_exist(plan)
+    }
+
+    async fn uids_in_use(
+        &self,
+        run_root: &std::path::Path,
+        guests: crate::host_config::GuestsSection,
+    ) -> Result<std::collections::BTreeSet<u32>> {
+        let run_root = run_root.to_path_buf();
+        blocking(move || hostfs::run_root_uids(&run_root, guests)).await
     }
 
     async fn prepare_tpm(&self, plan: &MachinePlan) -> Result<()> {
