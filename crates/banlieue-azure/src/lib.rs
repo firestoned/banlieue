@@ -14,17 +14,23 @@
 //! - [`operation`]: long-running operation handles and statuses.
 //! - [`vm`]: the VM and NIC request bodies.
 //! - [`token`]: the federated token exchange.
+//! - [`types`]: what ARM returns, read into the facts the provider decides
+//!   on: usable zones per size, quota headroom, provisioning and power
+//!   state, the NIC's address, and tagged orphans.
 //!
 //! TLS: the HTTP client added in the next increment uses the process's
 //! rustls provider. Post-quantum key exchange (X25519MLKEM768) needs the
 //! workspace to move from `ring` to `aws-lc-rs`, roadmap 22's open phase 0
 //! question; ARM and Entra ID do not negotiate it yet in any case.
 
+pub mod api;
 pub mod error;
+pub mod fake;
 pub mod operation;
 pub mod retry;
 pub mod tags;
 pub mod token;
+pub mod types;
 pub mod vm;
 
 pub use error::{Error, Result};

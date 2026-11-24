@@ -1,5 +1,77 @@
 # Changelog
 
+## [2026-11-24 08:00] - banlieue-azure: the ArmApi trait and a fake that refuses what ARM refused (ADR-0164 Decision 4, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure/src/api.rs`: `ArmApi`, the interface reconcilers
+  depend on (`Arc<dyn ArmApi>`): NIC put/address/delete, VM
+  put/instance view/delete/power (`Start`, `Deallocate`, `PowerOff`,
+  `Restart`), disk delete, operation status, resource SKUs, usages,
+  resource listing. Asynchronous calls return `Option<OperationHandle>`;
+  deleting what is gone is `Ok(None)`.
+- `crates/banlieue-azure/src/fake.rs`: `FakeArm`, in memory, its size
+  catalogue and quota lines taken from the captured spike responses. It
+  refuses, as ARM did in the spike: a size restricted in the zone
+  (`NotAvailableForSubscription`); an NVMe-only size from an image that does
+  not declare NVMe (`InvalidParameter`, and the NIC stays behind); an OS
+  disk below the image (`ResizeDiskError`); a tag name with `/`; a create
+  beyond quota (`QuotaExceeded`, with the captured figures); a VM whose NIC
+  does not exist; deleting a NIC in use (`NicInUse`); power actions on a VM
+  whose provisioning failed; a burst of deletes (`Throttled`, 1 s). It
+  allows deleting what is gone, and deleting a VM removes its NIC and OS
+  disk. Test hooks: `guest_reports_ready`, `fail_provisioning`,
+  `use_captured_quota`, `set_delete_burst`, `refill_delete_budget`,
+  `register_image`. Quota usage reflects the VMs the fake holds.
+- `fake_tests.rs`: 16 tests; 86 in the crate.
+
+### Dependencies
+`async-trait` (workspace); `tokio` as a dev-dependency (workspace). Neither
+new to the lockfile.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-24 07:00] - banlieue-azure: reading ARM responses (ADR-0160, ADR-0161, ADR-0163, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure/src/types.rs` (tests first, `types_tests.rs`):
+  - `parse_resource_skus` and `ResourceSku::usable_zones`: offered zones
+    minus the subscription's `Zone` restrictions, none under a `Location`
+    restriction; vCPUs, family, disk controller types (SCSI when absent).
+  - `parse_usages` and `vcpu_headroom`: the smaller of regional `cores` and
+    the family's headroom, never negative, family matched
+    case-insensitively.
+  - `parse_instance_view`: `Provisioning` (`Failed { reason }` keeps
+    `OSProvisioningTimedOut`) and `Power`; `guest_ready` is `Succeeded`, so
+    sticky across deallocation.
+  - `primary_private_ip` from a NIC.
+  - `parse_resources` with `createdTime`, and `orphans`: tagged for this
+    Provider, owner UID not live, older than the grace; a resource with no
+    creation time is never swept.
+  - `same_resource_id`: case-insensitive, because ARM upper-cased a resource
+    group name inside disk IDs.
+- `crates/banlieue-azure/fixtures/`: real ARM responses from the spike
+  subscription (instance views, NIC, resource SKUs, usages, resource list),
+  GUIDs and account names replaced by placeholders; one instance view written
+  from the recorded `OSProvisioningTimedOut` status. `README.md` says which.
+- 18 tests; 70 in the crate.
+
+### Dependencies
+`jiff` (workspace, already locked) for `createdTime`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-24 05:30] - banlieue-azure: the ARM client's pure core (ADR-0164, roadmap 23 phase A)
 
 **Author:** Erick Bourgeois

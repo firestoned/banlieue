@@ -1,0 +1,49 @@
+{
+  "value": [
+    {
+      "currentValue": 2,
+      "limit": 4,
+      "name": {
+        "localizedValue": "Standard Dsv7 Family vCPUs",
+        "value": "StandardDsv7Family"
+      },
+      "unit": "Count"
+    },
+    {
+      "currentValue": 1,
+      "limit": 4,
+      "name": {
+        "localizedValue": "Standard Falsv7 Family vCPUs",
+        "value": "StandardFalsv7Family"
+      },
+      "unit": "Count"
+    },
+    {
+      "currentValue": 3,
+      "limit": 4,
+      "name": {
+        "localizedValue": "Total Regional vCPUs",
+        "value": "cores"
+      },
+      "unit": "Count"
+    },
+    {
+      "currentValue": 0,
+      "limit": 4,
+      "name": {
+        "localizedValue": "Standard Dsv6 Family vCPUs",
+        "value": "StandardDsv6Family"
+      },
+      "unit": "Count"
+    },
+    {
+      "currentValue": 0,
+      "limit": 4,
+      "name": {
+        "localizedValue": "standard Dav6 Family vCPUs",
+        "value": "standardDav6Family"
+      },
+      "unit": "Count"
+    }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  "etag": "W/\"00000000-0000-0000-0000-000000000001\"",
+  "id": "/subscriptions/00000000-0000-0000-0000-000000000002/resourceGroups/banlieue-example/providers/Microsoft.Network/networkInterfaces/spike-ssh2-nic",
+  "kind": "Regular",
+  "location": "eastus2",
+  "name": "spike-ssh2-nic",
+  "properties": {
+    "allowPort25Out": false,
+    "auxiliaryMode": "None",
+    "auxiliarySku": "None",
+    "defaultOutboundConnectivityEnabled": false,
+    "disableTcpStateTracking": false,
+    "dnsSettings": {
+      "appliedDnsServers": [],
+      "dnsServers": [],
+      "internalDomainNameSuffix": "cqi5tby2icze1ldx3zewpvdxgd.cx.internal.cloudapp.net"
+    },
+    "enableAcceleratedNetworking": false,
+    "enableIPForwarding": false,
+    "hostedWorkloads": [],
+    "ipConfigurations": [
+      {
+        "etag": "W/\"00000000-0000-0000-0000-000000000001\"",
+        "id": "/subscriptions/00000000-0000-0000-0000-000000000002/resourceGroups/banlieue-example/providers/Microsoft.Network/networkInterfaces/spike-ssh2-nic/ipConfigurations/ipconfig1",
+        "name": "ipconfig1",
+        "properties": {
+          "primary": true,
+          "privateIPAddress": "10.240.1.4",
+          "privateIPAddressVersion": "IPv4",
+          "privateIPAllocationMethod": "Dynamic",
+          "provisioningState": "Succeeded",
+          "subnet": {
+            "id": "/subscriptions/00000000-0000-0000-0000-000000000002/resourceGroups/banlieue-example/providers/Microsoft.Network/virtualNetworks/spike-vnet/subnets/spike-subnet"
+          }
+        },
+        "type": "Microsoft.Network/networkInterfaces/ipConfigurations"
+      }
+    ],
+    "macAddress": "00-0D-3A-00-00-00",
+    "nicType": "Standard",
+    "primary": true,
+    "provisioningState": "Succeeded",
+    "resourceGuid": "00000000-0000-0000-0000-000000000003",
+    "tapConfigurations": [],
+    "virtualMachine": {
+      "id": "/subscriptions/00000000-0000-0000-0000-000000000002/resourceGroups/banlieue-example/providers/Microsoft.Compute/virtualMachines/spike-ssh2"
+    },
+    "vnetEncryptionSupported": false
+  },
+  "tags": {
+    "banlieue-created-by": "claude-spike",
+    "banlieue-purpose": "roadmap22-23-spike"
+  },
+  "type": "Microsoft.Network/networkInterfaces"
+}

@@ -16,9 +16,15 @@ authors.workspace = true
 # this crate compiles no new third-party code (ADR-0164 Decision 2).
 
 [dependencies]
+async-trait.workspace = true
 base64.workspace = true
 # Already locked through banlieue-proxmox: builds the token-exchange form.
 form_urlencoded = "1"
+# Timestamps for the orphan sweep's grace period (ARM `createdTime`).
+jiff.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

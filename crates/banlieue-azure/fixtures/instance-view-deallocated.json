@@ -1,0 +1,30 @@
+{
+  "bootDiagnostics": {},
+  "disks": [
+    {
+      "name": "spike-ssh2_OsDisk_1_6be2c058f9934f64a4ba33912e5ffd38",
+      "statuses": [
+        {
+          "code": "ProvisioningState/succeeded",
+          "displayStatus": "Provisioning succeeded",
+          "level": "Info",
+          "time": "2026-11-24T04:27:54.7767737+00:00"
+        }
+      ]
+    }
+  ],
+  "hyperVGeneration": "V2",
+  "statuses": [
+    {
+      "code": "ProvisioningState/succeeded",
+      "displayStatus": "Provisioning succeeded",
+      "level": "Info",
+      "time": "2026-11-24T04:27:54.8082231+00:00"
+    },
+    {
+      "code": "PowerState/deallocated",
+      "displayStatus": "VM deallocated",
+      "level": "Info"
+    }
+  ]
+}
