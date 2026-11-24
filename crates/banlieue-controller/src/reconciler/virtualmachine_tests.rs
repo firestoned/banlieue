@@ -384,4 +384,83 @@ mod tests {
         assert_eq!(plan.delete, vec![InfraKind::VSphere, InfraKind::Libvirt]);
         assert!(!plan.remove_finalizer);
     }
+
+    // ---- placement_candidates: a placed VM keeps its machine's Provider ----
+    //
+    // The first pass applies the infra CR, then writes `status.scheduled`. A
+    // pass that reads the VM before that status write lands sees no recorded
+    // placement and would schedule again; with anti-affinity across several
+    // Providers the answer can differ, and re-applying the infra CR rewrote
+    // its `providerRef` under a guest another host had already started (found
+    // live: two tenant pools on three Cloud Hypervisor hosts). An existing
+    // machine's Provider is the placement until `status.scheduled` says so.
+
+    fn named_provider(name: &str) -> Provider {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "banlieue.io/v1alpha1",
+            "kind": "Provider",
+            "metadata": { "name": name, "namespace": "banlieue-system" },
+            "spec": {
+                "providerClassRef": { "name": "cloud-hypervisor" },
+                "connection": { "endpoint": "ch://host.example" }
+            }
+        }))
+        .expect("a minimal Provider")
+    }
+
+    fn names(providers: &[Provider]) -> Vec<String> {
+        providers.iter().map(ResourceExt::name_any).collect()
+    }
+
+    fn recorded(provider: &str) -> ScheduledPlacement {
+        ScheduledPlacement {
+            provider_name: provider.into(),
+            provider_class: "cloud-hypervisor".into(),
+            failure_domain: provider.into(),
+            resolved_storage: vec![],
+            resolved_networks: vec![],
+            scheduled_at: None,
+        }
+    }
+
+    fn three() -> Vec<Provider> {
+        vec![
+            named_provider("grill"),
+            named_provider("lenny"),
+            named_provider("slate"),
+        ]
+    }
+
+    #[test]
+    fn a_vm_with_no_machine_is_scheduled_over_every_candidate() {
+        assert_eq!(
+            names(&placement_candidates(three(), None, None)),
+            ["grill", "lenny", "slate"]
+        );
+    }
+
+    #[test]
+    fn a_vm_whose_machine_exists_but_whose_placement_is_unread_keeps_that_provider() {
+        assert_eq!(
+            names(&placement_candidates(three(), None, Some("grill"))),
+            ["grill"]
+        );
+    }
+
+    #[test]
+    fn a_recorded_placement_leaves_the_candidates_to_the_migration_policy() {
+        let placed = recorded("slate");
+        assert_eq!(
+            names(&placement_candidates(three(), Some(&placed), Some("grill"))),
+            ["grill", "lenny", "slate"]
+        );
+    }
+
+    #[test]
+    fn a_machine_on_a_provider_no_longer_a_candidate_does_not_pin_the_vm() {
+        assert_eq!(
+            names(&placement_candidates(three(), None, Some("gone"))),
+            ["grill", "lenny", "slate"]
+        );
+    }
 }

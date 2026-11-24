@@ -278,6 +278,20 @@ impl HostOps for FakeHost {
         s.dirs.contains(&plan.machine_dir) || s.dirs.contains(&plan.run_dir)
     }
 
+    async fn uids_in_use(
+        &self,
+        run_root: &std::path::Path,
+        guests: crate::host_config::GuestsSection,
+    ) -> Result<BTreeSet<u32>> {
+        let s = self.lock();
+        let names = s
+            .dirs
+            .iter()
+            .filter(|d| d.parent() == Some(run_root))
+            .filter_map(|d| d.file_name().map(|n| n.to_string_lossy().into_owned()));
+        Ok(crate::reconciler::uids_on_host(names, guests))
+    }
+
     async fn prepare_tpm(&self, plan: &MachinePlan) -> Result<()> {
         let mut s = self.lock();
         s.calls.push("prepare_tpm".into());

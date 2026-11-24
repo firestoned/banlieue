@@ -30,7 +30,10 @@
 use std::sync::Arc;
 
 use banlieue_api::banlieue::DEFAULT_USER_DATA_KEY;
-use banlieue_api::banlieue::{InstallMode, VMClass, VMImage, VirtualMachine, VirtualMachineStatus};
+use banlieue_api::banlieue::{
+    InstallMode, Provider, ScheduledPlacement, VMClass, VMImage, VirtualMachine,
+    VirtualMachineStatus,
+};
 use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
@@ -340,6 +343,16 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // Every placed VM's size, for the capacity fit (ADR-0107). VMClasses
     // are cluster-scoped and few, so one list per scheduling pass.
     let classes = class_api.list(&ListParams::default()).await?.items;
+    // A VM whose infra CR exists keeps that CR's Provider while its own
+    // `status.scheduled` is not yet readable: a pass that read the VM before
+    // the previous pass's status write landed must not place it elsewhere.
+    let recorded = vm.status.as_ref().and_then(|s| s.scheduled.as_ref());
+    let existing_provider = if recorded.is_none() {
+        existing_machine_provider(&infra_apis, &machine_name(&vm)).await?
+    } else {
+        None
+    };
+    let providers = placement_candidates(providers, recorded, existing_provider.as_deref());
     let decision = match schedule(&vm, &class, &image, &providers, &sibling_vms, &classes) {
         Ok(d) => d,
         Err(err) => {
@@ -548,6 +561,49 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     patch_status(&vm_api, &name, &next_status).await?;
 
     Ok(requeue_default())
+}
+
+/// The Providers this pass may place the VM on. Every candidate, unless the
+/// VM's infra CR already exists while its placement is not yet recorded on the
+/// VM: then only the Provider that CR names, when it is still a candidate.
+///
+/// The reconciler applies the infra CR first and writes `status.scheduled`
+/// after it, and the apply wakes the VM again. A pass that reads the VM from a
+/// cache the status write has not reached sees no placement; scheduled afresh,
+/// anti-affinity can choose another Provider, and re-applying the infra CR
+/// moved its `providerRef` from under a guest the first host had already
+/// started. A recorded placement is left to the migration policy, as before.
+#[must_use]
+pub(crate) fn placement_candidates(
+    providers: Vec<Provider>,
+    recorded: Option<&ScheduledPlacement>,
+    existing_provider: Option<&str>,
+) -> Vec<Provider> {
+    match (recorded, existing_provider) {
+        (None, Some(existing)) if providers.iter().any(|p| p.name_any() == existing) => providers
+            .into_iter()
+            .filter(|p| p.name_any() == existing)
+            .collect(),
+        _ => providers,
+    }
+}
+
+/// The Provider named by the infra CR this VM owns, of whichever kind, if it
+/// exists. One GET per kind, made only while the VM records no placement.
+async fn existing_machine_provider(apis: &InfraApis, name: &str) -> Result<Option<String>> {
+    for kind in [
+        InfraKind::CloudHypervisor,
+        InfraKind::Libvirt,
+        InfraKind::VSphere,
+        InfraKind::Proxmox,
+    ] {
+        if let Some(m) = get_infra(apis, kind, name).await?
+            && let Some(p) = m.provider_name()
+        {
+            return Ok(Some(p.to_string()));
+        }
+    }
+    Ok(None)
 }
 
 /// Drift-but-Never path: don't touch the infra CR, just mirror its status

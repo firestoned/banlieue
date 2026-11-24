@@ -140,6 +140,30 @@ mod tests {
         assert_eq!(used, [2_000_000].into());
     }
 
+    // A guest left on this host by a machine that no longer names it (its
+    // `providerRef` moved, or its finalizer ran on another host) holds a run
+    // directory under its uid but no status this host's ledger reads. Handing
+    // that uid out again manufactured a new vTPM over a running guest's (found
+    // live). The run root's entries count as used, inside the guest range only.
+    #[test]
+    fn uids_on_the_host_are_the_run_roots_numeric_entries_in_the_guest_range() {
+        let guests = config().guests;
+        let base = guests.uid_base;
+        let names = [
+            base.to_string(),
+            (base + 3).to_string(),
+            "not-a-uid".to_string(),
+            "42".to_string(),
+            (base + guests.uid_count).to_string(),
+        ];
+        assert_eq!(uids_on_host(names, guests), [base, base + 3].into());
+    }
+
+    #[test]
+    fn an_empty_run_root_holds_no_uid() {
+        assert!(uids_on_host(Vec::<String>::new(), config().guests).is_empty());
+    }
+
     #[test]
     fn requeue_is_quick_while_changing_and_slow_when_settled() {
         let quick = requeue_for(
