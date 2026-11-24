@@ -165,7 +165,7 @@ help: ## Show this help
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
-        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test hostca-policy-test ektrustbundle-policy-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test credentialsref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test hostca-policy-test ektrustbundle-policy-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -606,6 +606,23 @@ provider-ref-policy-live-test: ## Run the shared-provider admission policies (AD
 	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policies."; \
 	  exit 1; }
 	cargo test -p banlieue-controller --test live_provider_ref_policy -- \
+	  --ignored --nocapture --test-threads=1
+
+credentialsref-policy-live-test: ## Run the Provider credentialsRef policy (CHAIN-001, ADR-0157) against a REAL API server (needs KUBECONFIG, cluster-admin)
+	@# Naming a Provider's credential needs get or reference on the Secret, and
+	@# only a create or a change to spec.connection is checked. Callers are
+	@# impersonated without system:masters, each with the RBAC its case needs;
+	@# writes are dry runs. A scratch namespace, one fixture Provider and three
+	@# ClusterRole/RoleBinding pairs are created and removed. Use a scratch cluster:
+	@#
+	@#   kind create cluster --name banlieue-policy-test
+	@#   kubectl apply --server-side -f deploy/crds/
+	@#   kubectl apply -f deploy/admission/provider-credentialsref-authorization.yaml
+	@#   make credentialsref-policy-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the CRDs and the policy."; \
+	  exit 1; }
+	cargo test -p banlieue-controller --test live_credentialsref_policy -- \
 	  --ignored --nocapture --test-threads=1
 
 address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL API server (needs KUBECONFIG; no libvirt)

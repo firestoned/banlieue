@@ -206,7 +206,7 @@ CEL, with **no webhook to run or certificates to rotate** (Kubernetes 1.30+):
 | `banlieue-provider-immutable-class` | `Provider.spec.providerClassRef.name` is immutable. |
 | `banlieue-provider-cabundle-source` | `Provider.spec.connection.caBundle` names exactly one of `inline` / `configMapRef` / `secretRef`. |
 | `banlieue-provider-connection` | `Provider.spec.connection.endpoint` is `https://`, has no embedded userinfo, and `insecureSkipTLSVerify` requires an explicit opt-in annotation (CHAIN-001). |
-| `banlieue-provider-credentialsref-authorization` | The principal creating/updating a `Provider` must itself be authorized to `get` the Secret named by `spec.connection.credentialsRef` (CHAIN-001). |
+| `banlieue-provider-credentialsref-authorization` | The principal creating a `Provider`, or changing its `spec.connection`, must itself be authorized to `get` or to `reference` the Secret named by `spec.connection.credentialsRef` (CHAIN-001, ADR-0157). A label or capability change is not checked. |
 | `banlieue-providerclass-guardrails` | Bounds what a `ProviderClass` writer can hand a provider Deployment via `spec.additionalRules` / `spec.workloadNamespace` (SEC-006). |
 | `banlieue-vmimage-import-source` | `VMImage.spec.sources[].importFrom` must be digest-pinned (`@sha256:`) and from an allow-listed registry (CHAIN-003). |
 | `banlieue-virtualmachine-userdata-authorization` | The principal creating/updating a `VirtualMachine` must be authorized to `get` the Secret or ConfigMap named by `spec.userData` (ADR-0042). |

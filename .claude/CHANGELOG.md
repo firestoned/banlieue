@@ -1,10 +1,15 @@
 # Changelog
 
+<<<<<<< HEAD
 ## [2026-11-20 20:00] - ADR-0146 Decision 8 implemented: the installer has OpenBao sign the host CA in one run
+=======
+## [2026-11-22 12:00] - Referencing a Provider's credentials is its own permission (ADR-0157)
+>>>>>>> c5cb605 (feat(admission): referencing a Provider credential is its own permission (ADR-0157))
 
 **Author:** Erick Bourgeois
 
 ### Changed
+<<<<<<< HEAD
 - `crates/banlieue-host/src/openbao.rs` (new, tests in `openbao_tests.rs`): `OpenBao`, a client for one
   exchange: log in to a JWT auth mount with the host's ServiceAccount token (or use a one-use token),
   post the pending request to `<mount>/root/sign-intermediate` with exactly five parameters
@@ -117,6 +122,38 @@ signature fixes both without moving the key off the host or giving the host a cr
 - [ ] Config change only
 - [x] Documentation only
 
+=======
+- `docs/adr/0157-referencing-provider-credentials-is-its-own-permission.md`: Accepted. Proposed
+  2026-11-19 after faubourg's first live libvirt test found the policy refusing a label-only
+  update by a controller that reads no Secret.
+- `deploy/admission/provider-credentialsref-authorization.yaml`: checked on a create and on an
+  update whose `spec.connection` differs from the old object's (endpoint, CA and
+  `insecureSkipTLSVerify` as much as `credentialsRef`); admits `get` **or** the custom verb
+  `reference` on the named Secret; the refusal says the writer may neither.
+- `deploy/admission/README.md`, `docs/src/guides/core-controller.md`: the new rule, and how to
+  grant `reference` narrowly.
+- `docs/src/security/threat-model.md`: full pass for ADR-0157 (stamp 2026-11-22; A-1, the
+  confused-deputy row rewritten, one accepted risk for a principal holding `reference`).
+- `docs/architecture/calm/architecture.json`: the `admission-policy-validation` control and
+  `adrs`.
+
+### Added
+- `crates/banlieue-controller/tests/live_credentialsref_policy.rs` and
+  `make credentialsref-policy-live-test`: a reader, a referrer and a writer with neither, each
+  impersonated with only its RBAC, against a real API server.
+
+### Why
+A controller that groups or labels Providers had to hold `get` on every credential they name,
+which is the access it is built not to have. The threat is choosing where a credential goes, so
+only a change to the connection is checked, and naming a Secret is its own permission.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (an opt-in admission policy: re-apply it to take effect)
+- [ ] Documentation only
+
+>>>>>>> c5cb605 (feat(admission): referencing a Provider credential is its own permission (ADR-0157))
 ## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
 
 **Author:** Erick Bourgeois
