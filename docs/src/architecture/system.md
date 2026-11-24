@@ -96,6 +96,13 @@ flowchart LR
     service-spire-server-x509pop["SPIRE server x509pop bundle (mediatore, external)"]
     data-asset-ch-attestation-ca-pending["Pending attestation CA request (Cloud Hypervisor host, CSR route)"]
     external-attestation-pki["Node-attestation PKI mount (administrator-operated, e.g. OpenBao)"]
+    service-provider-azure["banlieue-provider-azure"]
+    service-azure-image-publisher["Azure image publish Job"]
+    network-azure-arm["Azure Resource Manager (external)"]
+    network-entra-id["Microsoft Entra ID token endpoint (external)"]
+    network-sa-issuer-publication["Published ServiceAccount issuer (operator-provided)"]
+    data-asset-azure-virtual-machine-cr["AzureVirtualMachine Custom Resource"]
+    system-azure-guest["Azure Trusted Launch guest"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -103,6 +110,7 @@ flowchart LR
         service-provider-proxmox
         service-provider-libvirt
         service-banlieue-imagebuilder
+        service-provider-azure
     end
     subgraph sg_ecosystem-management-cluster [Ecosystem Management Cluster]
         service-banlieue-controller
@@ -114,6 +122,7 @@ flowchart LR
         service-provider-libvirt
         service-banlieue-imagebuilder
         service-kairos-operator
+        service-provider-azure
     end
     subgraph sg_service-kubernetes-api [Service Kubernetes Api]
         data-asset-virtualmachine-cr
@@ -284,6 +293,14 @@ flowchart LR
     service-banlieue-host-installer --> external-attestation-pki
     service-banlieue-host-installer --> data-asset-ch-attestation-ca-pending
     service-banlieue-host-installer --> data-asset-ch-attestation-ca
+    service-provider-azure -->|HTTPS| service-kubernetes-api
+    service-provider-azure -->|HTTPS| network-entra-id
+    network-entra-id -->|HTTPS| network-sa-issuer-publication
+    service-provider-azure -->|HTTPS| network-azure-arm
+    service-azure-image-publisher -->|HTTPS| network-azure-arm
+    system-azure-guest -->|HTTP| network-azure-arm
+    service-banlieue-controller --> data-asset-azure-virtual-machine-cr
+    service-banlieue-controller --> data-asset-provider-cr
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>
