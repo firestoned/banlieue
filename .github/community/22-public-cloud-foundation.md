@@ -21,7 +21,21 @@
 > workload identity federation from their own ServiceAccount, with no cloud
 > key stored in the cluster.
 >
-> **Status (2026-11-19): not started.** Nothing in the tree yet.
+> **Status (2026-11-24): phase 0 half done (the Azure half); ADR-0158 to
+> ADR-0163 Accepted.** Roadmap 23's live spike answered the Azure side of
+> every phase 0 question and the ADRs record it: one `Provider` per
+> subscription and region with zones as the subscription sees them,
+> `banlieue-*` ownership tags (Azure rejects `/`) and an orphan sweep
+> (ADR-0158); workload identity federation **verified end to end** from a
+> cluster whose issuer was published as two static files (ADR-0159); a
+> first-party ARM client, since the official Rust crates are at 0.0.1
+> (ADR-0164); a gallery image published by direct upload with NVMe declared
+> on both the definition and the snapshot (ADR-0162); `GuestReady` from
+> Azure's own ready handshake (ADR-0163). Still open: everything AWS (SDK and
+> TLS provider, the EC2/STS/EBS post-quantum measurements), and the
+> live-test cost guard as a harness rather than a habit. Roadmap 23 phase A
+> has started the Azure client (`crates/banlieue-azure`); nothing of this
+> roadmap's own phases A to F is in the tree yet.
 
 Baseline when written: `dca5f45` (2026-11-19). ADRs 0001 to 0144 exist or are
 reserved. **Roadmaps 22 to 25 together reserve ADR-0158 to ADR-0169**; this
@@ -207,7 +221,7 @@ candidate transports, for the ADR to choose between with measurements:
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | The phase 0 questions above, answered in ADR-0158 and ADR-0159 | ⛔ |
+| 0 | The phase 0 questions above, answered in ADR-0158 and ADR-0159 | 🔶 Azure half answered by roadmap 23's spike; ADR-0158 to ADR-0163 Accepted (2026-11-24); AWS half open |
 | A | API: cloud `Provider` connection (account or subscription, region, identity), instance-size mapping, zone failure domains, quota on status; `VMImage` publish targets and per-Provider publication status; `regen-crds`, examples | ⛔ |
 | B | Operator renders the projected token with the cloud audience; federation guide; least-privilege policy documents in `deploy/` for each provider and for the publisher | ⛔ |
 | C | Shared cloud crate (name decided in ADR-0158): ownership tags, adopt-or-create, orphan sweep, quota-to-capacity, zone retry on capacity errors | ⛔ |

@@ -17,8 +17,16 @@
 > authenticates by workload identity federation with no secret in the
 > cluster.
 >
-> **Status (2026-11-19): not started.** Nothing in the tree yet. Depends on
-> roadmap 22 phases 0 to D.
+> **Status (2026-11-24): phase 0 spike done but for one measurement; ADRs
+> Accepted; phase A started.** A live spike on a real subscription (2026-11-22 to 2026-11-24)
+> published a banlieue-built Kairos image into a Compute Gallery and booted
+> it as Trusted Launch VMs in two zones: create to `Succeeded` 177 to 330 s,
+> an active boot 18.8 s once the image was fixed. ADR-0164 and ADR-0165 are
+> written (Accepted) with its results, as are roadmap 22's ADR-0158 to
+> ADR-0163. The vTPM has **no EK certificate**, only an Azure-issued AK
+> certificate (ADR-0165). Still open in phase 0: create-to-ready for a
+> sealed image. Phase A has started: `crates/banlieue-azure` holds the ARM
+> client's pure core. Depends on roadmap 22 phases 0 to D.
 >
 > **Build it shared-capable from the first commit** (ADR-0133): the
 > InfraMachine's `providerRef` is a `ProviderReference`, and the provider
@@ -93,23 +101,32 @@ attestation story enough to need their own.
 
 ## Phase 0 spike (gates the rest)
 
-- [ ] A Kairos image, written as a fixed VHD by roadmap 22's writer,
-      published as a gallery image version, boots as a Trusted Launch VM
-      and applies `customData` (does Kairos's datasource read Azure's?).
-- [ ] The `GuestReady` transport roadmap 22 picks (ADR-0163) works here, and
-      its latency is recorded.
-- [ ] EK certificate readable in the guest; chain checked.
-- [ ] Time from create to `GuestReady` for a plain and for a sealed image,
-      so the pool numbers have a baseline.
-- [ ] Post-quantum key exchange measured against ARM and the Entra ID token
-      endpoint (roadmap 22 phase 0).
+- [x] A Kairos image, written as a fixed VHD, published as a gallery image
+      version, boots as a Trusted Launch VM and applies `customData`.
+      Kairos's datasource does **not** read Azure's (its providers do not
+      recognise the UDF `ovf-env.xml` disk); a baked step reads it locally
+      (ADR-0163 Decision 3). The VHD was written by `qemu-img` for the spike;
+      roadmap 22's first-party writer replaces it.
+- [x] The `GuestReady` transport works and its latency is recorded: the
+      guest reports Ready to WireServer and banlieue reads the provisioning
+      state (ADR-0163); ready at 18.1 s of uptime on an active boot.
+- [x] EK certificate readable in the guest; chain checked. **Answered
+      differently:** Trusted Launch defines no EK certificate; NV
+      `0x01C101D0` holds an Azure AK certificate whose chain verifies to
+      `Azure Virtual TPM Root Certificate Authority 2023` (ADR-0165).
+- [ ] Time from create to `GuestReady` for a plain and for a sealed image.
+      Plain: 177 to 330 s (first boot includes recovery, layout and reset;
+      an active boot is 18.8 s). **Sealed: not yet measured.**
+- [x] Post-quantum key exchange measured against ARM and the Entra ID token
+      endpoint: neither negotiates X25519MLKEM768 (2026-11-23, two networks);
+      the guest's SPIRE link through the tailnet did.
 
 ## Phases
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | Spike above; ADR-0164 and ADR-0165 written with its results | ⛔ |
-| A | ARM client crate: auth from the federated token, VM, NIC, disk, gallery, usages, resource SKUs, operation polling, `Retry-After`; unit tests against a fake that **rejects** what ARM rejects (a create in a zone the size is not offered in, a delete of a missing resource returning 204, not an error), per `rules/testing.md` rule 1; a live protocol tier (`#[ignore]`, fails loudly without a subscription) | ⛔ |
+| 0 | Spike above; ADR-0164 and ADR-0165 written with its results | 🔶 Spike done but the sealed-image timing; ADR-0164 and ADR-0165 Accepted (2026-11-24) |
+| A | ARM client crate: auth from the federated token, VM, NIC, disk, gallery, usages, resource SKUs, operation polling, `Retry-After`; unit tests against a fake that **rejects** what ARM rejects (a create in a zone the size is not offered in, a delete of a missing resource returning 204, not an error), per `rules/testing.md` rule 1; a live protocol tier (`#[ignore]`, fails loudly without a subscription) | 🔶 `crates/banlieue-azure` started (2026-11-24): the pure core, 52 unit tests, each from what ARM did in the spike: ownership tags with Azure's name rules, typed ARM errors (throttle, size not available, allocation, quota, auth), `Retry-After`, long-running operation handles that refuse a URL off the ARM endpoint, the VM and NIC bodies that booted, the federated token exchange. Next: the `ArmApi` trait, the fake, the HTTP client, the live tier |
 | B | API: the InfraMachine and its Template, `azure` provider class, admission for what the class refuses (`installMode: Deferred`, ISO images, `customData` over 64 KiB, `tpmEnabled` against an image definition without Trusted Launch), `regen-crds`, examples | ⛔ |
 | C | Provider: create, observe, delete, adopt by tag, power state, zone retry on allocation failure, quota and offered sizes per zone on `Provider.status` | ⛔ |
 | D | Images: gallery image versions published by roadmap 22's publish Job, consumed by digest; `Template` for hand-published versions | ⛔ |

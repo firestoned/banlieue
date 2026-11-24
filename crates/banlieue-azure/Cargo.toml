@@ -1,0 +1,24 @@
+[package]
+name = "banlieue-azure"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "First-party Azure Resource Manager client: federated token exchange, typed VM/NIC/disk/gallery requests, long-running operations, Retry-After, typed ARM errors, and an in-memory fake that refuses what ARM refuses (ADR-0164)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Protocol only, like banlieue-proxmox and banlieue-libvirt: no `kube`, no
+# banlieue API types. Every dependency below is already in the lockfile, so
+# this crate compiles no new third-party code (ADR-0164 Decision 2).
+
+[dependencies]
+base64.workspace = true
+# Already locked through banlieue-proxmox: builds the token-exchange form.
+form_urlencoded = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

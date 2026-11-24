@@ -4,6 +4,7 @@ members = [
     "crates/banlieue",
     "crates/banlieue-api",
     "crates/banlieue-attestation-ca",
+    "crates/banlieue-azure",
     "crates/banlieue-cloud-hypervisor",
     "crates/banlieue-oci",
     "crates/banlieue-proxmox",
