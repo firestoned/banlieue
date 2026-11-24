@@ -15,7 +15,9 @@ SPDX-License-Identifier: Apache-2.0
   see *Amendment: accepted*); 2026-11-04 (banlieue publishes the pre-lay
   image and the imagebuilder defaults to it; see *Amendment: a published
   pre-lay image*); 2026-11-04 (the pre-lay image gets a Grype gate of its
-  own; see *Amendment: a Grype gate for the pre-lay image*)
+  own; see *Amendment: a Grype gate for the pre-lay image*); 2026-11-23
+  (the gate's apt layer is rebuilt daily; see *Amendment: the apt layer
+  refreshes daily*)
 - **Related:** Roadmap 18 phase C (the measurement this acts on); builds on
   [ADR-0088](0088-first-boot-sealing-for-immediate-images.md) and
   [ADR-0112](0112-first-boot-sealing-on-cloud-hypervisor.md) (first-boot
@@ -406,4 +408,25 @@ A fix that lands in Debian is not picked up by a cached build: the
 `apt-get install` layer is reused until `Dockerfile.prelay` changes. A
 Dependabot re-pin of the base changes the `FROM` line and rebuilds that
 layer; until then, a failing gate is cleared by a rebuild without the cache.
+
+## Amendment: the apt layer refreshes daily (2026-11-23)
+
+The paragraph above is superseded. On 2026-11-22 the gate failed on two high
+glibc findings (CVE-2026-19499, CVE-2026-5435) that Debian had already fixed
+in `2.41-12+deb13u5`: the build restored the cached apt layer, `apt-get
+upgrade` never ran, and the image kept `deb13u4`. The same cached layer would
+have failed every pull request and `main` until the base was re-pinned, which
+made a cache rebuild by hand the normal way to recover rather than a rare one.
+
+`Dockerfile.prelay` now takes an `APT_REFRESH` build argument, and its apt
+`RUN` references it, so the argument is part of that layer's cache key. CI
+sets it to the UTC date (`make prelay-apt-refresh-key`, job `docker-prelay`).
+The layer is rebuilt once a day and reused within the day, so a Debian fix
+reaches the image at most a day after it is published, with no hand step.
+Builds on the same day share the layer, so two images from one day differ
+only in what the Dockerfile says, as before.
+
+The cost is one uncached apt layer build a day. The
+alternative, never caching that layer (`no-cache-filters`), pays it on every
+build for no gain within a day.
 
