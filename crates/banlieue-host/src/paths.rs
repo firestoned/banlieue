@@ -41,6 +41,11 @@ pub const EK_CA_CERT: &str = "/var/lib/banlieue/swtpm-localca/issuercert.pem";
 /// The per-host attestation CA's directory (ADR-0146 Decision 2): `ca.key`
 /// (0600) and `ca.crt` (0644), the provider's alone.
 pub const ATTESTATION_CA_DIR: &str = "/var/lib/banlieue/attestation-ca";
+/// Where an unsigned attestation CA request waits (ADR-0146 Decision 7): a
+/// key and a request, in a directory of their own so they cannot disturb a
+/// live CA. A sibling of [`ATTESTATION_CA_DIR`], on the same filesystem, so
+/// the key is moved into place, never copied.
+pub const ATTESTATION_CA_PENDING_DIR: &str = "/var/lib/banlieue/attestation-ca-pending";
 /// Guest uid records for NSS (ADR-0063 Decision 3).
 pub const USERDB_DIR: &str = "/etc/userdb";
 /// The polkit rule (ADR-0063 Decision 6).

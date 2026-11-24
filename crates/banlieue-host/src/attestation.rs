@@ -38,6 +38,12 @@ pub const KEY_TTL_SECS: &str = "certificate_ttl_secs";
 pub const CA_CERT_FILE: &str = "ca.crt";
 /// The CA key's file name, in the CA directory.
 pub const CA_KEY_FILE: &str = "ca.key";
+/// The pending request's file name, in the pending directory (ADR-0146
+/// Decision 7).
+pub const CA_CSR_FILE: &str = "ca.csr";
+/// The chain above an imported CA, in the CA directory: the host CA
+/// certificate and any intermediates, never the root. Public.
+pub const CA_CHAIN_FILE: &str = "ca-chain.pem";
 
 const SECONDS_PER_MINUTE: u64 = 60;
 const SECONDS_PER_HOUR: u64 = 3600;
@@ -125,6 +131,31 @@ pub struct CaInfo {
     pub name: String,
     /// When the CA certificate expires, as text.
     pub not_after: String,
+    /// Whole days from now until it expires; negative once it has.
+    pub days_remaining: i64,
+}
+
+const SECONDS_PER_DAY_I64: i64 = 86_400;
+
+/// Whole days from `now` to `not_after`, rounded toward the past: `0` for the
+/// last day, `-1` for one that expired within the last day.
+#[must_use]
+pub fn days_until(not_after: std::time::SystemTime, now: std::time::SystemTime) -> i64 {
+    let signed = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+    };
+    (signed(not_after) - signed(now)).div_euclid(SECONDS_PER_DAY_I64)
+}
+
+/// `"N days left"`, or `"EXPIRED"` once it has: the phrase `status` and
+/// `preflight` put after a CA's expiry.
+#[must_use]
+pub fn expiry_phrase(days_remaining: i64) -> String {
+    if days_remaining < 0 {
+        return "EXPIRED".to_string();
+    }
+    format!("{days_remaining} days left")
 }
 
 /// Load the CA in `dir` with the crate's own checks (key mode `0600`, a
@@ -145,6 +176,7 @@ pub fn inspect(dir: &Path) -> Result<CaInfo, String> {
     Ok(CaInfo {
         name: ca.common_name().to_string(),
         not_after,
+        days_remaining: days_until(ca.not_after(), std::time::SystemTime::now()),
     })
 }
 
@@ -162,6 +194,26 @@ pub fn admin_action(dir: &Path, name: &str) -> Vec<String> {
          Provider.spec.attestation.hostCa and into the SPIRE server's x509pop bundle \
          (the common name must be unique across the bundle)"
             .to_string(),
+    ]
+}
+
+/// What the administrator does with a new request (ADR-0146 Decision 7), as
+/// lines for the terminal: the request's path and common name, and the steps
+/// that follow. Never the key.
+#[must_use]
+pub fn csr_admin_action(pending_dir: &Path, name: &str) -> Vec<String> {
+    vec![
+        format!(
+            "attestation CA request: {}",
+            pending_dir.join(CA_CSR_FILE).display()
+        ),
+        format!("attestation CA common name: {name}"),
+        "administrator action: have that request signed on the node-attestation PKI mount \
+         as an intermediate (CA:TRUE, path length 0, keyCertSign only), checking the common \
+         name is not already used there, then run this command again with \
+         --attestation-ca-import FILE (the signed certificate, then any chain above it)"
+            .to_string(),
+        "the live CA, if any, keeps serving until the import".to_string(),
     ]
 }
 

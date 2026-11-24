@@ -689,6 +689,511 @@ lan = "br0"
         }
     }
 
+    // ------------------------------------ the CSR route (ADR-0146 Decision 7)
+
+    const PENDING_DIR: &str = "/var/lib/banlieue/attestation-ca-pending";
+
+    use crate::settings::CaRoute;
+
+    /// A host with an unsigned request waiting, named `name`.
+    fn host_with_pending(name: &str) -> FakeHost {
+        let h = FakeHost::debian();
+        provider_user(&h);
+        h.create_pending_attestation_ca(
+            Path::new(PENDING_DIR),
+            name,
+            &Owner::new("banlieue", "banlieue"),
+        )
+        .unwrap();
+        h
+    }
+
+    fn plan_of(r: Result<Settings, Error>) -> crate::settings::AttestationPlan {
+        r.unwrap().attestation.expect("opted in")
+    }
+
+    #[test]
+    fn the_self_signed_route_is_the_default() {
+        let h = FakeHost::debian();
+        let plan = plan_of(resolve(&args(&["--attestation-ca-name", "bar"]), &h));
+        assert_eq!(plan.route, CaRoute::SelfSigned);
+    }
+
+    #[test]
+    fn csr_with_a_name_plans_a_request_and_opts_in() {
+        let h = FakeHost::debian();
+        let plan = plan_of(resolve(
+            &args(&["--attestation-ca-csr", "--attestation-ca-name", "sandbox-1"]),
+            &h,
+        ));
+        assert_eq!(plan.route, CaRoute::Csr);
+        assert_eq!(plan.new_ca_name.as_deref(), Some("sandbox-1"));
+        assert!(!plan.rotate);
+    }
+
+    #[test]
+    fn csr_with_attestation_alone_names_the_request_after_the_short_host_name() {
+        let h = FakeHost::debian();
+        let plan = plan_of(resolve(
+            &args(&["--attestation-ca-csr", "--attestation"]),
+            &h,
+        ));
+        assert_eq!(plan.route, CaRoute::Csr);
+        assert_eq!(plan.new_ca_name.as_deref(), Some(h.hostname().as_str()));
+    }
+
+    #[test]
+    fn csr_without_a_name_is_refused() {
+        let h = FakeHost::debian();
+        let r = resolve(&args(&["--attestation-ca-csr"]), &h);
+        assert_eq!(flag_of(r), "--attestation-ca-csr");
+    }
+
+    #[test]
+    fn csr_refuses_a_second_request_while_one_is_pending() {
+        let h = host_with_pending("old");
+        let r = resolve(
+            &args(&["--attestation-ca-csr", "--attestation-ca-name", "new"]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-csr");
+    }
+
+    #[test]
+    fn csr_refuses_a_host_that_already_has_a_ca_unless_it_rotates() {
+        let h = host_with_ca("bar");
+        let r = resolve(
+            &args(&["--attestation-ca-csr", "--attestation-ca-name", "baz"]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-csr");
+        assert!(
+            why(resolve(
+                &args(&["--attestation-ca-csr", "--attestation-ca-name", "baz"]),
+                &h
+            ))
+            .contains("--rotate-attestation-ca")
+        );
+    }
+
+    #[test]
+    fn csr_with_rotate_and_a_new_name_is_planned_beside_the_live_ca() {
+        let h = host_with_ca("bar");
+        let plan = plan_of(resolve(
+            &args(&[
+                "--attestation-ca-csr",
+                "--rotate-attestation-ca",
+                "--attestation-ca-name",
+                "baz",
+            ]),
+            &h,
+        ));
+        assert_eq!(plan.route, CaRoute::Csr);
+        assert!(plan.rotate);
+    }
+
+    #[test]
+    fn csr_with_rotate_refuses_the_current_name() {
+        let h = host_with_ca("bar");
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-csr",
+                "--rotate-attestation-ca",
+                "--attestation-ca-name",
+                "bar",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-name");
+    }
+
+    #[test]
+    fn csr_and_import_together_are_refused() {
+        let h = host_with_pending("bar");
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-csr",
+                "--attestation-ca-name",
+                "bar",
+                "--attestation-ca-import",
+                "/root/signed.pem",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-import");
+    }
+
+    #[test]
+    fn import_without_a_pending_request_is_refused() {
+        let h = FakeHost::debian();
+        let r = resolve(&args(&["--attestation-ca-import", "/root/signed.pem"]), &h);
+        assert_eq!(flag_of(r), "--attestation-ca-import");
+    }
+
+    #[test]
+    fn import_with_a_pending_request_is_the_opt_in_and_needs_no_name() {
+        let h = host_with_pending("bar");
+        let plan = plan_of(resolve(
+            &args(&["--attestation-ca-import", "/root/signed.pem"]),
+            &h,
+        ));
+        assert_eq!(plan.route, CaRoute::Import("/root/signed.pem".into()));
+        assert_eq!(plan.new_ca_name, None);
+        assert!(!plan.rotate);
+    }
+
+    #[test]
+    fn import_refuses_a_name_that_is_not_the_pending_requests() {
+        let h = host_with_pending("bar");
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-import",
+                "/root/signed.pem",
+                "--attestation-ca-name",
+                "other",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-name");
+    }
+
+    #[test]
+    fn import_over_a_live_ca_needs_rotate() {
+        let h = host_with_ca("old");
+        h.create_pending_attestation_ca(
+            Path::new(PENDING_DIR),
+            "new",
+            &Owner::new("banlieue", "banlieue"),
+        )
+        .unwrap();
+        let r = resolve(&args(&["--attestation-ca-import", "/root/signed.pem"]), &h);
+        assert_eq!(flag_of(r), "--attestation-ca-import");
+        let plan = plan_of(resolve(
+            &args(&[
+                "--attestation-ca-import",
+                "/root/signed.pem",
+                "--rotate-attestation-ca",
+            ]),
+            &h,
+        ));
+        assert!(plan.rotate);
+        assert_eq!(plan.route, CaRoute::Import("/root/signed.pem".into()));
+    }
+
+    #[test]
+    fn import_over_a_live_ca_of_the_same_name_is_refused() {
+        let h = host_with_ca("same");
+        h.create_pending_attestation_ca(
+            Path::new(PENDING_DIR),
+            "same",
+            &Owner::new("banlieue", "banlieue"),
+        )
+        .unwrap();
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-import",
+                "/root/signed.pem",
+                "--rotate-attestation-ca",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-name");
+    }
+
+    #[test]
+    fn a_pending_request_alone_does_not_opt_a_host_in() {
+        let h = host_with_pending("bar");
+        assert!(resolve(&args(&[]), &h).unwrap().attestation.is_none());
+    }
+
+    // ---------------------------------- OpenBao signing (ADR-0146 Decision 8)
+
+    use crate::settings::{OpenBaoAuth, OpenBaoPlan};
+
+    const BAO: &str = "https://bao.example.com:8200";
+
+    /// The flags that make a complete, service-account OpenBao route.
+    fn bao_args(extra: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = [
+            "--attestation-ca-name",
+            "sandbox-1",
+            "--attestation-ca-openbao-addr",
+            BAO,
+            "--attestation-ca-openbao-mount",
+            "pki-node-attestation",
+            "--attestation-ca-openbao-auth-mount",
+            "computefabric-test-v2",
+            "--attestation-ca-openbao-role",
+            "ch-host-ca-sandbox-1",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect();
+        v.extend(extra.iter().map(|s| (*s).to_string()));
+        v
+    }
+
+    fn resolve_bao(extra: &[&str], h: &FakeHost) -> Result<Settings, Error> {
+        let owned = bao_args(extra);
+        let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+        resolve(&args(&refs), h)
+    }
+
+    fn bao_plan_of(r: Result<Settings, Error>) -> OpenBaoPlan {
+        match plan_of(r).route {
+            CaRoute::OpenBao(p) => p,
+            other => panic!("expected the OpenBao route, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_service_account_route_is_planned_with_the_pinned_default_ttl() {
+        let h = FakeHost::debian();
+        let plan = plan_of(resolve_bao(&[], &h));
+        assert_eq!(plan.new_ca_name.as_deref(), Some("sandbox-1"));
+        let bao = bao_plan_of(resolve_bao(&[], &h));
+        assert_eq!(bao.addr, BAO);
+        assert_eq!(bao.mount, "pki-node-attestation");
+        assert_eq!(bao.ttl, "8760h");
+        assert_eq!(
+            bao.auth,
+            OpenBaoAuth::Jwt {
+                auth_mount: "computefabric-test-v2".into(),
+                role: "ch-host-ca-sandbox-1".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_token_file_route_is_planned_instead_of_a_role() {
+        let h = FakeHost::debian();
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-name",
+                "sandbox-1",
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-mount",
+                "pki-node-attestation",
+                "--attestation-ca-openbao-token-file",
+                "/root/bao.token",
+            ]),
+            &h,
+        );
+        assert_eq!(
+            bao_plan_of(r).auth,
+            OpenBaoAuth::TokenFile("/root/bao.token".into())
+        );
+    }
+
+    #[test]
+    fn the_ca_ttl_must_match_what_the_policy_pins_so_it_is_sent_as_given() {
+        let h = FakeHost::debian();
+        let bao = bao_plan_of(resolve_bao(
+            &["--attestation-ca-openbao-ca-ttl", "4380h"],
+            &h,
+        ));
+        assert_eq!(bao.ttl, "4380h");
+        for bad in [
+            "",
+            "8760",
+            "h",
+            "1.5h",
+            "-1h",
+            "1 h",
+            "1d",
+            "9999999999999999999999h",
+        ] {
+            // `--flag=value`: a value like `-1h` would be read as a flag.
+            let given = format!("--attestation-ca-openbao-ca-ttl={bad}");
+            let r = resolve_bao(&[given.as_str()], &h);
+            assert_eq!(flag_of(r), "--attestation-ca-openbao-ca-ttl", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_address_must_be_a_bare_https_origin() {
+        let h = FakeHost::debian();
+        for bad in [
+            "http://bao.example.com",
+            "https://u:p@bao.example.com",
+            "https://bao.example.com/x?y=1",
+            "bao.example.com",
+            "https://",
+        ] {
+            let mut owned = bao_args(&[]);
+            let i = owned.iter().position(|a| a == BAO).unwrap();
+            owned[i] = bad.to_string();
+            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+            assert_eq!(
+                flag_of(resolve(&args(&refs), &h)),
+                "--attestation-ca-openbao-addr",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_mount_or_role_that_could_leave_its_place_is_refused() {
+        let h = FakeHost::debian();
+        for (flag, bad) in [
+            ("--attestation-ca-openbao-mount", "../x"),
+            ("--attestation-ca-openbao-mount", "/pki"),
+            ("--attestation-ca-openbao-auth-mount", "a/../b"),
+            ("--attestation-ca-openbao-role", "a b"),
+            ("--attestation-ca-openbao-role", "r?x=1"),
+        ] {
+            let mut owned = bao_args(&[]);
+            let i = owned.iter().position(|a| a == flag).unwrap();
+            owned[i + 1] = bad.to_string();
+            let refs: Vec<&str> = owned.iter().map(String::as_str).collect();
+            assert_eq!(flag_of(resolve(&args(&refs), &h)), flag, "{flag} {bad:?}");
+        }
+    }
+
+    #[test]
+    fn any_openbao_flag_without_the_address_is_refused() {
+        let h = FakeHost::debian();
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-name",
+                "sandbox-1",
+                "--attestation-ca-openbao-mount",
+                "pki-node-attestation",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-openbao-addr");
+    }
+
+    #[test]
+    fn the_mount_is_required() {
+        let h = FakeHost::debian();
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-name",
+                "sandbox-1",
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-token-file",
+                "/root/t",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-openbao-mount");
+    }
+
+    #[test]
+    fn exactly_one_way_to_log_in_is_required() {
+        let h = FakeHost::debian();
+        let neither = resolve(
+            &args(&[
+                "--attestation-ca-name",
+                "sandbox-1",
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-mount",
+                "m",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(neither), "--attestation-ca-openbao-role");
+        let role_only = resolve(
+            &args(&[
+                "--attestation-ca-name",
+                "sandbox-1",
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-mount",
+                "m",
+                "--attestation-ca-openbao-role",
+                "r",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(role_only), "--attestation-ca-openbao-auth-mount");
+        let both = resolve_bao(&["--attestation-ca-openbao-token-file", "/root/t"], &h);
+        assert_eq!(flag_of(both), "--attestation-ca-openbao-token-file");
+    }
+
+    #[test]
+    fn the_openbao_route_needs_a_name() {
+        let h = FakeHost::debian();
+        let r = resolve(
+            &args(&[
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-mount",
+                "m",
+                "--attestation-ca-openbao-token-file",
+                "/root/t",
+            ]),
+            &h,
+        );
+        assert_eq!(flag_of(r), "--attestation-ca-name");
+        // `--attestation` names it after the host, as for the other routes.
+        let ok = resolve(
+            &args(&[
+                "--attestation",
+                "--attestation-ca-openbao-addr",
+                BAO,
+                "--attestation-ca-openbao-mount",
+                "m",
+                "--attestation-ca-openbao-token-file",
+                "/root/t",
+            ]),
+            &h,
+        );
+        assert_eq!(
+            plan_of(ok).new_ca_name.as_deref(),
+            Some(h.hostname().as_str())
+        );
+    }
+
+    #[test]
+    fn the_openbao_route_excludes_the_csr_and_import_routes() {
+        let h = FakeHost::debian();
+        assert_eq!(
+            flag_of(resolve_bao(&["--attestation-ca-csr"], &h)),
+            "--attestation-ca-csr"
+        );
+        let h = host_with_pending("sandbox-1");
+        assert_eq!(
+            flag_of(resolve_bao(
+                &["--attestation-ca-import", "/root/signed.pem"],
+                &h
+            )),
+            "--attestation-ca-import"
+        );
+    }
+
+    #[test]
+    fn a_pending_request_of_the_same_name_is_reused_and_another_name_is_refused() {
+        let h = host_with_pending("sandbox-1");
+        assert_eq!(
+            plan_of(resolve_bao(&[], &h)).new_ca_name.as_deref(),
+            Some("sandbox-1")
+        );
+        let h = host_with_pending("other");
+        assert_eq!(flag_of(resolve_bao(&[], &h)), "--attestation-ca-name");
+    }
+
+    #[test]
+    fn a_live_ca_needs_rotate_and_a_new_name() {
+        let h = host_with_ca("bar");
+        assert_eq!(
+            flag_of(resolve_bao(&[], &h)),
+            "--attestation-ca-openbao-addr"
+        );
+        let plan = plan_of(resolve_bao(&["--rotate-attestation-ca"], &h));
+        assert!(plan.rotate);
+        let h = host_with_ca("sandbox-1");
+        assert_eq!(
+            flag_of(resolve_bao(&["--rotate-attestation-ca"], &h)),
+            "--attestation-ca-name"
+        );
+    }
+
     #[test]
     fn no_attestation_flag_means_not_opted_in() {
         let h = FakeHost::debian();

@@ -174,6 +174,13 @@ pub trait Probe {
     /// A sentence saying what is wrong, or that nothing is there.
     fn attestation_ca(&self, dir: &Path) -> Result<crate::attestation::CaInfo, String>;
 
+    /// The common name of the pending attestation CA request in `dir`
+    /// (ADR-0146 Decision 7), loaded with the CA crate's own checks.
+    ///
+    /// # Errors
+    /// A sentence saying what is wrong, or that nothing is there.
+    fn pending_attestation_ca(&self, dir: &Path) -> Result<String, String>;
+
     /// Whether anything is at `path`.
     fn exists(&self, path: &Path) -> bool {
         self.stat(path).is_some()
@@ -237,6 +244,36 @@ pub trait Host: Probe {
     /// # Errors
     /// The I/O error, or why `dir` was refused.
     fn remove_attestation_ca(&self, dir: &Path) -> io::Result<()>;
+    /// Make an attestation CA key and request for `name` in `dir` (ADR-0146
+    /// Decision 7): the key is born owned by `owner`, no certificate is
+    /// written, and the live CA directory is never touched. Refuses when a
+    /// request is already there, and a name outside the CA's alphabet.
+    ///
+    /// # Errors
+    /// The I/O error, or why the request was refused.
+    fn create_pending_attestation_ca(
+        &self,
+        dir: &Path,
+        name: &str,
+        owner: &Owner,
+    ) -> io::Result<()>;
+    /// Install the signed certificate `signed` (PEM, the host CA first and the
+    /// chain above it after) for the pending request in `pending_dir` as the
+    /// live CA in `ca_dir` (ADR-0146 Decision 7), after the CA crate's checks.
+    /// The key is moved, not copied. With `replace`, a live CA is swapped for
+    /// the new one; without it, one is refused. Anything refused leaves the
+    /// request and any live CA as they were.
+    ///
+    /// # Errors
+    /// The I/O error, or why the certificate was refused.
+    fn import_attestation_ca(
+        &self,
+        pending_dir: &Path,
+        ca_dir: &Path,
+        signed: &[u8],
+        replace: bool,
+        owner: &Owner,
+    ) -> io::Result<()>;
     /// Run a command that may change the host; its standard output.
     ///
     /// # Errors

@@ -171,6 +171,72 @@ pub struct HostArgs {
     /// never reused for a different key. `--force` never rotates it.
     #[arg(long, env = "BANLIEUE_HOST_ROTATE_ATTESTATION_CA")]
     pub rotate_attestation_ca: bool,
+    /// Make the attestation CA's key here and a certificate request for an
+    /// upstream PKI to sign (ADR-0146 Decision 7), instead of a self-signed
+    /// CA. Needs `--attestation-ca-name` (or `--attestation`). Writes the
+    /// request and no `[attestation]` section; sign it, then give the result
+    /// to `--attestation-ca-import`. Not with `--attestation-ca-import`.
+    #[arg(long, env = "BANLIEUE_HOST_ATTESTATION_CA_CSR")]
+    pub attestation_ca_csr: bool,
+    /// Install the certificate an upstream PKI signed for the pending
+    /// request (the host CA first, then any chain above it, PEM). It is
+    /// checked before anything is written: the pending key, the request's
+    /// name, a CA that signs leaves and nothing else, valid now.
+    #[arg(long, env = "BANLIEUE_HOST_ATTESTATION_CA_IMPORT", value_name = "FILE")]
+    pub attestation_ca_import: Option<PathBuf>,
+    /// Have OpenBao sign the attestation CA's request in this run (ADR-0146
+    /// Decision 8): the address of OpenBao, a bare `https` origin. Run it after
+    /// the host's credentials are in place, so the installer can log in as the
+    /// host's own ServiceAccount. Needs `--attestation-ca-openbao-mount` and
+    /// one way to log in: `--attestation-ca-openbao-auth-mount` with
+    /// `--attestation-ca-openbao-role`, or `--attestation-ca-openbao-token-file`.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_ADDR",
+        value_name = "URL"
+    )]
+    pub attestation_ca_openbao_addr: Option<String>,
+    /// The PKI mount that signs host CAs, a dedicated mount (never the one
+    /// whose CAs sign SVIDs).
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_MOUNT",
+        value_name = "MOUNT"
+    )]
+    pub attestation_ca_openbao_mount: Option<String>,
+    /// The JWT auth mount of this cluster, where the host's ServiceAccount logs
+    /// in. With `--attestation-ca-openbao-role`.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_AUTH_MOUNT",
+        value_name = "MOUNT"
+    )]
+    pub attestation_ca_openbao_auth_mount: Option<String>,
+    /// The login role, bound to this host's ServiceAccount and pinned to this
+    /// host's CA name. With `--attestation-ca-openbao-auth-mount`.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_ROLE",
+        value_name = "ROLE"
+    )]
+    pub attestation_ca_openbao_role: Option<String>,
+    /// A token an administrator minted for this one signing, for a host with no
+    /// cluster identity: a file, owned by root, read once and removed. Never
+    /// argv or the environment.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_TOKEN_FILE",
+        value_name = "FILE"
+    )]
+    pub attestation_ca_openbao_token_file: Option<PathBuf>,
+    /// The CA's lifetime as the OpenBao policy pins it (`8760h`), sent exactly as
+    /// written: a value the policy does not list is refused. Default `8760h`.
+    #[arg(
+        long,
+        env = "BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_CA_TTL",
+        value_name = "DURATION"
+    )]
+    pub attestation_ca_openbao_ca_ttl: Option<String>,
 }
 
 /// The guests' shared budget on a host that runs other workloads
@@ -243,9 +309,52 @@ impl Registry {
     }
 }
 
+/// How this run gets the attestation CA's certificate (ADR-0146 Decision 7).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CaRoute {
+    /// The CA signs itself (Decisions 2 and 5), or is kept as it is.
+    SelfSigned,
+    /// Make the key and a request for an upstream PKI to sign.
+    Csr,
+    /// Install this file, the certificate the upstream PKI signed for the
+    /// pending request.
+    Import(PathBuf),
+    /// Have OpenBao sign the request in this run (ADR-0146 Decision 8).
+    OpenBao(OpenBaoPlan),
+}
+
+/// Where and how OpenBao signs the request (ADR-0146 Decision 8).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenBaoPlan {
+    /// OpenBao's address, a bare `https` origin.
+    pub addr: String,
+    /// The PKI mount that signs host CAs.
+    pub mount: String,
+    /// The CA lifetime, sent exactly as the policy pins it.
+    pub ttl: String,
+    /// How the installer logs in.
+    pub auth: OpenBaoAuth,
+}
+
+/// How the installer proves itself to OpenBao.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpenBaoAuth {
+    /// Log in as the host's own ServiceAccount.
+    Jwt {
+        /// The cluster's JWT auth mount.
+        auth_mount: String,
+        /// The login role.
+        role: String,
+    },
+    /// Use the token in this file, then remove it.
+    TokenFile(PathBuf),
+}
+
 /// What this run does about the attestation CA (ADR-0146 Decision 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttestationPlan {
+    /// How the CA gets its certificate.
+    pub route: CaRoute,
     /// The name of the CA this run creates; `None` keeps the CA that is
     /// there.
     pub new_ca_name: Option<String>,
@@ -739,6 +848,9 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
     const NAME_FLAG: &str = "--attestation-ca-name";
     const TTL_FLAG: &str = "--attestation-certificate-ttl";
     const ROTATE_FLAG: &str = "--rotate-attestation-ca";
+    const CSR_FLAG: &str = "--attestation-ca-csr";
+    const IMPORT_FLAG: &str = "--attestation-ca-import";
+    const ADDR_FLAG: &str = "--attestation-ca-openbao-addr";
     let given_name = match (&args.attestation_ca_name, args.attestation) {
         (Some(n), _) => {
             banlieue_attestation_ca::validate_name(n)
@@ -761,6 +873,87 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
     let dir = Path::new(crate::paths::ATTESTATION_CA_DIR);
     let files = ca_files_present(probe);
     let current = probe.attestation_ca(dir);
+    let pending_dir = Path::new(crate::paths::ATTESTATION_CA_PENDING_DIR);
+    let pending = probe
+        .stat(&pending_dir.join(attestation::CA_KEY_FILE))
+        .is_some();
+
+    let bao = openbao_plan(args)?;
+    if bao.is_some() && args.attestation_ca_csr {
+        return Err(bad(
+            CSR_FLAG,
+            "cannot be combined with the OpenBao route, which makes the request and has it \
+             signed in one run",
+        ));
+    }
+    if bao.is_some() && args.attestation_ca_import.is_some() {
+        return Err(bad(
+            IMPORT_FLAG,
+            "cannot be combined with the OpenBao route, which imports the certificate it gets",
+        ));
+    }
+
+    if args.attestation_ca_csr && args.attestation_ca_import.is_some() {
+        return Err(bad(
+            IMPORT_FLAG,
+            "cannot be combined with --attestation-ca-csr: make the request in one run, \
+             and import its signed certificate in another",
+        ));
+    }
+
+    if let Some(file) = &args.attestation_ca_import {
+        let ttl = given_ttl
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .map(|s| Duration::from_secs(s.certificate_ttl_secs))
+            })
+            .unwrap_or(attestation::DEFAULT_CERTIFICATE_TTL);
+        if !pending {
+            return Err(bad(
+                IMPORT_FLAG,
+                "there is no pending request to import a certificate for: make one with \
+                 --attestation-ca-csr first",
+            ));
+        }
+        let wanted = probe.pending_attestation_ca(pending_dir).map_err(|why| {
+            bad(
+                IMPORT_FLAG,
+                format!("the pending request cannot be read ({why}); remove it and make a new one"),
+            )
+        })?;
+        if let Some(name) = &args.attestation_ca_name
+            && name != &wanted
+        {
+            return Err(bad(
+                NAME_FLAG,
+                format!("{name:?}, but the pending request is for {wanted:?}"),
+            ));
+        }
+        if files && !args.rotate_attestation_ca {
+            return Err(bad(
+                IMPORT_FLAG,
+                "this host already has a CA: replacing it needs --rotate-attestation-ca",
+            ));
+        }
+        if let (true, Ok(info)) = (files, &current)
+            && info.name == wanted
+        {
+            return Err(bad(
+                NAME_FLAG,
+                format!(
+                    "{wanted:?} is the current CA's name: a name is never reused for a \
+                     different key, make a new request under a new name"
+                ),
+            ));
+        }
+        return Ok(Some(AttestationPlan {
+            route: CaRoute::Import(file.clone()),
+            new_ca_name: None,
+            ttl,
+            rotate: args.rotate_attestation_ca,
+        }));
+    }
 
     if args.rotate_attestation_ca {
         let Some(name) = args.attestation_ca_name.as_ref() else {
@@ -788,6 +981,93 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
         }
     }
 
+    if args.attestation_ca_csr {
+        let Some(name) = given_name.clone() else {
+            return Err(bad(
+                CSR_FLAG,
+                "a request needs a name: give --attestation-ca-name (or --attestation)",
+            ));
+        };
+        if pending {
+            return Err(bad(
+                CSR_FLAG,
+                format!(
+                    "a request is already pending in {}: import its signed certificate with \
+                     --attestation-ca-import, or remove that directory to start again",
+                    pending_dir.display()
+                ),
+            ));
+        }
+        if files && !args.rotate_attestation_ca {
+            return Err(bad(
+                CSR_FLAG,
+                "this host already has a CA: to replace it, add --rotate-attestation-ca with a \
+                 new --attestation-ca-name",
+            ));
+        }
+        let ttl = given_ttl
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .map(|s| Duration::from_secs(s.certificate_ttl_secs))
+            })
+            .unwrap_or(attestation::DEFAULT_CERTIFICATE_TTL);
+        return Ok(Some(AttestationPlan {
+            route: CaRoute::Csr,
+            new_ca_name: Some(name),
+            ttl,
+            rotate: args.rotate_attestation_ca,
+        }));
+    }
+
+    if let Some(bao) = bao {
+        let Some(name) = given_name.clone() else {
+            return Err(bad(
+                NAME_FLAG,
+                "the OpenBao route needs a name: give --attestation-ca-name (or --attestation)",
+            ));
+        };
+        if pending {
+            match probe.pending_attestation_ca(pending_dir) {
+                Ok(wanted) if wanted == name => {}
+                Ok(wanted) => {
+                    return Err(bad(
+                        NAME_FLAG,
+                        format!("{name:?}, but the pending request is for {wanted:?}"),
+                    ));
+                }
+                Err(why) => {
+                    return Err(bad(
+                        ADDR_FLAG,
+                        format!(
+                            "the pending request cannot be read ({why}); remove it and start again"
+                        ),
+                    ));
+                }
+            }
+        }
+        if files && !args.rotate_attestation_ca {
+            return Err(bad(
+                ADDR_FLAG,
+                "this host already has a CA: to replace it, add --rotate-attestation-ca with a \
+                 new --attestation-ca-name",
+            ));
+        }
+        let ttl = given_ttl
+            .or_else(|| {
+                existing
+                    .as_ref()
+                    .map(|s| Duration::from_secs(s.certificate_ttl_secs))
+            })
+            .unwrap_or(attestation::DEFAULT_CERTIFICATE_TTL);
+        return Ok(Some(AttestationPlan {
+            route: CaRoute::OpenBao(bao),
+            new_ca_name: Some(name),
+            ttl,
+            rotate: args.rotate_attestation_ca,
+        }));
+    }
+
     if given_name.is_none() && existing.is_none() {
         if given_ttl.is_some() {
             return Err(bad(
@@ -807,6 +1087,7 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
         .unwrap_or(attestation::DEFAULT_CERTIFICATE_TTL);
     if args.rotate_attestation_ca {
         return Ok(Some(AttestationPlan {
+            route: CaRoute::SelfSigned,
             new_ca_name: given_name,
             ttl,
             rotate: true,
@@ -819,6 +1100,7 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
                 .map_err(|why| bad("--attestation", why))?,
         };
         return Ok(Some(AttestationPlan {
+            route: CaRoute::SelfSigned,
             new_ca_name: Some(name),
             ttl,
             rotate: false,
@@ -836,10 +1118,130 @@ fn attestation_plan(args: &HostArgs, probe: &dyn Probe) -> Result<Option<Attesta
         ));
     }
     Ok(Some(AttestationPlan {
+        route: CaRoute::SelfSigned,
         new_ca_name: None,
         ttl,
         rotate: false,
     }))
+}
+
+/// The OpenBao route's flags (ADR-0146 Decision 8), checked: `None` when none is
+/// given. Every value is checked here, before anything is made, so a typo costs
+/// no key and a path that could leave its place never reaches a URL.
+fn openbao_plan(args: &HostArgs) -> Result<Option<OpenBaoPlan>, Error> {
+    const ADDR: &str = "--attestation-ca-openbao-addr";
+    const MOUNT: &str = "--attestation-ca-openbao-mount";
+    const AUTH_MOUNT: &str = "--attestation-ca-openbao-auth-mount";
+    const ROLE: &str = "--attestation-ca-openbao-role";
+    const TOKEN_FILE: &str = "--attestation-ca-openbao-token-file";
+    const TTL: &str = "--attestation-ca-openbao-ca-ttl";
+    let any = args.attestation_ca_openbao_addr.is_some()
+        || args.attestation_ca_openbao_mount.is_some()
+        || args.attestation_ca_openbao_auth_mount.is_some()
+        || args.attestation_ca_openbao_role.is_some()
+        || args.attestation_ca_openbao_token_file.is_some()
+        || args.attestation_ca_openbao_ca_ttl.is_some();
+    if !any {
+        return Ok(None);
+    }
+    let addr = args.attestation_ca_openbao_addr.clone().ok_or_else(|| {
+        bad(
+            ADDR,
+            "required with the other --attestation-ca-openbao-* flags",
+        )
+    })?;
+    // The client's own checks (https, an origin, no credentials) are the ones
+    // that apply at run time; the mount is checked with them.
+    let mount = args
+        .attestation_ca_openbao_mount
+        .clone()
+        .ok_or_else(|| bad(MOUNT, "give the PKI mount that signs host CAs"))?;
+    crate::openbao::OpenBao::new(&addr, &mount).map_err(|e| {
+        let why = e.to_string();
+        if why.contains("mount") {
+            bad(MOUNT, why)
+        } else {
+            bad(ADDR, why)
+        }
+    })?;
+    let auth = match (
+        &args.attestation_ca_openbao_auth_mount,
+        &args.attestation_ca_openbao_role,
+        &args.attestation_ca_openbao_token_file,
+    ) {
+        (Some(auth_mount), Some(role), None) => {
+            if !crate::openbao::valid_path(auth_mount) {
+                return Err(bad(
+                    AUTH_MOUNT,
+                    format!("{auth_mount:?} is not a mount path"),
+                ));
+            }
+            if !crate::openbao::valid_segment(role) {
+                return Err(bad(ROLE, format!("{role:?} is not a plain role name")));
+            }
+            OpenBaoAuth::Jwt {
+                auth_mount: auth_mount.clone(),
+                role: role.clone(),
+            }
+        }
+        (None, None, Some(file)) => OpenBaoAuth::TokenFile(file.clone()),
+        (Some(_), None, None) => {
+            return Err(bad(
+                ROLE,
+                "--attestation-ca-openbao-auth-mount needs a role",
+            ));
+        }
+        (None, Some(_), None) => {
+            return Err(bad(
+                AUTH_MOUNT,
+                "--attestation-ca-openbao-role needs the JWT auth mount",
+            ));
+        }
+        (_, _, Some(_)) => {
+            return Err(bad(
+                TOKEN_FILE,
+                "cannot be combined with a role: log in as the ServiceAccount, or use a token, not both",
+            ));
+        }
+        (None, None, None) => {
+            return Err(bad(
+                ROLE,
+                "give a way to log in: --attestation-ca-openbao-role with \
+                 --attestation-ca-openbao-auth-mount, or --attestation-ca-openbao-token-file",
+            ));
+        }
+    };
+    let ttl = args
+        .attestation_ca_openbao_ca_ttl
+        .clone()
+        .unwrap_or_else(|| crate::openbao::DEFAULT_CA_TTL.to_string());
+    if !is_policy_ttl(&ttl) {
+        return Err(bad(
+            TTL,
+            format!("{ttl:?}: whole hours, minutes or seconds with a unit, like 8760h"),
+        ));
+    }
+    Ok(Some(OpenBaoPlan {
+        addr,
+        mount,
+        ttl,
+        auth,
+    }))
+}
+
+/// A lifetime in the form the OpenBao policy pins: digits and one of `s`, `m`,
+/// `h`, not zero, small enough to be a sensible number.
+fn is_policy_ttl(ttl: &str) -> bool {
+    const MAX_DIGITS: usize = 9;
+    let Some(unit) = ttl.chars().last() else {
+        return false;
+    };
+    let digits = &ttl[..ttl.len() - unit.len_utf8()];
+    matches!(unit, 's' | 'm' | 'h')
+        && !digits.is_empty()
+        && digits.len() <= MAX_DIGITS
+        && digits.chars().all(|c| c.is_ascii_digit())
+        && digits.parse::<u64>().is_ok_and(|n| n > 0)
 }
 
 /// A storage path, compared and printed as the config spells it.

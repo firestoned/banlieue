@@ -66,6 +66,10 @@ pub enum SignError {
     /// The subject is outside the name alphabet.
     #[error("invalid subject")]
     InvalidSubject,
+    /// The CA certificate is past its `notAfter`: whatever it signed now would
+    /// verify nowhere (ADR-0146 Decision 7).
+    #[error("the CA has expired")]
+    CaExpired,
     /// Issuing failed for a reason that is not the request's.
     #[error("internal error")]
     Internal,
@@ -213,7 +217,8 @@ impl Signer {
     /// Neither the CSR nor the certificate is ever logged or put in an error.
     ///
     /// # Errors
-    /// [`SignError`]: too large (checked first, before any parsing), invalid
+    /// [`SignError`]: too large (checked first, before any parsing), the CA
+    /// expired, invalid
     /// subject, rate limited, malformed, wrong key type, bad CSR signature, or
     /// an internal failure.
     pub fn sign(
@@ -224,6 +229,10 @@ impl Signer {
     ) -> Result<String, SignError> {
         if csr_pem.len() > MAX_CSR_BYTES {
             return Err(SignError::TooLarge);
+        }
+        // Before the limiter, so a refused request costs the guest no slot.
+        if self.ca.is_expired(now) {
+            return Err(SignError::CaExpired);
         }
         validate_name(subject).map_err(|_| SignError::InvalidSubject)?;
         let admitted = self
@@ -268,7 +277,12 @@ impl Signer {
         let cert = builder
             .build::<_, DerSignature>(self.ca.signing_key())
             .map_err(|_| SignError::Internal)?;
-        cert.to_pem(LineEnding::LF).map_err(|_| SignError::Internal)
+        let leaf = cert
+            .to_pem(LineEnding::LF)
+            .map_err(|_| SignError::Internal)?;
+        // A CA signed by an upstream PKI answers with its chain too, so the
+        // guest's agent can present the intermediates (ADR-0146 Decision 7).
+        Ok(format!("{leaf}{}", self.ca.chain_pem()))
     }
 }
 

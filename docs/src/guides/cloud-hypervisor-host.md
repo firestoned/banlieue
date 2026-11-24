@@ -277,6 +277,11 @@ variable, so a cloud-init payload needs no file of its own
 | `--attestation` (`BANLIEUE_HOST_ATTESTATION`) | off | Opt in with the host's short name as the CA name. Refused when that name has other characters and no `--attestation-ca-name` is given. |
 | `--attestation-certificate-ttl DURATION` (`BANLIEUE_HOST_ATTESTATION_CERTIFICATE_TTL`) | the kept host config's, else `1h` | How long a certificate the host signs is valid: `30m`, `1h`, `12h`. Bounded to 5 minutes through 7 days. |
 | `--rotate-attestation-ca` (`BANLIEUE_HOST_ROTATE_ATTESTATION_CA`) | off | Replace the attestation CA with a new one. Needs a new `--attestation-ca-name`, different from the current one. `--force` never does this. |
+| `--attestation-ca-csr` (`BANLIEUE_HOST_ATTESTATION_CA_CSR`) | off | Make the CA's key here and a request for an upstream PKI to sign, instead of a self-signed CA (ADR-0146 Decision 7). Needs a name. Writes no `[attestation]` section until the signed certificate is imported. |
+| `--attestation-ca-import FILE` (`BANLIEUE_HOST_ATTESTATION_CA_IMPORT`) | none | Install the certificate the PKI signed for the pending request (the host CA first, then any chain above it). Checked before anything is written. Replacing a live CA also needs `--rotate-attestation-ca`. |
+| `--attestation-ca-openbao-addr URL`, `--attestation-ca-openbao-mount MOUNT`, `--attestation-ca-openbao-auth-mount MOUNT`, `--attestation-ca-openbao-role ROLE` (env `BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_*`) | none | Have OpenBao sign the request in this run, logging in as the host's own ServiceAccount (ADR-0146 Decision 8). `URL` is a bare `https` origin. |
+| `--attestation-ca-openbao-token-file FILE` | none | The same, with a one-use token an administrator minted, for a host with no cluster identity. The file is read once and removed. Instead of the role flags. |
+| `--attestation-ca-openbao-ca-ttl DURATION` | `8760h` | The CA's lifetime as the OpenBao policy pins it. Sent exactly as written, so it must equal the policy's. |
 
 On a host `install` has already prepared, `/etc/banlieue/cloud-hypervisor.toml`
 is kept (only `--force` regenerates it), so it decides the settings it
@@ -1205,6 +1210,154 @@ the new `ca.crt` in `Provider.spec.attestation.hostCa` and in the SPIRE bundle
 (keep the old one in the bundle until its certificates have expired), and
 restart the provider unit so the signer loads the new CA. `--force` never
 rotates this CA, although it rotates the EK CA.
+
+### Having a PKI sign the CA (ADR-0146 Decisions 7 and 8)
+
+The default CA signs itself, so each host's `ca.crt` goes into the SPIRE bundle
+one host at a time. If your organisation runs a PKI (here, OpenBao), it can sign
+the host's CA instead: every host CA then chains to **one root**, the bundle
+holds that root alone, and each signing is in the PKI's audit log. **The key is
+still made on the host and never leaves it**; only a certificate request does.
+
+Use a PKI mount of its own for this, with its root key inside the PKI, **never
+the root whose CAs sign SVIDs**: the `x509pop` bundle trusts everything that
+chains to it, so trusting the SVID root would let each SPIRE server's own CA vouch
+for a node.
+
+#### In one run, with OpenBao
+
+After `banlieue bootstrap cloud-hypervisor-host` and the copy of its output to
+`/etc/banlieue/credentials`, the host holds a ServiceAccount token of its own.
+The installer logs in to OpenBao with it, has the request signed, imports the
+result and writes the section:
+
+```sh
+sudo banlieue host cloud-hypervisor install --only attestation \
+  --attestation-ca-name bar.foo.io \
+  --attestation-ca-openbao-addr https://bao.example.com:8200 \
+  --attestation-ca-openbao-mount pki-node-attestation \
+  --attestation-ca-openbao-auth-mount computefabric-example-v2 \
+  --attestation-ca-openbao-role ch-host-ca-bar-foo-io
+```
+
+It makes the key and request first (a request that is already pending is reused,
+so a failed signing never wastes a key), then asks OpenBao. Whatever comes back
+goes through the same checks as a certificate you carried over by hand, so a wrong
+answer installs nothing. Add `--dry-run` to see the plan with no network call. The
+installer prints the path of `ca.crt` and the one administrator action of
+[the administrator step](#the-administrator-step).
+
+What the installer will and will not do: it talks only to an `https` address with
+the host's own trust store (there is no flag to skip verification); it sends the
+ServiceAccount token only to the login endpoint; it never puts a token in argv, the
+environment or a log; it never prints a reply (an error names the step and the HTTP
+status); and it revokes the OpenBao token when it is done.
+
+#### What OpenBao must enforce
+
+The OpenBao side is built and owned by the OpenBao repository (an onboarding script
+run by an administrator when the host is bootstrapped). The installer only works
+inside what that script sets up, so this is the contract, layer by layer. banlieue
+assumes none of it: **verify each against the running OpenBao**.
+
+| Layer | What | Why |
+| --- | --- | --- |
+| Identity | A JWT role on the cluster's mount bound to this host's exact ServiceAccount and the cluster's audience | No other host's token logs in to it |
+| Authorization | A policy on `<mount>/root/sign-intermediate` and nothing else, pinning `common_name` to this host's CA name, `max_path_length` to `0`, `ttl` and `use_csr_values` to `false`, and requiring `csr` | The request cannot ask for more; a host can only get a CA under its own name |
+| The token | `token_ttl` of five minutes at most, `token_num_uses` of `1`, `token_bound_cidrs` set to the host's address | A stolen token is spent, expired, or unusable from anywhere else |
+| Uniqueness | The script lists the certificates already on the mount and refuses a name that has been issued | The issuer CN is in every agent ID, so two hosts with one name lose the confinement |
+| Lifetime | The script deletes the role and its policy after a successful import; a rotation makes a new pair under a new name | A JWT role cannot count logins |
+| The mount | A dedicated mount, root key generated inside OpenBao, `max-lease-ttl` set to the longest CA you accept | The installer's own cap (ten years) is only a second check |
+| Detection | OpenBao's audit log, and an alert on a `sign-intermediate` call outside an onboarding | Notice the lifetime layer failing |
+
+An example, with placeholder names, of what the script writes for one host (a
+specification for that repository, not something to paste):
+
+```hcl
+path "pki-node-attestation/root/sign-intermediate" {
+  capabilities        = ["update"]
+  required_parameters = ["csr"]
+  allowed_parameters  = {
+    "csr"             = []
+    "common_name"     = ["bar.foo.io"]
+    "max_path_length" = ["0"]
+    "ttl"             = ["8760h"]
+    "use_csr_values"  = ["false"]
+  }
+}
+```
+
+and a JWT login role on `computefabric-example-v2` named `ch-host-ca-bar-foo-io`,
+bound to the host's ServiceAccount subject, with that policy, `token_ttl=5m`,
+`token_num_uses=1` and `token_bound_cidrs=["192.0.2.10/32"]`.
+
+The `ttl` the installer sends is `--attestation-ca-openbao-ca-ttl` (default `8760h`),
+written exactly as the policy pins it: a value the policy does not list is refused.
+
+!!! warning "One residual risk"
+    Until the script deletes the role, a compromised host can log in again and
+    obtain more CAs **under its own name**, each valid for the pinned lifetime. The
+    pins, the one-use token and the address binding bound it, and the audit log makes
+    it visible. Delete the role as soon as the import has succeeded.
+
+#### A host with no cluster identity
+
+Mint a token with the same pins (five minutes, one use, the policy above) and give
+the installer the file, owned by root:
+
+```sh
+sudo banlieue host cloud-hypervisor install --only attestation \
+  --attestation-ca-name bar.foo.io \
+  --attestation-ca-openbao-addr https://bao.example.com:8200 \
+  --attestation-ca-openbao-mount pki-node-attestation \
+  --attestation-ca-openbao-token-file /root/bao.token
+```
+
+The file is read once and **removed whether or not the signing worked**: a spent
+token is useless and a leftover one is a lure.
+
+#### By hand, without OpenBao
+
+```sh
+# 1. Make the key and the request (no certificate yet, no [attestation] section).
+sudo banlieue host cloud-hypervisor install --only attestation \
+  --attestation-ca-csr --attestation-ca-name bar.foo.io
+# 2. Have /var/lib/banlieue/attestation-ca-pending/ca.csr signed as an
+#    intermediate (CA:TRUE, path length 0, keyCertSign only), after checking the
+#    name has not been used on that mount. Save the certificate, then any chain.
+# 3. Install it. Every check runs before anything is written.
+sudo banlieue host cloud-hypervisor install --only attestation \
+  --attestation-ca-import /root/signed.pem
+```
+
+The signed certificate must carry the pending key, be named by the request, be a CA
+that signs leaves and nothing else, be valid now and expire within ten years, and
+join its chain. Anything else is refused and the request stays. `ca.crt` is the host
+CA alone, so `hostCa` is still one certificate; `ca-chain.pem` beside it holds the
+host CA and its intermediates (never the root), and the signer answers each request
+with the guest certificate followed by that chain, so the SPIRE bundle can hold the
+root alone. Until you import, a live CA keeps serving, and `preflight` and `status`
+show the pending request.
+
+Rotation works the same way: add `--rotate-attestation-ca` with a **new** name to
+make the request, and again to import, which replaces the live CA only after every
+check has passed.
+
+#### `HostCaExpired`
+
+A self-signed CA lives ten years; a signed one lives what its signer chose, and the
+provider does not renew it. Once the CA is past its `notAfter` the provider sets
+`Ready=False` with reason `HostCaExpired` and creates no guest, rather than sign
+certificates no verifier accepts. `status` shows the days left, and `preflight`
+refuses an expired CA. Renewal is rotation, under a new name.
+
+| Symptom | Likely cause |
+| --- | --- |
+| `signed CA certificate rejected: ...` | The text names the failed check: wrong key, wrong name, not a CA, path length not zero, no `keyCertSign`, expired, not yet valid, valid too long, a broken chain. Fix the signing and import again; the request is kept. |
+| `OpenBao: login refused (HTTP 403)` | The role is not bound to this ServiceAccount, the audience differs, the address is not the bound one, or the role was already deleted. |
+| `OpenBao: sign refused (HTTP 400/403)` | The request asked for something the policy does not list, or the name differs from the pinned one. Check `--attestation-ca-name` and `--attestation-ca-openbao-ca-ttl` against the policy. |
+| `the host's ServiceAccount token: ...` | Run `banlieue bootstrap cloud-hypervisor-host` and copy its output to `/etc/banlieue/credentials` first. The request is kept. |
+| `a request is already pending` | Import its certificate, or remove `/var/lib/banlieue/attestation-ca-pending` to start again. |
 
 ### The honest limit
 

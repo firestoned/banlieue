@@ -605,6 +605,48 @@ impl Probe for FakeHost {
         let _ = std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700));
         out
     }
+
+    /// As the real one: the fake's pending files are copied, with their
+    /// modes, into a scratch directory and loaded by the CA crate's own
+    /// `PendingCa::load`.
+    fn pending_attestation_ca(&self, dir: &Path) -> Result<String, String> {
+        let s = self.state.lock().unwrap();
+        let (_scratch, copy) = scratch_pending(&s, dir)?;
+        let out = banlieue_attestation_ca::PendingCa::load(&copy)
+            .map(|p| p.common_name().to_string())
+            .map_err(|e| e.to_string());
+        let _ =
+            std::fs::set_permissions(&copy, std::os::unix::fs::PermissionsExt::from_mode(0o700));
+        out
+    }
+}
+
+/// The fake's pending CA request in `dir`, copied with its modes into a
+/// scratch directory so the CA crate can act on real files.
+fn scratch_pending(s: &State, dir: &Path) -> Result<(tempfile::TempDir, PathBuf), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir_node = s.fs.get(dir).ok_or("nothing is there")?;
+    if dir_node.kind != Kind::Dir {
+        return Err("the pending directory is a symlink or not a directory".into());
+    }
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let copy = scratch.path().join("pending");
+    std::fs::create_dir(&copy).map_err(|e| e.to_string())?;
+    for file in [
+        crate::attestation::CA_KEY_FILE,
+        crate::attestation::CA_CSR_FILE,
+    ] {
+        let Some(n) = s.fs.get(&dir.join(file)) else {
+            continue;
+        };
+        let path = copy.join(file);
+        std::fs::write(&path, &n.data).map_err(|e| e.to_string())?;
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(n.mode))
+            .map_err(|e| e.to_string())?;
+    }
+    std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(dir_node.mode))
+        .map_err(|e| e.to_string())?;
+    Ok((scratch, copy))
 }
 
 impl Host for FakeHost {
@@ -764,9 +806,137 @@ impl Host for FakeHost {
         for file in [
             crate::attestation::CA_KEY_FILE,
             crate::attestation::CA_CERT_FILE,
+            crate::attestation::CA_CHAIN_FILE,
         ] {
             s.fs.remove(&dir.join(file));
         }
+        Ok(())
+    }
+
+    /// As the real one: a name outside the alphabet is refused (by the CA
+    /// crate itself), a request already there is never replaced, the owner
+    /// and the parent directory must exist. The directory is `0700`, the key
+    /// `0600`, the request `0644`, all owned by `owner`; no certificate.
+    fn create_pending_attestation_ca(
+        &self,
+        dir: &Path,
+        name: &str,
+        owner: &Owner,
+    ) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        Self::check_owner(&s, owner)?;
+        Self::parent_is_dir(&s, dir)?;
+        for file in [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CSR_FILE,
+        ] {
+            if s.fs.contains_key(&dir.join(file)) {
+                return Err(io::Error::other(format!(
+                    "{}: a request is already pending",
+                    dir.display()
+                )));
+            }
+        }
+        let scratch = tempfile::tempdir()?;
+        let made = scratch.path().join("pending");
+        banlieue_attestation_ca::PendingCa::create(&made, name, None)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let node = |kind: Kind, data: Vec<u8>, mode: u32| Node {
+            kind,
+            data,
+            mode,
+            owner: owner.clone(),
+        };
+        s.fs.insert(
+            dir.to_path_buf(),
+            node(Kind::Dir, vec![], ATTESTATION_DIR_MODE),
+        );
+        for (file, mode) in [
+            (crate::attestation::CA_KEY_FILE, ATTESTATION_KEY_MODE),
+            (crate::attestation::CA_CSR_FILE, ATTESTATION_CERT_MODE),
+        ] {
+            let data = std::fs::read(made.join(file))?;
+            s.fs.insert(dir.join(file), node(Kind::File, data, mode));
+        }
+        Ok(())
+    }
+
+    /// As the real one, through the CA crate's own `import` on a scratch copy
+    /// of the request: a refusal leaves the fake's files as they were, a live
+    /// CA is refused without `replace`, and on success the key moves (the
+    /// request's directory goes with it) and `ca.crt`, and `ca-chain.pem`
+    /// when the CA has an issuer above it, are owned by `owner`.
+    fn import_attestation_ca(
+        &self,
+        pending_dir: &Path,
+        ca_dir: &Path,
+        signed: &[u8],
+        replace: bool,
+        owner: &Owner,
+    ) -> io::Result<()> {
+        let mut s = self.state.lock().unwrap();
+        Self::check_owner(&s, owner)?;
+        Self::parent_is_dir(&s, ca_dir)?;
+        let live = [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CERT_FILE,
+        ]
+        .iter()
+        .any(|f| s.fs.contains_key(&ca_dir.join(f)));
+        if live && !replace {
+            return Err(io::Error::other(format!(
+                "{}: the CA already exists",
+                ca_dir.display()
+            )));
+        }
+        let (scratch, pending_copy) = scratch_pending(&s, pending_dir).map_err(io::Error::other)?;
+        let pending = banlieue_attestation_ca::PendingCa::load(&pending_copy)
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        let made = scratch.path().join("ca");
+        pending
+            .import(
+                &made,
+                &String::from_utf8_lossy(signed),
+                std::time::SystemTime::now(),
+                false,
+                None,
+            )
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        if live {
+            for file in [
+                crate::attestation::CA_KEY_FILE,
+                crate::attestation::CA_CERT_FILE,
+                crate::attestation::CA_CHAIN_FILE,
+            ] {
+                s.fs.remove(&ca_dir.join(file));
+            }
+        }
+        let node = |kind: Kind, data: Vec<u8>, mode: u32| Node {
+            kind,
+            data,
+            mode,
+            owner: owner.clone(),
+        };
+        s.fs.insert(
+            ca_dir.to_path_buf(),
+            node(Kind::Dir, vec![], ATTESTATION_DIR_MODE),
+        );
+        for (file, mode) in [
+            (crate::attestation::CA_KEY_FILE, ATTESTATION_KEY_MODE),
+            (crate::attestation::CA_CERT_FILE, ATTESTATION_CERT_MODE),
+            (crate::attestation::CA_CHAIN_FILE, ATTESTATION_CERT_MODE),
+        ] {
+            if let Ok(data) = std::fs::read(made.join(file)) {
+                s.fs.insert(ca_dir.join(file), node(Kind::File, data, mode));
+            }
+        }
+        for file in [
+            crate::attestation::CA_KEY_FILE,
+            crate::attestation::CA_CSR_FILE,
+        ] {
+            s.fs.remove(&pending_dir.join(file));
+        }
+        s.fs.remove(pending_dir);
         Ok(())
     }
 

@@ -39,17 +39,20 @@ use x509_cert::time::{Time, Validity};
 
 use crate::name::{NameError, validate_name};
 
-const KEY_FILE: &str = "ca.key";
-const CERT_FILE: &str = "ca.crt";
-const DIR_MODE: u32 = 0o700;
-const KEY_MODE: u32 = 0o600;
-const CERT_MODE: u32 = 0o644;
+pub(crate) const KEY_FILE: &str = "ca.key";
+pub(crate) const CERT_FILE: &str = "ca.crt";
+/// The chain above an imported CA (ADR-0146 Decision 7): the host CA
+/// certificate and any intermediates, never the root. Public.
+pub(crate) const CHAIN_FILE: &str = "ca-chain.pem";
+pub(crate) const DIR_MODE: u32 = 0o700;
+pub(crate) const KEY_MODE: u32 = 0o600;
+pub(crate) const CERT_MODE: u32 = 0o644;
 /// Group and world permission bits: none may be set on the directory.
-const GROUP_WORLD_BITS: u32 = 0o077;
-const PERMISSION_BITS: u32 = 0o7777;
-const CN_PREFIX: &str = "CN=";
+pub(crate) const GROUP_WORLD_BITS: u32 = 0o077;
+pub(crate) const PERMISSION_BITS: u32 = 0o7777;
+pub(crate) const CN_PREFIX: &str = "CN=";
 /// A CA lives until it is explicitly rotated; ten years is "long".
-const CA_VALIDITY: Duration = Duration::from_secs(CA_VALIDITY_DAYS * SECONDS_PER_DAY);
+pub(crate) const CA_VALIDITY: Duration = Duration::from_secs(CA_VALIDITY_DAYS * SECONDS_PER_DAY);
 const CA_VALIDITY_DAYS: u64 = 3650;
 const SECONDS_PER_DAY: u64 = 86_400;
 /// Tolerance for a verifier whose clock is behind the host's.
@@ -75,6 +78,9 @@ pub enum CaError {
         /// The OS error.
         source: io::Error,
     },
+    /// An imported certificate was refused (ADR-0146 Decision 7); nothing was installed.
+    #[error("signed CA certificate rejected: {0}")]
+    Rejected(&'static str),
     /// Permissions are too open, or a path is a symlink.
     #[error("insecure CA storage: {0}")]
     Insecure(&'static str),
@@ -84,11 +90,11 @@ pub enum CaError {
 }
 
 /// A rustix `Mode` from permission bits (the raw type is `u16` on macOS, `u32` on Linux).
-fn mode_of(bits: u32) -> Mode {
+pub(crate) fn mode_of(bits: u32) -> Mode {
     Mode::from_bits_truncate(bits as _)
 }
 
-fn io_err(context: &'static str) -> impl FnOnce(io::Error) -> CaError {
+pub(crate) fn io_err(context: &'static str) -> impl FnOnce(io::Error) -> CaError {
     move |source| CaError::Io { context, source }
 }
 
@@ -98,6 +104,9 @@ pub struct AttestationCa {
     cert: Certificate,
     cert_pem: String,
     common_name: String,
+    /// The host CA and the intermediates above it, PEM; empty for a self-signed CA.
+    chain_pem: String,
+    not_after: SystemTime,
 }
 
 impl std::fmt::Debug for AttestationCa {
@@ -155,7 +164,10 @@ fn random_serial(bytes: usize) -> Result<SerialNumber, getrandom::Error> {
 /// Open `path` for reading, refusing a symlink, and return the handle with its
 /// metadata taken from the handle (not from the path), so a swap after the check
 /// cannot change what was inspected.
-fn open_regular(path: &Path, what: &'static str) -> Result<(File, fs::Metadata), CaError> {
+pub(crate) fn open_regular(
+    path: &Path,
+    what: &'static str,
+) -> Result<(File, fs::Metadata), CaError> {
     let before = fs::symlink_metadata(path).map_err(io_err(what))?;
     if !before.file_type().is_file() {
         return Err(CaError::Insecure(
@@ -170,7 +182,7 @@ fn open_regular(path: &Path, what: &'static str) -> Result<(File, fs::Metadata),
     Ok((file, meta))
 }
 
-fn read_all(mut file: File, what: &'static str) -> Result<String, CaError> {
+pub(crate) fn read_all(mut file: File, what: &'static str) -> Result<String, CaError> {
     let mut text = String::new();
     file.read_to_string(&mut text).map_err(io_err(what))?;
     Ok(text)
@@ -271,7 +283,7 @@ impl AttestationCa {
     /// [`CaError::Io`] on any other filesystem failure.
     pub fn remove_files(dir: &Path) -> Result<(), CaError> {
         let dir_fd = open_ca_dir(dir, false)?;
-        for file in [KEY_FILE, CERT_FILE] {
+        for file in [KEY_FILE, CERT_FILE, CHAIN_FILE] {
             match unlinkat(&dir_fd, file, AtFlags::empty()) {
                 Ok(()) | Err(Errno::NOENT) => {}
                 Err(e) => return Err(io_err("removing a CA file")(e.into())),
@@ -289,17 +301,7 @@ impl AttestationCa {
     /// certificate's name is outside the alphabet, or the key does not belong
     /// to the certificate; [`CaError::Io`] when something is missing.
     pub fn load(dir: &Path) -> Result<Self, CaError> {
-        let dir_meta = fs::symlink_metadata(dir).map_err(io_err("reading the CA directory"))?;
-        if !dir_meta.file_type().is_dir() {
-            return Err(CaError::Insecure(
-                "the CA directory is a symlink or not a directory",
-            ));
-        }
-        if dir_meta.permissions().mode() & GROUP_WORLD_BITS != 0 {
-            return Err(CaError::Insecure(
-                "the CA directory is accessible to group or world",
-            ));
-        }
+        check_secure_dir(dir)?;
         let (key_file, key_meta) = open_regular(&dir.join(KEY_FILE), "opening ca.key")?;
         if key_meta.permissions().mode() & PERMISSION_BITS != KEY_MODE {
             return Err(CaError::Insecure("ca.key is not mode 0600"));
@@ -324,12 +326,37 @@ impl AttestationCa {
             .to_owned();
         validate_name(&common_name)
             .map_err(|_| CaError::Corrupt("ca.crt common name is outside the allowed alphabet"))?;
+        let chain_pem = read_chain(dir)?;
+        let not_after = cert.tbs_certificate().validity().not_after.to_system_time();
         Ok(Self {
             key,
             cert,
             cert_pem,
             common_name,
+            chain_pem,
+            not_after,
         })
+    }
+
+    /// The host CA certificate and the intermediates above it, PEM, which the
+    /// signer appends to every certificate it issues; empty for a self-signed
+    /// CA (ADR-0146 Decision 7). Public.
+    #[must_use]
+    pub fn chain_pem(&self) -> &str {
+        &self.chain_pem
+    }
+
+    /// When the CA certificate expires.
+    #[must_use]
+    pub fn not_after(&self) -> SystemTime {
+        self.not_after
+    }
+
+    /// Whether the CA certificate has expired at `now`: a CA past its
+    /// `notAfter` issues certificates no verifier accepts.
+    #[must_use]
+    pub fn is_expired(&self, now: SystemTime) -> bool {
+        now >= self.not_after
     }
 
     /// The CA certificate's common name: the issuer CN of every agent ID it signs.
@@ -353,9 +380,53 @@ impl AttestationCa {
     }
 }
 
+/// When the CA certificate in `dir` expires, read from `ca.crt` alone (never
+/// the private key, so a reconciler that only needs the date never opens it).
+/// `None` when there is no readable certificate there: this answers "when",
+/// and a missing or corrupt CA is [`AttestationCa::load`]'s to report.
+#[must_use]
+pub fn certificate_not_after(dir: &Path) -> Option<SystemTime> {
+    let (file, _) = open_regular(&dir.join(CERT_FILE), "opening ca.crt").ok()?;
+    let pem = read_all(file, "reading ca.crt").ok()?;
+    let cert = Certificate::from_pem(pem.as_bytes()).ok()?;
+    Some(cert.tbs_certificate().validity().not_after.to_system_time())
+}
+
+/// Refuse a CA directory that is a symlink, not a directory, or open to group or world.
+pub(crate) fn check_secure_dir(dir: &Path) -> Result<(), CaError> {
+    let dir_meta = fs::symlink_metadata(dir).map_err(io_err("reading the CA directory"))?;
+    if !dir_meta.file_type().is_dir() {
+        return Err(CaError::Insecure(
+            "the CA directory is a symlink or not a directory",
+        ));
+    }
+    if dir_meta.permissions().mode() & GROUP_WORLD_BITS != 0 {
+        return Err(CaError::Insecure(
+            "the CA directory is accessible to group or world",
+        ));
+    }
+    Ok(())
+}
+
+/// Read `ca-chain.pem` when there is one: a regular file, never a symlink,
+/// holding only certificates. Absent is an empty chain.
+fn read_chain(dir: &Path) -> Result<String, CaError> {
+    let path = dir.join(CHAIN_FILE);
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(e) => return Err(io_err("reading ca-chain.pem")(e)),
+        Ok(_) => {}
+    }
+    let (file, _) = open_regular(&path, "opening ca-chain.pem")?;
+    let pem = read_all(file, "reading ca-chain.pem")?;
+    Certificate::load_pem_chain(pem.as_bytes())
+        .map_err(|_| CaError::Corrupt("ca-chain.pem is not a chain of PEM certificates"))?;
+    Ok(pem)
+}
+
 /// Create `path` exclusively with `mode`, chown it before any content is written,
 /// then write. The mode is set explicitly afterwards because `open` applies the umask.
-fn write_new(
+pub(crate) fn write_new(
     dir: &OwnedFd,
     name: &str,
     content: &[u8],
@@ -385,7 +456,7 @@ fn write_new(
 /// planted by the provider's user is refused instead of being chmodded or
 /// chowned by the root installer. The parent chain is resolved normally (it is
 /// root's); the opened handle is then checked to be a directory.
-fn open_ca_dir(dir: &Path, create: bool) -> Result<OwnedFd, CaError> {
+pub(crate) fn open_ca_dir(dir: &Path, create: bool) -> Result<OwnedFd, CaError> {
     let name = dir
         .file_name()
         .ok_or(CaError::Insecure("the CA directory has no final component"))?;

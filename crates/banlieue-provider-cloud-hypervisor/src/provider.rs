@@ -39,6 +39,7 @@ use kube::runtime::controller::Action;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tracing::{info, warn};
 
 /// The key in a class mapping's `target` naming the host class.
@@ -71,6 +72,9 @@ pub mod reasons {
     pub const HOST_CA_MISSING: &str = "HostCaMissing";
     /// `spec.attestation.hostCa` names a source this provider cannot read.
     pub const HOST_CA_UNREADABLE: &str = "HostCaUnreadable";
+    /// The host's attestation CA certificate is past its `notAfter`
+    /// (ADR-0146 Decision 7).
+    pub const HOST_CA_EXPIRED: &str = "HostCaExpired";
 }
 
 /// The Provider field the administrator asserts the host's CA in.
@@ -84,6 +88,10 @@ pub enum HostCaHold {
     /// `hostCa` is an inline source that is not exactly one certificate (or
     /// carries a private key); the text is the API's own rule.
     Unreadable(String),
+    /// The CA certificate on the host is past its `notAfter`: a CA signed
+    /// by an upstream PKI lives as long as its signer chose, and certificates
+    /// it issues after that are accepted by no verifier (ADR-0146 Decision 7).
+    Expired,
 }
 
 impl HostCaHold {
@@ -93,6 +101,7 @@ impl HostCaHold {
         match self {
             Self::Missing => reasons::HOST_CA_MISSING,
             Self::Unreadable(_) => reasons::HOST_CA_UNREADABLE,
+            Self::Expired => reasons::HOST_CA_EXPIRED,
         }
     }
 
@@ -108,8 +117,31 @@ impl HostCaHold {
                 "{HOST_CA_FIELD} is not usable: {why}; no guest is created until it is \
                  fixed (ADR-0146)"
             ),
+            Self::Expired => "this host's attestation CA certificate has expired: no guest is \
+                 created, because the certificates it would sign verify nowhere; rotate the CA \
+                 (install --rotate-attestation-ca with a new name) and assert the new ca.crt \
+                 (ADR-0146 Decision 7)"
+                .to_string(),
         }
     }
+}
+
+/// The hold an expired CA puts on the host, `None` while it is valid or when
+/// its expiry is not known. Pure: `now` is the caller's.
+#[must_use]
+pub fn host_ca_expiry_hold(not_after: Option<SystemTime>, now: SystemTime) -> Option<HostCaHold> {
+    not_after
+        .filter(|at| now >= *at)
+        .map(|_| HostCaHold::Expired)
+}
+
+/// When the CA certificate in `ca_dir` expires, read from `ca.crt` alone (the
+/// reconciler never needs the private key to know). `None` when there is no
+/// readable certificate: an absent or corrupt CA is not this check's to report,
+/// and the provider already refuses to start on one.
+#[must_use]
+pub fn ca_not_after(ca_dir: &Path) -> Option<SystemTime> {
+    banlieue_attestation_ca::certificate_not_after(ca_dir)
 }
 
 /// Whether `provider` holds this host's guests back: only a host whose config
@@ -156,7 +188,12 @@ pub async fn current_host_ca_hold(ctx: &Context) -> Result<Option<HostCaHold>> {
     let namespace = &ctx.config.provider.namespace;
     let api: Api<Provider> = Api::namespaced(ctx.client.clone(), namespace);
     let provider = api.get(&ctx.config.provider.name).await?;
-    Ok(host_ca_hold(&ctx.config, &provider))
+    let expired = ctx
+        .config
+        .attestation
+        .as_ref()
+        .and_then(|a| host_ca_expiry_hold(ca_not_after(&a.ca_dir), SystemTime::now()));
+    Ok(host_ca_hold(&ctx.config, &provider).or(expired))
 }
 
 /// What the host has right now. Gathered by [`gather_facts`]; separate so the
@@ -177,6 +214,9 @@ pub struct HostFacts {
     pub vtpm: bool,
     /// The host's EK CA certificate (PEM), when it parses as one.
     pub ek_ca_pem: Option<String>,
+    /// When the attestation CA certificate expires, for a host that opted in
+    /// and has a readable one (ADR-0146 Decision 7).
+    pub ca_not_after: Option<SystemTime>,
     /// What the host has to give guests.
     pub capacity: HostCapacity,
     /// Host storage classes whose filesystem cannot reflink, so each clone
@@ -366,6 +406,10 @@ pub fn gather_facts(config: &HostConfig) -> HostFacts {
             .iter()
             .all(|p| p.is_file())
         }),
+        ca_not_after: config
+            .attestation
+            .as_ref()
+            .and_then(|a| ca_not_after(&a.ca_dir)),
         ek_ca_pem: config
             .tpm
             .as_ref()
@@ -521,7 +565,12 @@ pub fn compute_status(
     // Checked first: a misconfigured Provider is refused whatever the host
     // looks like, and the Secret it names is never read.
     let credentials_named = provider.spec.connection.credentials_ref.is_some();
-    let hold = host_ca_hold(config, provider);
+    let hold = host_ca_hold(config, provider).or_else(|| {
+        config
+            .attestation
+            .as_ref()
+            .and_then(|_| host_ca_expiry_hold(facts.ca_not_after, SystemTime::now()))
+    });
     let (status, reason, message) = if credentials_named {
         (
             condition_status::FALSE,

@@ -14,17 +14,20 @@ use crate::attestation::{self, CaInfo};
 use crate::error::Error;
 use crate::fetch::Fetch;
 use crate::hardening;
+use crate::openbao::{Credential, NoPki, Pki, SignRequest};
 use crate::ops::{CgroupMode, Cmd, Host, Kind, Owner, Probe};
 use crate::paths::{
-    ATTESTATION_CA_DIR, BANLIEUE_USER, BIN_DIR, CONF_DIR, CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR,
-    GUEST_NAME_PREFIX, GUEST_SLICE_UNIT, HOST_CONFIG, KUBECONFIG_PATH, POLKIT_RULE,
-    PROVIDER_BINARY, PROVIDER_UNIT, REGISTRY_CREDENTIALS_DIR, RUN_ROOT, STATE_ROOT, STATE_SUBDIRS,
-    SWTPM_CONF_DIR, SWTPM_SETUP_CONF, SYSTEMD_UNIT_DIR, TMPFILES_CONF, UNIT_GLOBS, USERDB_DIR,
-    VMM_BINARY,
+    ATTESTATION_CA_DIR, ATTESTATION_CA_PENDING_DIR, BANLIEUE_USER, BIN_DIR, CONF_DIR,
+    CREDENTIALS_DIR, EK_CA_CERT, EK_CA_DIR, GUEST_NAME_PREFIX, GUEST_SLICE_UNIT, HOST_CONFIG,
+    KUBECONFIG_PATH, POLKIT_RULE, PROVIDER_BINARY, PROVIDER_UNIT, REGISTRY_CREDENTIALS_DIR,
+    RUN_ROOT, STATE_ROOT, STATE_SUBDIRS, SWTPM_CONF_DIR, SWTPM_SETUP_CONF, SYSTEMD_UNIT_DIR,
+    TMPFILES_CONF, UNIT_GLOBS, USERDB_DIR, VMM_BINARY,
 };
 use crate::pins::{self, Release};
 use crate::render;
-use crate::settings::{SYS_CLASS_NET, Settings};
+use crate::settings::{
+    AttestationPlan, CaRoute, OpenBaoAuth, OpenBaoPlan, SYS_CLASS_NET, Settings,
+};
 use banlieue_provider_cloud_hypervisor::host_config::HostConfig;
 use banlieue_provider_cloud_hypervisor::provider::HostFacts;
 use clap::ValueEnum;
@@ -290,13 +293,30 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     }
     if s.attestation.is_some() {
         match attestation_state(probe) {
-            Some(Ok(ca)) => note(format!(
-                "attestation CA {} (expires {})",
+            Some(Ok(ca)) if ca.days_remaining < 0 => bad.push(format!(
+                "attestation CA {} expired on {}: rotate it with --rotate-attestation-ca and \
+                 a new --attestation-ca-name (ADR-0146 Decision 7)",
                 ca.name, ca.not_after
+            )),
+            Some(Ok(ca)) => note(format!(
+                "attestation CA {} (expires {}, {})",
+                ca.name,
+                ca.not_after,
+                attestation::expiry_phrase(ca.days_remaining)
             )),
             Some(Err(problems)) => bad.extend(problems),
             None => note("attestation CA: will be created"),
         }
+    }
+    match pending_request(probe) {
+        Some(Ok(name)) => note(format!(
+            "attestation CA request for {name} is waiting for its signed certificate \
+             (--attestation-ca-import FILE)"
+        )),
+        Some(Err(why)) => bad.push(format!(
+            "pending attestation CA request in {ATTESTATION_CA_PENDING_DIR}: {why}"
+        )),
+        None => {}
     }
     bad.extend(accounts::problems(probe, s));
     bad.extend(hardening_problems(probe, s));
@@ -698,6 +718,17 @@ pub fn attestation_ca(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), 
         note("not opted in (--attestation-ca-name NAME or --attestation); nothing changed");
         return Ok(());
     };
+    match &plan.route {
+        CaRoute::Csr => return attestation_csr(host, plan, o),
+        CaRoute::Import(file) => return attestation_import(host, plan, file, o),
+        // Async (it talks to OpenBao), so `install` runs it: see `attestation_openbao`.
+        CaRoute::OpenBao(_) => {
+            return Err(Error::Unsupported(
+                "the OpenBao route runs through install".into(),
+            ));
+        }
+        CaRoute::SelfSigned => {}
+    }
     let dir = Path::new(ATTESTATION_CA_DIR);
     let present = host.exists(&dir.join(attestation::CA_KEY_FILE))
         || host.exists(&dir.join(attestation::CA_CERT_FILE));
@@ -726,6 +757,211 @@ pub fn attestation_ca(host: &dyn Host, s: &Settings, o: &Options) -> Result<(), 
         .map_err(|why| Error::Config(format!("attestation CA {}: {why}", dir.display())))?;
     note(format!(
         "attestation CA {} in {} (expires {}; kept, never overwritten)",
+        info.name,
+        dir.display(),
+        info.not_after
+    ));
+    for line in attestation::admin_action(dir, &info.name) {
+        note(line);
+    }
+    Ok(())
+}
+
+/// Make the CA's key and a request for an upstream PKI to sign (ADR-0146
+/// Decision 7). The key is born owned by the provider's user. Writes no
+/// certificate and no `[attestation]` section: the provider loads the CA at
+/// start and stops if it cannot, so an unsigned request must not look
+/// configured. A live CA is not touched.
+fn attestation_csr(host: &dyn Host, plan: &AttestationPlan, o: &Options) -> Result<(), Error> {
+    let name = plan
+        .new_ca_name
+        .as_ref()
+        .ok_or_else(|| Error::Config("a request needs a name".into()))?;
+    let pending = Path::new(ATTESTATION_CA_PENDING_DIR);
+    note(format!(
+        "creating the request for the attestation CA {name}"
+    ));
+    host.create_pending_attestation_ca(pending, name, &banlieue())?;
+    // Beside a live CA (rotation) its section must survive a regenerated config.
+    if plan.rotate {
+        write_attestation_section(host, plan.ttl, o)?;
+    }
+    for line in attestation::csr_admin_action(pending, name) {
+        note(line);
+    }
+    Ok(())
+}
+
+/// Install the certificate an upstream PKI signed for the pending request
+/// (ADR-0146 Decision 7), after the CA crate's checks; then write
+/// `[attestation]`. A refusal installs nothing and leaves the request.
+fn attestation_import(
+    host: &dyn Host,
+    plan: &AttestationPlan,
+    file: &Path,
+    o: &Options,
+) -> Result<(), Error> {
+    let signed = host
+        .read(file)
+        .map_err(|e| Error::Config(format!("{}: {e}", file.display())))?;
+    if plan.rotate {
+        eprintln!(
+            "!!! --rotate-attestation-ca: replacing the live attestation CA with the signed one; \
+             every certificate the old CA signed stops verifying once the new CA is asserted"
+        );
+    }
+    let pending = Path::new(ATTESTATION_CA_PENDING_DIR);
+    let dir = Path::new(ATTESTATION_CA_DIR);
+    note(format!(
+        "importing {} as the attestation CA",
+        file.display()
+    ));
+    host.import_attestation_ca(pending, dir, &signed, plan.rotate, &banlieue())?;
+    write_attestation_section(host, plan.ttl, o)?;
+    if o.dry_run {
+        return Ok(());
+    }
+    let info = host
+        .attestation_ca(dir)
+        .map_err(|why| Error::Config(format!("attestation CA {}: {why}", dir.display())))?;
+    note(format!(
+        "attestation CA {} in {} (expires {})",
+        info.name,
+        dir.display(),
+        info.not_after
+    ));
+    for line in attestation::admin_action(dir, &info.name) {
+        note(line);
+    }
+    Ok(())
+}
+
+/// The most a ServiceAccount or OpenBao token file may weigh: a JWT is a few
+/// KiB; anything near this is not one.
+const MAX_CREDENTIAL_BYTES: usize = 32 * 1024;
+
+/// A one-line secret from `path`: trimmed, never empty, never more than a
+/// line, never absurdly long. Never echoed back in an error.
+fn read_secret_line(host: &dyn Host, path: &Path) -> Result<String, std::io::Error> {
+    let raw = host.read(path)?;
+    let bad = |why: &str| std::io::Error::other(format!("{}: {why}", path.display()));
+    if raw.len() > MAX_CREDENTIAL_BYTES {
+        return Err(bad("too large to be a token"));
+    }
+    let text = String::from_utf8(raw).map_err(|_| bad("not text"))?;
+    let line = text.trim();
+    if line.is_empty() {
+        return Err(bad("empty"));
+    }
+    if line.contains('\n') || line.contains('\r') {
+        return Err(bad("more than one line"));
+    }
+    Ok(line.to_string())
+}
+
+/// What the installer logs in to OpenBao with (ADR-0146 Decision 8): the
+/// host's own ServiceAccount token, or the one-use token file.
+fn openbao_credential(host: &dyn Host, bao: &OpenBaoPlan) -> Result<Credential, Error> {
+    match &bao.auth {
+        OpenBaoAuth::Jwt { auth_mount, role } => {
+            let path = Path::new(CREDENTIALS_DIR).join("token");
+            let jwt = read_secret_line(host, &path).map_err(|e| {
+                Error::Pki(format!(
+                    "the host's ServiceAccount token: {e}; `banlieue bootstrap \
+                     cloud-hypervisor-host` writes it, so copy its output to {CREDENTIALS_DIR} \
+                     first and run this again (the request is kept)"
+                ))
+            })?;
+            Ok(Credential::Jwt {
+                auth_mount: auth_mount.clone(),
+                role: role.clone(),
+                jwt,
+            })
+        }
+        OpenBaoAuth::TokenFile(file) => read_secret_line(host, file)
+            .map(Credential::Token)
+            .map_err(|e| Error::Pki(format!("the OpenBao token file: {e}"))),
+    }
+}
+
+/// Make (or reuse) the request, have OpenBao sign it as the host's own
+/// ServiceAccount, and install the result (ADR-0146 Decision 8). Everything
+/// OpenBao returns goes through the same import checks as a certificate an
+/// administrator carried over, so a wrong answer installs nothing. Any failure
+/// leaves the request, so the next run signs the same key. A token file is
+/// removed once read, whether or not the signing worked: a spent token is
+/// useless and a leftover one is a lure.
+async fn attestation_openbao(
+    host: &dyn Host,
+    pki: &dyn Pki,
+    plan: &AttestationPlan,
+    bao: &OpenBaoPlan,
+    o: &Options,
+) -> Result<(), Error> {
+    log("Attestation CA");
+    let name = plan
+        .new_ca_name
+        .as_ref()
+        .ok_or_else(|| Error::Config("a request needs a name".into()))?;
+    let pending = Path::new(ATTESTATION_CA_PENDING_DIR);
+    let dir = Path::new(ATTESTATION_CA_DIR);
+    if host.exists(&pending.join(attestation::CA_KEY_FILE)) {
+        note(format!(
+            "reusing the pending request for the attestation CA {name}"
+        ));
+    } else {
+        note(format!(
+            "creating the request for the attestation CA {name}"
+        ));
+        host.create_pending_attestation_ca(pending, name, &banlieue())?;
+    }
+    if o.dry_run {
+        note(format!(
+            "would have {} sign it on {} ({})",
+            bao.addr,
+            bao.mount,
+            match &bao.auth {
+                OpenBaoAuth::Jwt { .. } => "logging in as the host's ServiceAccount",
+                OpenBaoAuth::TokenFile(_) => "with the token file",
+            }
+        ));
+        return Ok(());
+    }
+    let credential = openbao_credential(host, bao)?;
+    let csr = String::from_utf8(host.read(&pending.join(attestation::CA_CSR_FILE))?)
+        .map_err(|_| Error::Pki("the pending request is not text".into()))?;
+    note(format!("asking {} to sign it on {}", bao.addr, bao.mount));
+    let outcome = pki
+        .sign_intermediate(&SignRequest {
+            csr_pem: &csr,
+            common_name: name,
+            ttl: &bao.ttl,
+            credential: &credential,
+        })
+        .await;
+    if let OpenBaoAuth::TokenFile(file) = &bao.auth {
+        // Spent either way. A failed removal is reported, never silent.
+        if let Err(e) = host.remove(file) {
+            eprintln!(
+                "!!! could not remove the spent OpenBao token file {}: {e}",
+                file.display()
+            );
+        }
+    }
+    let bundle = outcome?;
+    if plan.rotate {
+        eprintln!(
+            "!!! --rotate-attestation-ca: replacing the live attestation CA with the signed one; \
+             every certificate the old CA signed stops verifying once the new CA is asserted"
+        );
+    }
+    host.import_attestation_ca(pending, dir, bundle.as_bytes(), plan.rotate, &banlieue())?;
+    write_attestation_section(host, plan.ttl, o)?;
+    let info = host
+        .attestation_ca(dir)
+        .map_err(|why| Error::Config(format!("attestation CA {}: {why}", dir.display())))?;
+    note(format!(
+        "attestation CA {} in {} (expires {})",
         info.name,
         dir.display(),
         info.not_after
@@ -1176,8 +1412,34 @@ fn attestation_status(probe: &dyn Probe) -> String {
     match attestation_state(probe) {
         None if probe.is_root() => "none (opt in with --attestation-ca-name)".into(),
         None => "none, or unknown (run as root)".into(),
-        Some(Ok(ca)) => format!("{}, expires {}", ca.name, ca.not_after),
+        Some(Ok(ca)) => format!(
+            "{}, expires {} ({})",
+            ca.name,
+            ca.not_after,
+            attestation::expiry_phrase(ca.days_remaining)
+        ),
         Some(Err(problems)) => format!("REFUSED: {}", problems.join("; ")),
+    }
+}
+
+/// An unsigned attestation CA request on the host (ADR-0146 Decision 7): its
+/// name when there is one waiting, `None` when there is not, and why when it is
+/// there but cannot be read.
+fn pending_request(probe: &dyn Probe) -> Option<Result<String, String>> {
+    let dir = Path::new(ATTESTATION_CA_PENDING_DIR);
+    if !probe.exists(&dir.join(attestation::CA_KEY_FILE)) {
+        return None;
+    }
+    Some(probe.pending_attestation_ca(dir))
+}
+
+fn pending_status(probe: &dyn Probe) -> String {
+    match pending_request(probe) {
+        None => "none".into(),
+        Some(Ok(name)) => {
+            format!("{name} awaiting a signed certificate (--attestation-ca-import FILE)")
+        }
+        Some(Err(why)) => format!("REFUSED: {why}"),
     }
 }
 
@@ -1253,6 +1515,7 @@ pub fn status(probe: &dyn Probe) {
     row("host-config", present(probe, HOST_CONFIG));
     row("ek-ca", present(probe, EK_CA_CERT));
     row("attestation-ca", &attestation_status(probe));
+    row("attestation-csr", &pending_status(probe));
     row("polkit-rule", present(probe, POLKIT_RULE));
     row(
         "kubeconfig",
@@ -1352,6 +1615,23 @@ pub async fn install(
     o: &Options,
     facts: FactsFn<'_>,
 ) -> Result<(), Error> {
+    install_with_pki(host, fetch, &NoPki, release, s, o, facts).await
+}
+
+/// As [`install`], with an OpenBao client for the attestation CA's OpenBao
+/// route (ADR-0146 Decision 8). Every other route never calls it.
+///
+/// # Errors
+/// As [`install`]; the OpenBao route's failures are [`Error::Pki`].
+pub async fn install_with_pki(
+    host: &dyn Host,
+    fetch: &dyn Fetch,
+    pki: &dyn Pki,
+    release: &Release,
+    s: &Settings,
+    o: &Options,
+    facts: FactsFn<'_>,
+) -> Result<(), Error> {
     if let Some(only) = o.only {
         let missing = missing_prerequisites(only, host, release);
         if !missing.is_empty() && !o.dry_run {
@@ -1371,7 +1651,12 @@ pub async fn install(
             Stage::Preflight => preflight(host, s)?,
             Stage::Vmm => vmm(host, fetch, release, o).await?,
             Stage::Host => self::host(host, s, release, o)?,
-            Stage::Attestation => attestation_ca(host, s, o)?,
+            Stage::Attestation => match s.attestation.as_ref().map(|p| (&p.route, p)) {
+                Some((CaRoute::OpenBao(bao), plan)) => {
+                    attestation_openbao(host, pki, plan, bao, o).await?;
+                }
+                _ => attestation_ca(host, s, o)?,
+            },
             Stage::Tpm => tpm(host, o)?,
             Stage::Polkit => polkit(host, s)?,
             Stage::Provider => provider(host, s, o)?,
