@@ -1146,6 +1146,13 @@ grype-prelay: grype-install ## Gate: scan PRELAY_IMAGE_REF; fail on a fixed find
 	echo "── Gate: fixed findings at or above $(PRELAY_GRYPE_FAIL_ON) ──"; \
 	grype "$(PRELAY_IMAGE_REF)" $$vex_args --only-fixed --fail-on "$(PRELAY_GRYPE_FAIL_ON)" --output table
 
+# The cache key for Dockerfile.prelay's apt layer (its APT_REFRESH build arg):
+# the UTC date, so the layer is rebuilt once a day and takes Debian's security
+# fixes. Printed as `day=YYYY-MM-DD` for $GITHUB_OUTPUT. Locally:
+#   docker build -f Dockerfile.prelay --build-arg "APT_REFRESH=$$(date -u +%F)" .
+prelay-apt-refresh-key: ## Print day=<UTC date>, Dockerfile.prelay's daily apt cache key (ADR-0113)
+	@echo "day=$$(date -u +%F)"
+
 vex-validate: vexctl-install ## Validate that every .vex/*.json (and .vex/prelay/*.json) parses and merges
 	@vexctl merge --id "https://banlieue/local/validate" --author "local" .vex/*.json > /dev/null
 	@set -- $(wildcard $(PRELAY_VEX_DIR)/*.json); \
