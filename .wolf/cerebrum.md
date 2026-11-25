@@ -121,6 +121,8 @@
 
 ## Do-Not-Repeat
 
+- [2026-11-24] After `cargo fmt` on slate, rsync the formatted tree back to the mac AFTER THE LAST fmt run, including files created since the previous pull (tests/ too), and confirm `git status` shows the reflow. A file written after the pull-back shipped unformatted and failed CI "Check formatting" (#238 run 45534824976).
+
 <!-- Mistakes made and corrected. Each entry prevents the same mistake recurring. -->
 - **[2026-11-24] Worktrees go in `~/dev/banlieue-<topic>`, never under `~/dev/banlieue/.claude/worktrees/`.** Erick has said it twice. The roadmap 22/23 Azure work was put in `.claude/worktrees/roadmap22-23-azure` on a `worktree-*` branch because the session's worktree tool defaults there, although memory already said "sibling dir such as `~/dev/banlieue-<topic>`". Create it with `git worktree add -b feat/<topic> ~/dev/banlieue-<topic> origin/main` (branch named like his: `feat/`, `fix/`, `docs/`), and do not use a tool default that contradicts a recorded rule.
 - **[2026-11-19] A `resourceVersion` on an object is that object's own last-modified marker, not a cache timestamp.** While chasing a controller that ignored new VMs, the old controller's log showed every VM at resourceVersions around 1.5138e8 against a cluster at 1.5196e8, and I concluded "the cache was about 9 hours stale". Wrong: a VM nobody edits keeps its resourceVersion for days, so the gap says nothing about the cache. Staleness is shown by an object that exists in the API and is absent from (or older in) the reflector store, not by comparing resourceVersions across objects. The audit of ADR-0145 does exactly that.

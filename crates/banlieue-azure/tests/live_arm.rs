@@ -78,8 +78,11 @@ fn token_source() -> Arc<FederatedToken> {
 }
 
 fn client() -> ArmClient {
-    ArmClient::new(ArmConfig::new(&env("AZURE_SUBSCRIPTION_ID")), token_source())
-        .expect("client")
+    ArmClient::new(
+        ArmConfig::new(&env("AZURE_SUBSCRIPTION_ID")),
+        token_source(),
+    )
+    .expect("client")
 }
 
 async fn wait(client: &ArmClient, handle: Option<OperationHandle>, what: &str) {
@@ -173,7 +176,12 @@ async fn a_vm_is_created_boots_and_is_deleted_with_its_nic_and_disk() {
     let (vm, nic) = (vm_name(&uid), nic_name(&uid));
 
     // Deleting what does not exist is success, as ARM's 204 says.
-    assert!(c.delete_vm(&rg, &vm).await.expect("delete missing").is_none());
+    assert!(
+        c.delete_vm(&rg, &vm)
+            .await
+            .expect("delete missing")
+            .is_none()
+    );
 
     let op = c
         .put_nic(
