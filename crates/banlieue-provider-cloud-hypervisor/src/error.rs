@@ -49,6 +49,19 @@ pub enum Error {
     /// The guest uid range on this host is full.
     #[error("no free guest uid in the configured range")]
     UidRangeFull,
+
+    /// The machine's vTPM was manufactured (its EK is recorded in status or
+    /// held by the host) but its state directory, the path given, is gone.
+    /// The TPM's identity cannot be recovered and a fresh TPM is never
+    /// manufactured in its place: permanent (ADR-0065 amendment
+    /// 2026-11-25).
+    #[error(
+        "TPM state for this machine is missing on the host ({}); its identity cannot be \
+         recovered: delete and recreate the VirtualMachine (or this machine, if it was \
+         created directly)",
+        .0.display()
+    )]
+    TpmStateLost(std::path::PathBuf),
 }
 
 impl From<zbus::Error> for Error {
@@ -72,6 +85,7 @@ impl banlieue_provider_sdk::metrics::ErrorKind for Error {
             Self::VmmExited(_) => "VmmExited",
             Self::Import(_) => "Import",
             Self::UidRangeFull => "UidRangeFull",
+            Self::TpmStateLost(_) => "TpmStateLost",
         }
     }
 }

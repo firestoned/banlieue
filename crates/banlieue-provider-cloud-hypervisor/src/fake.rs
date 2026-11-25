@@ -80,6 +80,8 @@ pub struct State {
     pub manufactured: BTreeSet<String>,
     /// TPM state handed to the guest, by machine UID.
     pub adopted: BTreeSet<String>,
+    /// TPM state directories that exist, by path.
+    pub tpm_states: BTreeSet<std::path::PathBuf>,
     /// VMM version `vmm.ping` reports.
     pub vmm_version: String,
     /// Every call, in order, for assertions.
@@ -121,7 +123,11 @@ impl FakeHost {
     /// writes them before it saves the final TPM state and exits. As on a
     /// real host, the EK files exist while the setup unit is still active.
     pub fn write_ek_files_during_setup(&self, plan: &MachinePlan) {
-        self.lock().manufactured.insert(plan.uid.clone());
+        let mut s = self.lock();
+        s.manufactured.insert(plan.uid.clone());
+        if let Some(t) = &plan.tpm {
+            s.tpm_states.insert(t.state_dir.clone());
+        }
     }
 
     /// `swtpm_setup` finished: the TPM is manufactured and, as systemd
@@ -131,7 +137,22 @@ impl FakeHost {
         s.manufactured.insert(plan.uid.clone());
         if let Some(t) = &plan.tpm {
             s.units.remove(&t.setup_unit);
+            s.tpm_states.insert(t.state_dir.clone());
         }
+    }
+
+    /// The machine's TPM state directory is deleted and its units stopped
+    /// under it, as another machine's teardown did while guest uids could
+    /// be reused (fixed in v0.6.0). The host-minted EK files, keyed by the
+    /// machine UID, stay.
+    pub fn lose_tpm_state(&self, plan: &MachinePlan) {
+        let mut s = self.lock();
+        if let Some(t) = &plan.tpm {
+            s.tpm_states.remove(&t.state_dir);
+            s.units.remove(&t.unit);
+        }
+        s.units.remove(&plan.unit);
+        s.vms.remove(&plan.unit);
     }
 
     /// The guest sends `phase=installed`. As on the real host, it is heard
@@ -270,6 +291,9 @@ impl HostOps for FakeHost {
         s.dirs.remove(&plan.run_dir);
         s.disks.remove(&plan.os_disk);
         s.seeds.remove(&plan.seed);
+        if let Some(t) = &plan.tpm {
+            s.tpm_states.remove(&t.state_dir);
+        }
         Ok(())
     }
 
@@ -304,8 +328,12 @@ impl HostOps for FakeHost {
         Ok(())
     }
 
-    async fn reset_tpm_state(&self, _plan: &MachinePlan) -> Result<()> {
-        self.lock().calls.push("reset_tpm_state".into());
+    async fn reset_tpm_state(&self, plan: &MachinePlan) -> Result<()> {
+        let mut s = self.lock();
+        s.calls.push("reset_tpm_state".into());
+        if let Some(t) = &plan.tpm {
+            s.tpm_states.insert(t.state_dir.clone());
+        }
         Ok(())
     }
 
@@ -316,7 +344,13 @@ impl HostOps for FakeHost {
     async fn adopt_tpm_state(&self, plan: &MachinePlan) -> Result<()> {
         let mut s = self.lock();
         s.calls.push("adopt_tpm_state".into());
-        if !s.manufactured.contains(&plan.uid) {
+        // As on the real host: opening a state directory that is not
+        // there fails with ENOENT.
+        let present = plan
+            .tpm
+            .as_ref()
+            .is_some_and(|t| s.tpm_states.contains(&t.state_dir));
+        if !s.manufactured.contains(&plan.uid) || !present {
             return Err(io_err(
                 std::io::ErrorKind::NotFound,
                 "no TPM state to adopt".into(),
@@ -324,6 +358,13 @@ impl HostOps for FakeHost {
         }
         s.adopted.insert(plan.uid.clone());
         Ok(())
+    }
+
+    async fn tpm_state_missing(&self, plan: &MachinePlan) -> bool {
+        let s = self.lock();
+        plan.tpm
+            .as_ref()
+            .is_some_and(|t| !s.tpm_states.contains(&t.state_dir))
     }
 
     async fn ek_certificates(&self, plan: &MachinePlan) -> Result<Vec<String>> {

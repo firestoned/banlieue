@@ -132,6 +132,16 @@ Only for code that depends on `banlieue-api`; see
   host never hands out a guest uid that still has a run directory on it
   (PR #234). This needs the new controller **and** the new provider on every
   Cloud Hypervisor host.
+- **A Cloud Hypervisor guest whose vTPM state is gone says so, and stops
+  retrying.** A machine with a manufactured vTPM whose state directory was
+  deleted on the host (as the uid reuse fixed by PR #234 could do) reports
+  `Ready=False` with reason `TpmStateLost`, `tpmAttached: false` and the
+  power state the host shows, instead of `HostError` every 5 seconds. Its TPM
+  identity cannot be recovered and banlieue never manufactures a new one in
+  its place: delete and recreate the `VirtualMachine`. Deleting it works as
+  usual
+  ([ADR-0065](https://github.com/firestoned/banlieue/blob/main/docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md),
+  amendment 2026-11-25).
 - `status.scheduledAt` on a `VirtualMachine` is kept while its placement is
   unchanged (PR #215).
 - **The `credentialsRef` admission policy is narrower and accepts a new verb**,

@@ -397,6 +397,17 @@ pub fn tpm_manufactured(plan: &MachinePlan) -> bool {
         .is_some_and(|t| ek_files(&t.ek_dir).is_ok_and(|files| !files.is_empty()))
 }
 
+/// Whether this machine's TPM state directory is definitely gone: looking
+/// it up (without following a link) fails with `NotFound`. Any other
+/// failure counts as present, so a passing I/O error never marks a machine
+/// lost for good. `false` without a vTPM.
+#[must_use]
+pub fn tpm_state_missing(plan: &MachinePlan) -> bool {
+    plan.tpm.as_ref().is_some_and(|t| {
+        fs::symlink_metadata(&t.state_dir).is_err_and(|e| e.kind() == io::ErrorKind::NotFound)
+    })
+}
+
 /// Hand the manufactured TPM state to the guest's uid, so its swtpm can
 /// read and write it. Each file is opened `O_NOFOLLOW` relative to the
 /// directory handle and changed through that handle: the machine directory
