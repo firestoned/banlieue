@@ -32,7 +32,7 @@ first, then add a provider with the [vSphere Provider guide](vsphere-provider.md
 The CRDs are generated from the Rust types and committed at the release tag.
 
 ```sh
-kubectl apply -f deploy/crds/
+kubectl apply --server-side -f deploy/crds/
 ```
 
 ```text

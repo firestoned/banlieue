@@ -49,7 +49,7 @@ spec:
           # the release you install (`kubectl set image`, see the guides), or
           # install with `banlieue bootstrap operator --version`, which pins
           # that release's own image by digest.
-          image: ghcr.io/firestoned/banlieue:v0.5.9
+          image: ghcr.io/firestoned/banlieue:v0.6.0
           imagePullPolicy: IfNotPresent
           args: ["controller"]
           envFrom:
