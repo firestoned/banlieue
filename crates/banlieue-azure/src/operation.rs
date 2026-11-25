@@ -83,7 +83,7 @@ impl OperationHandle {
 /// [`Error::UntrustedUrl`].
 pub fn ensure_under_endpoint(url: &str, endpoint: &str) -> Result<()> {
     let base = endpoint.trim_end_matches('/');
-    let trusted = base.starts_with("https://")
+    let trusted = is_trusted_base(base)
         && url
             .strip_prefix(base)
             .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with('?'));
@@ -91,6 +91,30 @@ pub fn ensure_under_endpoint(url: &str, endpoint: &str) -> Result<()> {
         return Ok(());
     }
     Err(Error::UntrustedUrl(url.to_string()))
+}
+
+const HTTPS_SCHEME: &str = "https://";
+const HTTP_SCHEME: &str = "http://";
+const LOOPBACK_HOSTS: [&str; 3] = ["127.0.0.1", "localhost", "[::1]"];
+
+/// Whether a base URL may carry a bearer token: HTTPS, or plain HTTP to a
+/// loopback address (the unit tests' local server). Nothing else, so a
+/// misconfigured endpoint cannot send a token in clear across a network.
+#[must_use]
+pub fn is_trusted_base(base: &str) -> bool {
+    if base.starts_with(HTTPS_SCHEME) {
+        return true;
+    }
+    let Some(rest) = base.strip_prefix(HTTP_SCHEME) else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    // `[::1]:80` keeps its brackets; `host:80` loses its port.
+    let host = match authority.split_once(']') {
+        Some((v6, _)) if authority.starts_with('[') => &authority[..=v6.len()],
+        _ => authority.split(':').next().unwrap_or_default(),
+    };
+    LOOPBACK_HOSTS.contains(&host)
 }
 
 /// The state of an `Azure-AsyncOperation`.
