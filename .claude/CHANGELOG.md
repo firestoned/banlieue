@@ -25,6 +25,49 @@ but its `~5.1` pins held downstream locks (mediatore's) below the fixed release.
 - [ ] Documentation only
 - Dependency and MSRV change only: building needs Rust 1.95 or newer; no code or behaviour change.
 
+## [2026-11-24 22:00] - banlieue-azure: the ARM HTTP client, the federated token source and the live tier (ADR-0164, ADR-0159, roadmap 23 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-azure/src/client.rs`: `ArmClient`, the `reqwest` implementation of `ArmApi`, and
+  `ArmConfig`. `api-version` pinned per resource type (VM 2024-07-01, NIC 2024-05-01, disk 2024-03-02, SKUs
+  2021-07-01, usages 2024-07-01, resources 2021-04-01). Resource group, name, location and subscription are
+  checked as path segments before any request. Every URL that carries the bearer token is checked to sit
+  under the endpoint, including `nextLink` pages and an operation handle read back from a CR's status. No
+  redirects; responses capped (32 MiB default). Delete: 204 and a resource's 404 are success, a missing
+  resource group is not. `Location` operations: 202 running, 2xx done, 429 and 5xx retryable errors, any
+  other status the operation's failure. A 401 drops the cached token. POSTs carry `Content-Length: 0`
+  (reqwest sends none for an empty body; ARM answers 411).
+- `crates/banlieue-azure/src/auth.rs`: `TokenProvider`, `FederatedConfig` (from the workload identity
+  variables `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_FEDERATED_TOKEN_FILE`, `AZURE_AUTHORITY_HOST`) and
+  `FederatedToken`: reads the projected ServiceAccount token on each exchange (the kubelet rotates it),
+  exchanges it at Entra ID, caches it until the refresh margin, one exchange at a time. Its `Debug` prints
+  no token.
+- `crates/banlieue-azure/src/operation.rs`: `is_trusted_base`: HTTPS, or plain HTTP to a loopback address
+  only (the unit tests' local server); `ensure_under_endpoint` uses it.
+- `crates/banlieue-azure/src/test_server.rs` (test only): the one-shot local server, as in banlieue-proxmox.
+- `crates/banlieue-azure/tests/live_arm.rs`: live protocol tier, `#[ignore]`d, failing loudly without its
+  variables: token exchange, resource listing, a missing VM, SKUs, usages, and a create-boot-delete
+  lifecycle that fails if anything it tagged is left behind.
+- Tests: 118 unit tests (32 new: `client_tests.rs`, `auth_tests.rs`, one in `operation_tests.rs`).
+- `Cargo.toml` (crate): `reqwest` and `tokio` (`fs`, `sync`) from the workspace; dev `rustls`. No new
+  third-party crates.
+
+### Verified live
+The five read tests pass against a real subscription, with the token from a kind cluster's ServiceAccount
+exchanged through a federated credential; the identity held Reader on one resource group and nothing else.
+The subscription-level `Microsoft.Compute/skus` and `locations/usages` reads succeeded with that alone.
+
+### Changed
+- `.github/community/23-azure-provider.md`, `ROADMAPS.md`: phase A status.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-24 20:30] - Threat model: pass for ADR-0145 and the Firecracker code in the tree; roadmap 20 status corrected
 
 **Author:** Erick Bourgeois

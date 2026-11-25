@@ -13,7 +13,8 @@ authors.workspace = true
 
 # Protocol only, like banlieue-proxmox and banlieue-libvirt: no `kube`, no
 # banlieue API types. Every dependency below is already in the lockfile, so
-# this crate compiles no new third-party code (ADR-0164 Decision 2).
+# this crate compiles no new third-party code (ADR-0164 Decision 2). reqwest
+# is the workspace's (rustls, no bundled provider), as banlieue-proxmox uses.
 
 [dependencies]
 async-trait.workspace = true
@@ -22,9 +23,14 @@ base64.workspace = true
 form_urlencoded = "1"
 # Timestamps for the orphan sweep's grace period (ARM `createdTime`).
 jiff.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "sync"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+# reqwest's `rustls-no-provider` panics at client build without a process
+# default provider; the binary installs it, tests do it themselves.
+rustls.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time"] }

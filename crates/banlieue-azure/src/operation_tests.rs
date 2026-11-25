@@ -75,6 +75,28 @@ mod tests {
     }
 
     #[test]
+    fn a_loopback_http_endpoint_is_trusted_for_local_tests_only() {
+        assert!(is_trusted_base("https://management.azure.com"));
+        for local in [
+            "http://127.0.0.1:8080",
+            "http://localhost:1",
+            "http://[::1]:9",
+        ] {
+            assert!(is_trusted_base(local), "{local}");
+            assert!(ensure_under_endpoint(&format!("{local}/op"), local).is_ok());
+        }
+        for bad in [
+            "http://management.azure.com",
+            "http://127.0.0.1.attacker.example.com",
+            "http://localhost.attacker.example.com:80",
+            "ftp://127.0.0.1",
+            "127.0.0.1:80",
+        ] {
+            assert!(!is_trusted_base(bad), "{bad}");
+        }
+    }
+
+    #[test]
     fn statuses_parse() {
         assert_eq!(
             parse_operation_status(br#"{"status":"InProgress"}"#).expect("ok"),
