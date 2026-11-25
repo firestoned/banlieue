@@ -1,5 +1,51 @@
 # Changelog
 
+## [2026-11-25 12:45] - Release prep: v0.6.0
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `[workspace.package]` version `0.5.0` to `0.6.0` (`make set-version VERSION=0.6.0`). All 19
+  crates inherit it with `version.workspace = true`; none carries its own version.
+- `Cargo.lock`: `cargo update --workspace`; the 19 workspace crates move to 0.6.0. It also records
+  `banlieue-azure`'s `reqwest` and `rustls` dependencies, which #238 added to its `Cargo.toml` without the
+  lock picking them up. No third-party version moved.
+- `config/clusterctl/metadata.yaml`: a `0.6` release series on contract `v1beta2` (ADR-0096 Decision 3),
+  without which `clusterctl_metadata_has_an_entry_for_the_workspace_series` fails and `clusterctl init`
+  could not install v0.6.0.
+- `deploy/controller/deployment.yaml`, `deploy/imagebuilder/deployment.yaml`,
+  `deploy/operator/deployment.yaml`, `deploy/provider-vsphere/deployment.yaml`: image pinned to
+  `ghcr.io/firestoned/banlieue:v0.6.0` (was `v0.5.9`).
+- `docs/src/developer/rust-api-crate.md`: `banlieue-api = "=0.6.0"` and the prose naming the release.
+- `examples/10-providerclass-vsphere.yaml`, `examples/11-providerclass-libvirt.yaml`: the stable class pins
+  `v0.6.0` (was `v0.4.0`); the canary class pins the next release, `v0.7.0`, as #83 did.
+- `docs/src/guides/provider-lifecycle.md`, `docs/architecture/calm/architecture.json`,
+  `docs/src/architecture/flows.md`: the upgrade-flow example patches the class to the next release,
+  `v0.7.0` (was `v0.5.0`).
+- `CHANGELOG.md`: regenerated with git-cliff (`make changelog TAG=v0.6.0`). Every stable tag from v0.1.0
+  to v0.5.10 now has its own section, and the commits since v0.5.10 land under 0.6.0 (the rc tags do not
+  match `tag_pattern`, so their commits fold into 0.6.0). The stray `0.6.4` section is gone: that content
+  is v0.1.0's.
+- `docs/src/guides/upgrading-to-0.6.md` (new) and `docs/mkdocs.yml`: the 0.5.x to 0.6.0 migration guide
+  and its nav entry, written alongside this release prep. `docs/src/guides/index.md` links it.
+- `docs/src/developer/rust-api-crate.md`: the example's `kube` pin `5.0` to `5.2`, and the Rust 1.95
+  floor stated (kube 5.2, RUSTSEC-2026-0600).
+- `docs/src/guides/core-controller.md`: CRDs applied with `--server-side`, as the end-to-end setup and the
+  upgrade guide do.
+- `crates/banlieue-controller/src/reconciler/virtualmachine_tests.rs`, `.wolf/cerebrum.md`: real host names
+  (from #234 and #238) replaced with placeholders; `make check-infra-identifiers` is clean again.
+
+### Why
+Cut v0.6.0 from a tree whose manifests, examples and crate version name the release they ship, following
+the pin pattern of #75 and #83.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Release metadata only: version strings, image pins and the generated changelog; no code change.
+
 ## [2026-11-25 12:00] - kube 5.2 for RUSTSEC-2026-0600; workspace MSRV 1.95
 
 **Author:** Erick Bourgeois

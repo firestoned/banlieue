@@ -191,6 +191,7 @@ nav:
           - End-to-End Setup (Bootstrap to Running VMs): guides/end-to-end-setup.md
           - Core Controller: guides/core-controller.md
           - Provider Lifecycle & Install: guides/provider-lifecycle.md
+          - Upgrading from 0.5.x to 0.6.0: guides/upgrading-to-0.6.md
       - Providers:
           - Cloud Hypervisor:
               - Cloud Hypervisor Provider: guides/cloud-hypervisor-host.md

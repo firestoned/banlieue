@@ -425,9 +425,9 @@ mod tests {
 
     fn three() -> Vec<Provider> {
         vec![
-            named_provider("grill"),
-            named_provider("lenny"),
-            named_provider("slate"),
+            named_provider("bar"),
+            named_provider("baz"),
+            named_provider("foo"),
         ]
     }
 
@@ -435,24 +435,24 @@ mod tests {
     fn a_vm_with_no_machine_is_scheduled_over_every_candidate() {
         assert_eq!(
             names(&placement_candidates(three(), None, None)),
-            ["grill", "lenny", "slate"]
+            ["bar", "baz", "foo"]
         );
     }
 
     #[test]
     fn a_vm_whose_machine_exists_but_whose_placement_is_unread_keeps_that_provider() {
         assert_eq!(
-            names(&placement_candidates(three(), None, Some("grill"))),
-            ["grill"]
+            names(&placement_candidates(three(), None, Some("bar"))),
+            ["bar"]
         );
     }
 
     #[test]
     fn a_recorded_placement_leaves_the_candidates_to_the_migration_policy() {
-        let placed = recorded("slate");
+        let placed = recorded("foo");
         assert_eq!(
-            names(&placement_candidates(three(), Some(&placed), Some("grill"))),
-            ["grill", "lenny", "slate"]
+            names(&placement_candidates(three(), Some(&placed), Some("bar"))),
+            ["bar", "baz", "foo"]
         );
     }
 
@@ -460,7 +460,7 @@ mod tests {
     fn a_machine_on_a_provider_no_longer_a_candidate_does_not_pin_the_vm() {
         assert_eq!(
             names(&placement_candidates(three(), None, Some("gone"))),
-            ["grill", "lenny", "slate"]
+            ["bar", "baz", "foo"]
         );
     }
 }
