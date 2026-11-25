@@ -454,6 +454,38 @@ lan = "br0"
         assert!(!machine_files_exist(&h.plan));
     }
 
+    /// Missing means definitely gone (`NotFound`): absent before manufacture
+    /// and after removal, present once reset for manufacture. Without a
+    /// vTPM nothing is missing.
+    #[test]
+    fn tpm_state_is_missing_only_when_its_directory_is_gone() {
+        let h = host_with(true);
+        let t = h.plan.tpm.clone().unwrap();
+        prepare_dirs(&h.plan, sys::effective_gid()).unwrap();
+        prepare_tpm(&h.plan, sys::effective_uid(), sys::effective_gid()).unwrap();
+        assert!(tpm_state_missing(&h.plan));
+        reset_tpm_state(&h.plan, sys::effective_uid(), sys::effective_gid()).unwrap();
+        assert!(!tpm_state_missing(&h.plan));
+        std::fs::remove_dir_all(&t.state_dir).unwrap();
+        assert!(tpm_state_missing(&h.plan));
+        assert!(!tpm_state_missing(&host().plan));
+    }
+
+    /// A machine whose TPM state was deleted under it (its EK files kept)
+    /// is still removed cleanly.
+    #[test]
+    fn removal_tolerates_a_tpm_state_that_is_already_gone() {
+        let h = host_with(true);
+        let t = h.plan.tpm.clone().unwrap();
+        prepare_dirs(&h.plan, sys::effective_gid()).unwrap();
+        prepare_tpm(&h.plan, sys::effective_uid(), sys::effective_gid()).unwrap();
+        std::fs::write(t.ek_dir.join("ek-rsa2048.crt"), b"\x30\x02rs").unwrap();
+        assert!(!t.state_dir.exists());
+        remove_machine(&h.plan).unwrap();
+        assert!(!t.ek_dir.exists());
+        assert!(!machine_files_exist(&h.plan));
+    }
+
     /// ADR-0065 Decision 3: `Deferred` starts from an empty, sparse OS disk
     /// of the requested size; the image (the installer) is never copied.
     #[test]

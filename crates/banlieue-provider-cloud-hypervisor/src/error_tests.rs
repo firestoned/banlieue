@@ -19,5 +19,9 @@ mod tests {
         assert_eq!(Error::Import("no pool".into()).kind(), "Import");
         assert_eq!(Error::Missing("spec.classRef").kind(), "Missing");
         assert_eq!(Error::Io(std::io::Error::other("disk full")).kind(), "Io");
+        assert_eq!(
+            Error::TpmStateLost("/var/lib/banlieue/tpm/2000000".into()).kind(),
+            "TpmStateLost"
+        );
     }
 }

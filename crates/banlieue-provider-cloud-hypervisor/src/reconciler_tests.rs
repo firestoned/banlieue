@@ -315,6 +315,34 @@ mod tests {
         assert!(!is_permanent(&died), "retried, with backoff");
     }
 
+    /// A lost vTPM state cannot come back by retrying: its own reason, and
+    /// the long requeue instead of the 5 s error one (found live: thousands
+    /// of retries a day, each logged).
+    #[test]
+    fn a_lost_tpm_state_is_its_own_reason_and_permanent() {
+        let lost = Error::TpmStateLost("/var/lib/banlieue/tpm/2000000".into());
+        assert_eq!(failure_reason(&lost), "TpmStateLost");
+        assert_eq!(failure_reason(&lost), crate::machine::REASON_TPM_STATE_LOST);
+        assert!(is_permanent(&lost));
+    }
+
+    /// Only a recorded EK certificate says the TPM was manufactured;
+    /// `tpmAttached` is set from the spec before manufacture even starts.
+    #[test]
+    fn the_tpm_identity_is_recorded_only_once_an_ek_is_published() {
+        assert!(!tpm_identity_recorded(None));
+        let attached = CloudHypervisorMachineStatus {
+            tpm_attached: Some(true),
+            ..Default::default()
+        };
+        assert!(!tpm_identity_recorded(Some(&attached)));
+        let recorded = CloudHypervisorMachineStatus {
+            tpm_endorsement_certificates: vec!["pem".into()],
+            ..attached
+        };
+        assert!(tpm_identity_recorded(Some(&recorded)));
+    }
+
     // ----------------------------------------------------------------------
     // ADR-0129: hold a CAPI machine's guest until its bootstrap data is there
     // ----------------------------------------------------------------------

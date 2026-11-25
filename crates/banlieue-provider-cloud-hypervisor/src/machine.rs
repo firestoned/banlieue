@@ -43,6 +43,10 @@ use banlieue_provider_sdk::status::{condition_status, set_condition};
 use std::net::Ipv4Addr;
 use tracing::{info, warn};
 
+/// `Ready=False` reason for a machine whose vTPM state is gone
+/// ([`Error::TpmStateLost`]; ADR-0065 amendment 2026-11-25).
+pub const REASON_TPM_STATE_LOST: &str = "TpmStateLost";
+
 /// Where a machine is after one converge pass.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub enum Phase {
@@ -198,6 +202,9 @@ async fn ensure_tpm(host: &dyn HostOps, plan: &MachinePlan) -> Result<bool> {
         return Ok(true);
     };
     host.prepare_tpm(plan).await?;
+    // Before anything is adopted, re-manufactured or started: a TPM whose
+    // state is gone is lost, not retried (ADR-0065 amendment 2026-11-25).
+    check_tpm_state(host, plan, false).await?;
     if !host.tpm_manufactured(plan).await {
         match host.unit_state(&t.setup_unit).await? {
             // Kept failed, not cleared: manufacture fails for host reasons
@@ -256,6 +263,36 @@ async fn ensure_tpm(host: &dyn HostOps, plan: &MachinePlan) -> Result<bool> {
             Ok(false)
         }
     }
+}
+
+/// Whether the machine's vTPM still has its state (ADR-0065 amendment
+/// 2026-11-25).
+///
+/// A TPM is manufactured when `ek_recorded` (status holds its EK
+/// certificate) or the host holds its EK files. Its state directory gone
+/// after that means its identity is lost for good: the endorsement key
+/// lived only there. Nothing here, and nothing in [`converge`], ever
+/// manufactures a fresh TPM in its place, which would change the attested
+/// identity under the same machine. A machine without a vTPM, or one not
+/// manufactured yet, passes.
+///
+/// # Errors
+/// [`Error::TpmStateLost`], naming the missing directory.
+pub async fn check_tpm_state(
+    host: &dyn HostOps,
+    plan: &MachinePlan,
+    ek_recorded: bool,
+) -> Result<()> {
+    let Some(t) = &plan.tpm else {
+        return Ok(());
+    };
+    if !host.tpm_state_missing(plan).await {
+        return Ok(());
+    }
+    if ek_recorded || host.tpm_manufactured(plan).await {
+        return Err(Error::TpmStateLost(t.state_dir.clone()));
+    }
+    Ok(())
 }
 
 /// Read why `unit` failed, clear it so the next pass can retry, and return
@@ -560,6 +597,33 @@ pub fn failure_status(
         detail.to_string(),
         generation,
     );
+    st
+}
+
+/// The status for a machine whose vTPM state is lost (`detail` is the
+/// [`Error::TpmStateLost`] message): `Ready=False` with
+/// [`REASON_TPM_STATE_LOST`], not provisioned, and no TPM attached.
+///
+/// `vmm_running` is whether its VMM unit is still up: the provider never
+/// starts it again but does not stop one that runs, so the power state and
+/// addresses say what is there rather than what an earlier pass saw. The
+/// recorded EK certificates stay, as the record of the identity lost.
+#[must_use]
+pub fn tpm_state_lost_status(
+    previous: Option<&CloudHypervisorMachineStatus>,
+    detail: &str,
+    vmm_running: bool,
+    generation: i64,
+) -> CloudHypervisorMachineStatus {
+    let mut st = failure_status(previous, detail, REASON_TPM_STATE_LOST, generation);
+    st.tpm_attached = Some(false);
+    if vmm_running {
+        st.observed_power_state = Some(PowerState::PoweredOn);
+        return st;
+    }
+    st.observed_power_state = Some(PowerState::PoweredOff);
+    st.addresses.clear();
+    st.address_source = None;
     st
 }
 

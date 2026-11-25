@@ -57,6 +57,9 @@ pub trait HostOps: Send + Sync {
     async fn tpm_manufactured(&self, plan: &MachinePlan) -> bool;
     /// Hand the manufactured TPM state to the guest's uid.
     async fn adopt_tpm_state(&self, plan: &MachinePlan) -> Result<()>;
+    /// Whether the TPM state directory is definitely gone (`false` without
+    /// a vTPM, and on any doubt).
+    async fn tpm_state_missing(&self, plan: &MachinePlan) -> bool;
     /// The EK certificates the host minted, as PEM.
     async fn ek_certificates(&self, plan: &MachinePlan) -> Result<Vec<String>>;
     /// Whether swtpm's control socket is up.
@@ -237,6 +240,10 @@ impl HostOps for RealHost {
     async fn adopt_tpm_state(&self, plan: &MachinePlan) -> Result<()> {
         let (plan, group) = (plan.clone(), self.group);
         blocking(move || hostfs::adopt_tpm_state(&plan, group)).await
+    }
+
+    async fn tpm_state_missing(&self, plan: &MachinePlan) -> bool {
+        hostfs::tpm_state_missing(plan)
     }
 
     async fn ek_certificates(&self, plan: &MachinePlan) -> Result<Vec<String>> {

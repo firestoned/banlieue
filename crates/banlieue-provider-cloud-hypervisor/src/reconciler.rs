@@ -19,7 +19,10 @@
 use crate::error::{Error, Result};
 use crate::host::HostOps;
 use crate::host_config::{GuestsSection, HostConfig};
-use crate::machine::{Observed, Phase, build_status, converge, failure_status, teardown};
+use crate::machine::{
+    Observed, Phase, REASON_TPM_STATE_LOST, build_status, check_tpm_state, converge,
+    failure_status, teardown, tpm_state_lost_status,
+};
 use crate::plan::{PlanError, UidLedger, plan_machine};
 use crate::provider::{HostCaHold, current_host_ca_hold};
 use banlieue_api::capi::{
@@ -182,6 +185,7 @@ pub fn failure_reason(e: &Error) -> &'static str {
         Error::VmmExited(_) => "VmmExited",
         Error::Systemd(_) => "SystemdError",
         Error::UidRangeFull => "GuestUidRangeFull",
+        Error::TpmStateLost(_) => REASON_TPM_STATE_LOST,
         _ => "HostError",
     }
 }
@@ -189,7 +193,18 @@ pub fn failure_reason(e: &Error) -> &'static str {
 /// Whether an error will not go away by retrying soon.
 #[must_use]
 pub fn is_permanent(e: &Error) -> bool {
-    matches!(e, Error::Plan(_) | Error::UidRangeFull)
+    matches!(
+        e,
+        Error::Plan(_) | Error::UidRangeFull | Error::TpmStateLost(_)
+    )
+}
+
+/// Whether status records that this machine's vTPM was manufactured: an EK
+/// certificate was published. `tpmAttached` does not say so; it follows the
+/// spec from the first pass, before manufacture.
+#[must_use]
+pub fn tpm_identity_recorded(previous: Option<&CloudHypervisorMachineStatus>) -> bool {
+    previous.is_some_and(|s| !s.tpm_endorsement_certificates.is_empty())
 }
 
 /// Reconcile one machine.
@@ -315,20 +330,44 @@ pub async fn reconcile(machine: Arc<CloudHypervisorMachine>, ctx: Arc<Context>) 
         patch_provider_id(&api, &name, &plan.provider_id, &field_manager).await?;
     }
 
-    match converge(
-        ctx.host.as_ref(),
-        &plan,
-        &name,
-        machine.spec.user_data.as_deref(),
-        &machine.spec.desired_power_state,
-    )
-    .await
-    {
+    // A vTPM whose state is gone is lost, whatever the desired power state:
+    // checked before converging, so nothing is restarted or re-manufactured
+    // for it (ADR-0065 amendment 2026-11-25).
+    let ek_recorded = tpm_identity_recorded(previous);
+    let converged = match check_tpm_state(ctx.host.as_ref(), &plan, ek_recorded).await {
+        Ok(()) => {
+            converge(
+                ctx.host.as_ref(),
+                &plan,
+                &name,
+                machine.spec.user_data.as_deref(),
+                &machine.spec.desired_power_state,
+            )
+            .await
+        }
+        Err(e) => Err(e),
+    };
+    match converged {
         Ok(o) => {
             let st = build_status(previous, &o, &plan, &ctx.config.provider.name, generation);
             patch_status(&api, &name, &st, &field_manager).await?;
             let sealing_due = sealing_report_due(plan.first_boot_sealing.as_ref(), &st, o.now);
             Ok(requeue_for(&o, sealing_due))
+        }
+        Err(e @ Error::TpmStateLost(_)) => {
+            warn!(
+                machine = %name,
+                error = %e,
+                "vTPM state lost; the machine must be recreated"
+            );
+            let vmm_running = ctx
+                .host
+                .unit_state(&plan.unit)
+                .await?
+                .is_some_and(|s| s.is_running());
+            let st = tpm_state_lost_status(previous, &e.to_string(), vmm_running, generation);
+            patch_status(&api, &name, &st, &field_manager).await?;
+            Ok(requeue_long())
         }
         Err(e) => {
             warn!(machine = %name, error = %e, "converge failed");

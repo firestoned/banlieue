@@ -16,7 +16,8 @@ SPDX-License-Identifier: Apache-2.0
   outside the guest's directory, and manufacture happens once; see
   *Implementation notes*); 2026-09-27 (Decision 3: the VMM attaches the
   machine's own read-only copy of the installer, not the cache file;
-  `Deferred` verified live)
+  `Deferred` verified live); 2026-11-25 (lost TPM state is terminal: see
+  *Amendment 2026-11-25*)
 - **Related:** [ADR-0040](0040-deferred-install-for-vtpm-encryption.md)
   (`Deferred` install), [ADR-0043](0043-guestready-installed-guest-signal.md)
   (`GuestReady`), [ADR-0044](0044-detach-install-media-after-install.md)
@@ -312,6 +313,32 @@ planned).
   `socat` remains an alternative for older images.
 - **Shared code.** `expected_ek_cn`, `ek_cn_matches` and `parse_ek_pem_str`
   moved from the libvirt provider to `banlieue-provider-sdk::ek`.
+
+## Amendment 2026-11-25: lost TPM state is terminal
+
+A machine whose vTPM was manufactured (an EK certificate recorded in
+status, or the host's EK files for it present) but whose state directory
+`<state_root>/tpm/<host uid>` is gone has lost its TPM identity for good:
+the endorsement key lived only in that state. Found live when a guest-uid
+reuse bug (fixed in v0.6.0) let another machine's teardown delete it; the
+provider then retried the swtpm start every 5 s forever, reporting a
+generic `HostError`.
+
+- The provider checks for this before converging, and again before it
+  adopts the state, and never manufactures a fresh TPM in its place: a new
+  EK under the same machine would change its attested identity silently.
+- It reports `Ready=False` with reason `TpmStateLost` and a message telling
+  the user to delete and recreate the machine, sets `tpmAttached: false`,
+  and reports the power state it observes (a dead VMM is not restarted;
+  a running one is left alone). The recorded EK certificates stay, as the
+  record of the identity that was lost.
+- The error is permanent: the machine is looked at again on the long
+  requeue, not the 5 s error one.
+- Deletion is unchanged: teardown already treats an absent directory as
+  removed.
+
+A future vTPM move (ADR-0127 Stage 2) must create the destination's state
+before its machine records an EK, or this check will (correctly) refuse it.
 
 ## Consequences
 

@@ -780,6 +780,153 @@ mod tests {
         assert!(!s.units.contains_key(&plan.unit));
     }
 
+    // ------------------------------------------------------------------
+    // Lost vTPM state (ADR-0065 amendment 2026-11-25)
+    // ------------------------------------------------------------------
+
+    /// A guest brought all the way up with its vTPM, then its TPM state
+    /// directory deleted and its units stopped by another machine's
+    /// teardown (the uid-reuse bug fixed in v0.6.0).
+    async fn running_then_tpm_state_lost(h: &FakeHost, plan: &MachinePlan) {
+        tpm_pass(h, plan).await.unwrap();
+        h.finish_tpm_setup(plan);
+        for _ in 0..3 {
+            tpm_pass(h, plan).await.unwrap();
+        }
+        h.lose_tpm_state(plan);
+    }
+
+    /// Found live: the host still had this machine's EK files, but not its
+    /// TPM state, so every pass failed adopting it with a generic host error
+    /// and retried every few seconds, forever. The pass now says the state
+    /// is lost, and neither re-manufactures nor adopts nor starts anything.
+    #[tokio::test]
+    async fn a_manufactured_tpm_whose_state_is_gone_is_lost_not_remanufactured() {
+        let plan = tpm_plan();
+        let t = plan.tpm.clone().unwrap();
+        let h = host(&plan);
+        running_then_tpm_state_lost(&h, &plan).await;
+        h.state.lock().unwrap().calls.clear();
+
+        let e = tpm_pass(&h, &plan).await.unwrap_err();
+        assert!(matches!(e, Error::TpmStateLost(_)), "{e}");
+
+        let s = h.state.lock().unwrap();
+        assert!(
+            !s.calls.iter().any(|c| c == "reset_tpm_state"
+                || c == "adopt_tpm_state"
+                || c.starts_with("start_unit")),
+            "nothing is re-manufactured, adopted or started: {:?}",
+            s.calls
+        );
+        assert!(!s.units.contains_key(&t.unit));
+        assert!(!s.units.contains_key(&plan.unit));
+    }
+
+    /// The check the reconciler makes before converging: a TPM whose EK is
+    /// recorded in status, or whose EK files the host holds, and whose state
+    /// is gone, is lost. A fresh TPM is never manufactured in its place: that
+    /// would change the attested identity under the same machine.
+    #[tokio::test]
+    async fn the_tpm_state_is_lost_when_the_ek_is_recorded_but_the_state_is_gone() {
+        let plan = tpm_plan();
+        let h = host(&plan);
+        let e = check_tpm_state(&h, &plan, true).await.unwrap_err();
+        assert!(matches!(e, Error::TpmStateLost(_)), "{e}");
+        let message = e.to_string();
+        assert!(message.contains("cannot be recovered"), "{message}");
+        assert!(message.contains("delete and recreate"), "{message}");
+    }
+
+    /// The host's EK files alone mark manufacture, even when status never
+    /// recorded the EK (the guest never reached `Running`).
+    #[tokio::test]
+    async fn the_tpm_state_is_lost_when_the_host_holds_the_ek_but_not_the_state() {
+        let plan = tpm_plan();
+        let h = host(&plan);
+        h.finish_tpm_setup(&plan);
+        h.lose_tpm_state(&plan);
+        assert!(matches!(
+            check_tpm_state(&h, &plan, false).await,
+            Err(Error::TpmStateLost(_))
+        ));
+    }
+
+    /// A new machine has no state yet and no EK anywhere: it is manufactured
+    /// as usual. A machine whose state is there, or that has no vTPM, passes.
+    #[tokio::test]
+    async fn the_tpm_state_check_passes_a_new_a_healthy_and_a_tpm_less_machine() {
+        let plan = tpm_plan();
+        let h = host(&plan);
+        check_tpm_state(&h, &plan, false).await.unwrap();
+
+        tpm_pass(&h, &plan).await.unwrap();
+        h.finish_tpm_setup(&plan);
+        check_tpm_state(&h, &plan, true).await.unwrap();
+
+        let plain = plan_for(&spec());
+        check_tpm_state(&host(&plain), &plain, true).await.unwrap();
+    }
+
+    /// Deleting a machine whose TPM state is gone still tears it down
+    /// cleanly: absent is success.
+    #[tokio::test]
+    async fn teardown_succeeds_when_the_tpm_state_is_already_gone() {
+        let plan = tpm_plan();
+        let h = host(&plan);
+        running_then_tpm_state_lost(&h, &plan).await;
+        teardown(&h, &plan).await.unwrap();
+        assert!(!h.files_exist(&plan).await);
+    }
+
+    fn lost_previous() -> CloudHypervisorMachineStatus {
+        CloudHypervisorMachineStatus {
+            host_uid: Some(HOST_UID),
+            observed_power_state: Some(PowerState::PoweredOn),
+            tpm_attached: Some(true),
+            tpm_endorsement_certificates: vec!["pem".into()],
+            addresses: vec![banlieue_api::common::MachineAddress {
+                address_type: banlieue_api::common::MachineAddressType::InternalIP,
+                address: "192.0.2.10".into(),
+            }],
+            address_source: Some(ChAddressSource::Neighbour),
+            ..Default::default()
+        }
+    }
+
+    /// The status of a lost machine: `Ready=False, TpmStateLost` with the
+    /// actionable message, and no stale `PoweredOn` or `tpmAttached` left
+    /// from before. The recorded EK stays, as the record of the identity
+    /// that was lost.
+    #[test]
+    fn a_lost_tpm_reports_its_reason_and_corrects_the_stale_status() {
+        let e = Error::TpmStateLost("/var/lib/banlieue/tpm/2000000".into());
+        let st = tpm_state_lost_status(Some(&lost_previous()), &e.to_string(), false, 3);
+        let ready = st.conditions.iter().find(|c| c.type_ == "Ready").unwrap();
+        assert_eq!(ready.status, "False");
+        assert_eq!(ready.reason, REASON_TPM_STATE_LOST);
+        assert!(ready.message.contains("delete and recreate"));
+        assert_eq!(st.observed_power_state, Some(PowerState::PoweredOff));
+        assert_eq!(st.tpm_attached, Some(false));
+        assert_eq!(st.initialization.provisioned, Some(false));
+        assert!(st.addresses.is_empty(), "a stopped guest has no address");
+        assert_eq!(st.address_source, None);
+        assert_eq!(st.tpm_endorsement_certificates, vec!["pem".to_string()]);
+        assert_eq!(st.host_uid, Some(HOST_UID));
+        assert_eq!(st.observed_generation, Some(3));
+    }
+
+    /// A VMM still running (its state deleted under it) is reported as it
+    /// is, and keeps its addresses: the provider does not stop it, it only
+    /// never starts it again.
+    #[test]
+    fn a_lost_tpm_under_a_running_vmm_still_reports_it_powered_on() {
+        let st = tpm_state_lost_status(Some(&lost_previous()), "lost", true, 3);
+        assert_eq!(st.observed_power_state, Some(PowerState::PoweredOn));
+        assert_eq!(st.tpm_attached, Some(false));
+        assert_eq!(st.addresses.len(), 1);
+    }
+
     #[tokio::test]
     async fn status_publishes_the_tpm_and_its_ek() {
         let plan = tpm_plan();

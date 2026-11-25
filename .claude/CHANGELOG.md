@@ -1,5 +1,42 @@
 # Changelog
 
+## [2026-11-25 14:00] - Cloud Hypervisor: a lost vTPM state is terminal, not a 5 s retry loop
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/error.rs`: new `Error::TpmStateLost(path)`, metric kind
+  `TpmStateLost`; its message says the identity cannot be recovered and to delete and recreate the machine.
+- `crates/banlieue-provider-cloud-hypervisor/src/machine.rs`: `check_tpm_state` (manufactured, by a recorded
+  EK or the host's EK files, and the state directory gone is lost), called in `ensure_tpm` before anything
+  is adopted, re-manufactured or started; `tpm_state_lost_status` (`Ready=False, TpmStateLost`,
+  `tpmAttached: false`, observed power state, addresses cleared when the VMM is down, EK kept);
+  `REASON_TPM_STATE_LOST`.
+- `crates/banlieue-provider-cloud-hypervisor/src/reconciler.rs`: the check runs before `converge` with
+  `tpm_identity_recorded(status)`; `TpmStateLost` maps to its own reason, is permanent, and requeues on the
+  long interval (300 s) instead of the 5 s error one. No running VMM is stopped.
+- `crates/banlieue-provider-cloud-hypervisor/src/hostfs.rs`, `src/host.rs`: `tpm_state_missing` (only a
+  definite `NotFound` counts) on `HostOps` and `RealHost`.
+- `crates/banlieue-provider-cloud-hypervisor/src/fake.rs`: the fake tracks TPM state directories, refuses to
+  adopt a missing one as the real host does, and gains `lose_tpm_state`.
+- Tests: `machine_tests.rs`, `reconciler_tests.rs`, `hostfs_tests.rs`, `error_tests.rs` (11 new tests,
+  including teardown with the state already gone).
+- `docs/adr/0065-cloud-hypervisor-vtpm-and-deferred-install.md`: amendment 2026-11-25.
+- `docs/src/guides/upgrading-to-0.6.md`: a behaviour-change bullet.
+
+### Why
+A guest whose swtpm state directory was deleted (by the guest-uid reuse fixed in PR #234) was retried every
+5 s forever, logging thousands of lines, and reported a generic `HostError` while status still claimed
+`PoweredOn` and `tpmAttached: true`. The TPM identity is unrecoverable, and manufacturing a fresh TPM under
+the same machine would change its attested identity silently.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Cloud Hypervisor hosts pick it up with the v0.6.0 provider. No CRD or API change.
+
 ## [2026-11-25 12:45] - Release prep: v0.6.0
 
 **Author:** Erick Bourgeois
