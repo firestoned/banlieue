@@ -16,7 +16,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/firestoned/banlieue/badge)](https://scorecard.dev/viewer/?uri=github.com/firestoned/banlieue)
 
 [![License](https://img.shields.io/github/license/firestoned/banlieue?color=blue)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![Docs site](https://img.shields.io/badge/docs-firestoned.github.io%2Fbanlieue-informational?logo=materialformkdocs)](https://firestoned.github.io/banlieue/)
 [![Status](https://img.shields.io/badge/status-In%20Development-orange)](#project-status)
 [![Issues](https://img.shields.io/github/issues/firestoned/banlieue)](https://github.com/firestoned/banlieue/issues)

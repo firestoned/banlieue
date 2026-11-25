@@ -6,7 +6,7 @@ image, no real vCenter. For installing a **release** on a real cluster, use the
 
 ## Prerequisites
 
-- Rust toolchain (the workspace MSRV is **1.89+**; `rustup` will honour
+- Rust toolchain (the workspace MSRV is **1.95+**; `rustup` will honour
   `rust-version`).
 - `kubectl`, and [`kind`](https://kind.sigs.k8s.io/) for a throwaway cluster.
 - `docker` (for `vcsim` and for building the container image).
