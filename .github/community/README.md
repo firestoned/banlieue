@@ -81,7 +81,7 @@ Phase 1A (controller + SDK)  ✅
 
    19 (port groups)          ⛔   after 1B/1D; phase E builds on 1C/1F
 
-   20 (Firecracker)          ⛔   after 1F (shares its host layer) and 17 (its consumer); spike gates the rest
+   20 (Firecracker)          🔶   API and two libraries in the tree, no provider; the GuestReady gate is still open
 
    21 (PCI passthrough)      ⛔   after 1F; ADR-0136 Proposed
 
