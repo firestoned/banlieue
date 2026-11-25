@@ -19,16 +19,26 @@
 > A `GuestReady` pool on a `firecracker` Provider warms and refills, and its
 > numbers sit next to Cloud Hypervisor's in the provider comparison.
 >
-> **Status (2026-11-19): design decided, no Firecracker code.** The phase 0
-> spike has been run on two bare-metal hosts and its measurements are recorded
-> in ADRs 0137, 0138, 0140, 0142 and 0143 (see "What the ADRs decided" below);
-> ADR-0139, the installer prerequisite for a host without systemd userdb or
-> cgroup v2, is implemented (phase 1, installer only). CALM models all of
-> ADR-0137 to ADR-0143 (`docs/architecture/calm/architecture.json`, marked
-> `DESIGNED, NOT IMPLEMENTED`). No `FirecrackerMachine` type, provider crate,
-> host installer verb, `OciArtifact` image kind or attestation CA exists in
-> `crates/` or `deploy/`. The end-to-end time to `GuestReady` is not measured,
-> so the phase 0 gate below is still open.
+> **Status (2026-11-19): in progress; the API and two libraries exist, nothing
+> runs a guest.** The phase 0 spike has been run on two bare-metal hosts and its
+> measurements are recorded in ADRs 0137, 0138, 0140, 0142 and 0143 (see "What
+> the ADRs decided" below); ADR-0139, the installer prerequisite for a host
+> without systemd userdb or cgroup v2, is implemented (phase 1, installer only).
+> CALM models all of ADR-0137 to ADR-0143 (`docs/architecture/calm/architecture.json`).
+> In the tree (corrected 2026-11-19; an earlier version of this paragraph said
+> none of it existed): the `FirecrackerMachine` and `FirecrackerMachineTemplate`
+> types and CRDs, `Provider.spec.attestation.hostCa`, the `OciArtifact` image
+> kind, the `attestationSubject` mirror to the `VirtualMachine` and the claim
+> (#214), the microvm artifact format in `banlieue-oci` and an attestation signer
+> in `banlieue-provider-firecracker` (#224). Not in the tree: a provider, a host
+> installer verb, controller dispatch, or any caller of either library. The
+> served parts had their threat-model pass on 2026-11-19. The end-to-end time to
+> `GuestReady` is not measured, so the phase 0 gate below is still open.
+>
+> **Before the provider links an attestation signer:** ADR-0146 makes
+> `banlieue-attestation-ca` the one implementation both providers share. The
+> `attest` module in `banlieue-provider-firecracker` is a second one, and is to
+> be replaced by, or reconciled with, the shared crate first.
 >
 > **Build it shared-capable from the first commit** (ADR-0133): `FirecrackerMachine.spec.providerRef`
 > is a `ProviderReference`, and the provider serves tenant namespaces through `ProviderScope` and
@@ -359,19 +369,29 @@ the ADR is written, not that anything is built.
 
 ## D. API, CRDs and dispatch
 
-- [ ] `FirecrackerMachine` and `FirecrackerMachineTemplate` in
-      `banlieue-api`; `regen-crds`; examples; API reference.
-- [ ] `Provider.spec.attestation.hostCa` (exactly one certificate, admission
+- [x] `FirecrackerMachine` and `FirecrackerMachineTemplate` in
+      `banlieue-api`; `regen-crds`; examples; API reference. *Done (#214):
+      `crates/banlieue-api/src/infrastructure/firecracker_machine.rs`,
+      `deploy/crds/infrastructure.banlieue.io_firecrackermachine{s,templates}.yaml`,
+      `examples/30-firecrackermachine.yaml`, `docs/src/reference/api.md`. The spec
+      beyond what ADR-0137 and ADR-0143 name is still the open ADR-0117 question.*
+- [x] `Provider.spec.attestation.hostCa` (exactly one certificate, admission
       rule on the pattern of `ekTrustBundle`) and
       `FirecrackerMachineStatus.attestationSubject` with its claim mirror
-      (ADR-0143); `ImageSource` kind `OciArtifact` (ADR-0142).
+      (ADR-0143); `ImageSource` kind `OciArtifact` (ADR-0142). *Done: `hostCa`
+      with `deploy/admission/provider-attestation-hostca.yaml` (one source) and
+      `ProviderAttestation::validate` (one certificate); the subject mirrored
+      machine to VM to claim (`reconciler/status_mirror.rs`, `claim.rs`);
+      `OciArtifact`, which the existing providers report unsupported.*
 - [ ] `firecracker` provider class, `deployment: External`, seeded by
       `banlieue bootstrap operator` like `cloud-hypervisor`.
 - [ ] Admission: `tpmEnabled`, `trustedBoot`, `firstBootSealing`,
       `installMode: Deferred` and non-kernel image kinds refused for the
       class, each with a message naming the gap.
 - [ ] Controller dispatch to the new InfraMachine kind; `VirtualMachine`
-      status mirrors it (non-negotiable 6).
+      status mirrors it (non-negotiable 6). *The mirror's read side exists
+      (`InfraMachineRead` for `FirecrackerMachine`); the controller does not yet
+      create, watch or hold a grant on the kind.*
 
 ## E. Kernel-plus-rootfs images
 
@@ -383,7 +403,8 @@ the ADR is written, not that anything is built.
       the image is the consumer's own build; a first-party `banlieue-oci` push
       subcommand (multi-layer push and pull) is run from the consumer's
       pipeline, so banlieue's imagebuilder, `OSArtifact` and PVC are not
-      involved.
+      involved. *The library half exists (#224, `crates/banlieue-oci/src/microvm.rs`:
+      manifest, push, fail-closed pull); the subcommand and any caller do not.*
 - [ ] A reference sandbox kernel config and rootfs recipe under `examples/`
       or `scripts/`, with no real infrastructure in it.
 
@@ -393,7 +414,9 @@ the ADR is written, not that anything is built.
       root is shared read-only, nothing to clone), seed, tap, config file, unit
       start, boot.
 - [ ] Observe: address from the neighbour table, `GuestReady` over vsock
-      (`_1024`), and the attestation signer on `_1025` (ADR-0143).
+      (`_1024`), and the attestation signer on `_1025` (ADR-0143). *A signer
+      library exists in `banlieue-provider-firecracker` (#224), unlinked; use
+      `banlieue-attestation-ca` (ADR-0146) instead, see the status note above.*
 - [ ] Delete: stop, then remove seed, tap, config file, run directory (no jail
       under ADR-0140, no per-member disk under ADR-0142).
 - [ ] Re-adopt after a provider restart or upgrade; never restart a guest.
@@ -430,9 +453,12 @@ the ADR is written, not that anything is built.
       thumb above.
 - [ ] Guide: host install, image build, a first sandbox pool.
 - [ ] Roadmap 14's per-class table and roadmap 17's backend list.
-- [ ] **Threat-model full pass** for each ADR as it lands. *Not done:* ADD
+- [ ] **Threat-model full pass** for each ADR as it lands. *Partly done:* ADD
       runs it after implementation, and ADR-0137 to ADR-0143 each say it is
-      due then (ADR-0139's installer phase had its pass). Items to cover: new
+      due then (ADR-0139's installer phase had its pass). The parts in the tree
+      (the served CRDs and image kind, `hostCa`, the subject mirror, the CAPI
+      role, the two uncalled libraries) had theirs on 2026-11-19; the provider,
+      host and image-pull parts get theirs when they land. Items to cover: new
       component and actor, the accepted no-chroot gap (ADR-0140; the jailer's
       root step does not exist), no API socket, the shared read-only root and
       world-readable image cache, the attestation CA key and the vsock signer

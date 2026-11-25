@@ -1,5 +1,44 @@
 # Changelog
 
+## [2026-11-24 20:30] - Threat model: pass for ADR-0145 and the Firecracker code in the tree; roadmap 20 status corrected
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md`: full pass, walked 2026-11-19 and merged on 2026-11-24 onto the
+  ADR-0146 Decisions 7 and 8 and ADR-0157 passes that landed meanwhile (no file it cites changed in
+  substance since). Stamp advanced to `ADR-0001 ... ADR-0139, ADR-0144 to ADR-0146 and ADR-0157`, plus the
+  parts of ADR-0137, 0142 and 0143 that are in the tree. The stamp had said 0137 to 0143
+  had no code; #214 and #224 added the `FirecrackerMachine` CRDs, the `OciArtifact` image kind, the
+  `attestationSubject` mirror to the VM and the claim, the Firecracker kinds in the CAPI aggregate role, the
+  microvm format in `banlieue-oci` and a new crate `banlieue-provider-firecracker`. ADR-0145 (#215, the
+  controller's self-audit and `/livez` 503) was in neither list. Not covered, and now said so: 0136, 0138,
+  0140, 0141 and the unbuilt rest of 0137, 0142, 0143. The guidance item is §7.35, after ADR-0146's §7.34.
+  - Sections walked: all ten. New: two §2 rows (the two libraries, nothing calls them), two TB-1 rows (a
+    forged `attestationSubject` on a VM or claim, bounded by controller-only status RBAC; objects created to
+    restart the controller, bounded by the ledger written at invocation and unbounded concurrency), two TB-14
+    rows (no object names on the gauge or probe; the audit's list load), one TB-15 row (CAPI reaches the
+    inert Firecracker kinds), §7.35 (keep the liveness probe; restarts mean a blind API server) and one §8 row
+    (liveness now depends on what the API server delivers). Changed: the §2 controller row, A-7, the §9
+    Firecracker bullet. Unchanged: §1, §4, §5 diagram and table, §10; the `unsafe` count stays at two.
+- `.github/community/20-firecracker-provider.md`: status says what exists; phase D's API and `hostCa` /
+  subject / `OciArtifact` boxes ticked with the files; dispatch, phase E, phase F and the threat-model item
+  annotated; a note that the `attest` module duplicates ADR-0146's shared crate.
+- `ROADMAPS.md`: roadmap 20 is 🔶, not ⛔, and its row lists what is in the tree.
+
+### Why
+The stamp claimed no Firecracker code existed and omitted an implemented ADR (0145); a stale stamp asserts a
+posture nobody checked (`rules/threat-modeling.md`). Every control cited was read in the tree:
+`deploy/controller/rbac/clusterrole.yaml`, `deploy/controller/deployment.yaml`,
+`deploy/capi/clusterrole-aggregate.yaml`, `crates/banlieue-provider-sdk/src/{audit,metrics,runner,health}.rs`,
+`crates/banlieue-controller/src/app.rs`, `crates/banlieue-controller/src/reconciler/{status_mirror,claim}.rs`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-24 08:00] - banlieue-azure: the ArmApi trait and a fake that refuses what ARM refused (ADR-0164 Decision 4, roadmap 23 phase A)
 
 **Author:** Erick Bourgeois
