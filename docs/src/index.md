@@ -9,7 +9,7 @@
 
 [![Build](https://github.com/firestoned/banlieue/actions/workflows/build.yaml/badge.svg?branch=main)](https://github.com/firestoned/banlieue/actions/workflows/build.yaml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](reference/license.md)
-[![Rust](https://img.shields.io/badge/rust-1.89%2B-orange.svg?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/rust-1.95%2B-orange.svg?logo=rust)](https://www.rust-lang.org/)
 [![Status](https://img.shields.io/badge/status-In%20Development-orange.svg)](https://github.com/firestoned/banlieue)
 
 ---

@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-25 12:00] - kube 5.2 for RUSTSEC-2026-0600; workspace MSRV 1.95
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: `[workspace.dependencies]` `kube` pin `~5.1` to `~5.2`; workspace `rust-version`
+  `1.89` to `1.95` (kube 5.2.0's own `rust-version`); the comment above the pin says so.
+- `crates/banlieue-api/Cargo.toml`: its own `kube` pin (derive only, no default features) `~5.1` to `~5.2`.
+- `Cargo.lock`: `kube`, `kube-client`, `kube-core`, `kube-derive` and `kube-runtime` at 5.2.x
+  (`cargo update -p kube`).
+- `README.md`, `docs/src/index.md`, `docs/src/developer/local-development.md`: the Rust badge and the
+  stated MSRV say 1.95.
+
+### Why
+RUSTSEC-2026-0600: kube-client below 5.2.0, with the `openssl-tls` connector, trusts OpenSSL's default CA
+store as well as the configured cluster CA. banlieue builds kube on rustls only and is not affected itself,
+but its `~5.1` pins held downstream locks (mediatore's) below the fixed release.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Dependency and MSRV change only: building needs Rust 1.95 or newer; no code or behaviour change.
+
 ## [2026-11-24 20:30] - Threat model: pass for ADR-0145 and the Firecracker code in the tree; roadmap 20 status corrected
 
 **Author:** Erick Bourgeois
