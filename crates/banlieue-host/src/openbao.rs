@@ -31,7 +31,12 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// broken server cannot make the installer buffer without bound.
 pub const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 /// The CA's path length the request pins: it may sign leaves and nothing else.
-const CA_PATH_LENGTH: u8 = 0;
+///
+/// Sent as a **string**. OpenBao's ACL compares a pinned value together with its
+/// JSON type, and an integer pin never matches a JSON number (checked against a
+/// real server by the OpenBao repository's `tests/test_attestation_ca.py`), so the
+/// policy pins `"0"` and an integer `0` would be refused.
+const CA_PATH_LENGTH: &str = "0";
 /// The CA lifetime sent when none is asked for. It is **pinned by the policy**
 /// the OpenBao repository's onboarding script writes, so it is sent exactly as
 /// written, and must match that script's value.

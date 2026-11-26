@@ -6,7 +6,7 @@ SPDX-License-Identifier: Apache-2.0
 
 - **Status:** Proposed
 - **Date:** 2026-11-19
-- **Amended:** 2026-11-20 (Decision 7: the CA certificate may be signed by an upstream CA, by CSR; Decision 8: the installer may have that one request signed by OpenBao, logging in as the host's own ServiceAccount with a token pinned to its own CA name)
+- **Amended:** 2026-11-25 (Decision 8: verified against a real OpenBao by the OpenBao repository's `scripts/attestation-ca.sh` tests; the path length is pinned and sent as a string, all five parameters are required, no default policy on the token), 2026-11-20 (Decision 7: the CA certificate may be signed by an upstream CA, by CSR; Decision 8: the installer may have that one request signed by OpenBao, logging in as the host's own ServiceAccount with a token pinned to its own CA name)
 - **Deciders:** Erick Bourgeois
 - **Related:** Extends [ADR-0143](0143-firecracker-host-attestation-ca-and-guest-signer.md)
   (Decisions 1 to 7 apply to a Cloud Hypervisor host unchanged unless this ADR says
@@ -227,12 +227,16 @@ must enforce and verifies none of it by assumption:
 2. **Authorization.** A policy on `sign-intermediate` and nothing else, with
    `allowed_parameters` pinning `common_name` to this host's CA name, `max_path_length` to `0`,
    `ttl` to a fixed value and `use_csr_values` to `false`, and `required_parameters` naming
-   `csr`. A parameter not listed is refused, so the request cannot ask for more. A host can
+   **all five** (a missing `max_path_length` would default to unlimited, and a missing `ttl` to
+   the mount's). A parameter not listed is refused, so the request cannot ask for more. The ACL
+   compares a value **and its JSON type** (an integer pin never matches a JSON number), so
+   `max_path_length` is pinned as the string `"0"` and the installer sends it as a string. A host can
    only obtain a CA under **its own** name, which is what keeps the per-host confinement of
    Decision 2.
 3. **The token.** `token_ttl` of five minutes at most, `token_num_uses` of `1` (one signing
-   per login), and `token_bound_cidrs` set to the host's address: a stolen token is spent,
-   expired or unusable from anywhere else.
+   per login), `token_bound_cidrs` set to the host's address (a login from elsewhere is refused
+   too) and no `default` policy: a stolen token is spent, expired or unusable from anywhere else,
+   and can do the one signing and nothing else.
 4. **Uniqueness, closed at the issuer.** Before creating anything, the script lists the
    certificates already on the mount and refuses a CA name that has been issued to anyone.
    Decision 7 left this unchecked; here the administrator's step is mechanical.

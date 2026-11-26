@@ -169,11 +169,11 @@ mod tests {
             serde_json::json!({
                 "csr": CSR,
                 "common_name": "bar",
-                "max_path_length": 0,
+                "max_path_length": "0",
                 "ttl": "8760h",
                 "use_csr_values": false,
             }),
-            "a parameter the policy does not list would be refused"
+            "OpenBao's ACL compares a value and its JSON type: the path length is the string \"0\", as the policy pins it"
         );
         // 3. The token is revoked.
         assert_eq!(seen[2].path, "/v1/auth/token/revoke-self");

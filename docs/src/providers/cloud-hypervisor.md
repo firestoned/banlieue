@@ -1270,9 +1270,9 @@ result and writes the section:
 sudo banlieue host cloud-hypervisor install --only attestation \
   --attestation-ca-name bar.foo.io \
   --attestation-ca-openbao-addr https://bao.example.com:8200 \
-  --attestation-ca-openbao-mount pki-node-attestation \
+  --attestation-ca-openbao-mount pki-ch-attestation \
   --attestation-ca-openbao-auth-mount computefabric-example-v2 \
-  --attestation-ca-openbao-role ch-host-ca-bar-foo-io
+  --attestation-ca-openbao-role ch-ca-bar.foo.io
 ```
 
 It makes the key and request first (a request that is already pending is reused,
@@ -1290,16 +1290,19 @@ status); and it revokes the OpenBao token when it is done.
 
 #### What OpenBao must enforce
 
-The OpenBao side is built and owned by the OpenBao repository (an onboarding script
-run by an administrator when the host is bootstrapped). The installer only works
-inside what that script sets up, so this is the contract, layer by layer. banlieue
-assumes none of it: **verify each against the running OpenBao**.
+The OpenBao side is built and owned by the OpenBao repository
+(`scripts/attestation-ca.sh`: `init` once, then `host` before and `done` after each
+install, an administrator's step). The installer only works inside what that script
+sets up, so this is the contract, layer by layer. It is **tested there against a real
+OpenBao** (a throwaway server, real JWT logins, the exact five parameters the installer
+sends): every row below is a test, not an assumption. Nothing has been run on a live
+server yet.
 
 | Layer | What | Why |
 | --- | --- | --- |
 | Identity | A JWT role on the cluster's mount bound to this host's exact ServiceAccount and the cluster's audience | No other host's token logs in to it |
-| Authorization | A policy on `<mount>/root/sign-intermediate` and nothing else, pinning `common_name` to this host's CA name, `max_path_length` to `0`, `ttl` and `use_csr_values` to `false`, and requiring `csr` | The request cannot ask for more; a host can only get a CA under its own name |
-| The token | `token_ttl` of five minutes at most, `token_num_uses` of `1`, `token_bound_cidrs` set to the host's address | A stolen token is spent, expired, or unusable from anywhere else |
+| Authorization | A policy on `<mount>/root/sign-intermediate` and nothing else, requiring all five parameters (`csr`, `common_name`, `max_path_length`, `ttl`, `use_csr_values`) and pinning `common_name` to this host's CA name, `max_path_length` to `0`, `ttl` and `use_csr_values` to `false` | The request cannot ask for more; a host can only get a CA under its own name |
+| The token | `token_ttl` of five minutes at most, `token_num_uses` of `1`, `token_bound_cidrs` set to the host's address (a login from another address is refused too), no `default` policy | A stolen token is spent, expired, or unusable from anywhere else, and can do the one signing and nothing else |
 | Uniqueness | The script lists the certificates already on the mount and refuses a name that has been issued | The issuer CN is in every agent ID, so two hosts with one name lose the confinement |
 | Lifetime | The script deletes the role and its policy after a successful import; a rotation makes a new pair under a new name | A JWT role cannot count logins |
 | The mount | A dedicated mount, root key generated inside OpenBao, `max-lease-ttl` set to the longest CA you accept | The installer's own cap (ten years) is only a second check |
@@ -1309,22 +1312,29 @@ An example, with placeholder names, of what the script writes for one host (a
 specification for that repository, not something to paste):
 
 ```hcl
-path "pki-node-attestation/root/sign-intermediate" {
+path "pki-ch-attestation/root/sign-intermediate" {
   capabilities        = ["update"]
-  required_parameters = ["csr"]
+  required_parameters = ["csr", "common_name", "max_path_length", "ttl", "use_csr_values"]
   allowed_parameters  = {
     "csr"             = []
     "common_name"     = ["bar.foo.io"]
     "max_path_length" = ["0"]
     "ttl"             = ["8760h"]
-    "use_csr_values"  = ["false"]
+    "use_csr_values"  = [false]
   }
 }
 ```
 
-and a JWT login role on `computefabric-example-v2` named `ch-host-ca-bar-foo-io`,
+and a JWT login role on `computefabric-example-v2` named `ch-ca-bar.foo.io`,
 bound to the host's ServiceAccount subject, with that policy, `token_ttl=5m`,
-`token_num_uses=1` and `token_bound_cidrs=["192.0.2.10/32"]`.
+`token_num_uses=1`, `token_bound_cidrs=["192.0.2.10/32"]` and no default policy.
+
+**OpenBao's ACL compares a pinned value together with its JSON type**, found by
+testing against a real server: a string pin matches a string, a boolean pin a boolean,
+and an integer pin never matches a JSON number. So the policy pins `max_path_length`
+as the string `"0"` and `use_csr_values` as the boolean `false`, and the installer
+sends exactly those types (the path length as `"0"`, not `0`). A client that sends the
+integer is refused, which fails closed.
 
 The `ttl` the installer sends is `--attestation-ca-openbao-ca-ttl` (default `8760h`),
 written exactly as the policy pins it: a value the policy does not list is refused.
@@ -1344,7 +1354,7 @@ the installer the file, owned by root:
 sudo banlieue host cloud-hypervisor install --only attestation \
   --attestation-ca-name bar.foo.io \
   --attestation-ca-openbao-addr https://bao.example.com:8200 \
-  --attestation-ca-openbao-mount pki-node-attestation \
+  --attestation-ca-openbao-mount pki-ch-attestation \
   --attestation-ca-openbao-token-file /root/bao.token
 ```
 
