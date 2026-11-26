@@ -120,6 +120,13 @@ stateDiagram-v2
   (a changed selector or class, a capability or capacity gone) is drift, and
   `migrationPolicy` decides what happens to it
   ([ADR-0125](https://github.com/firestoned/banlieue/blob/main/docs/adr/0125-a-placed-vm-keeps-a-placement-that-still-fits.md)).
+  Under `Automatic` (the default), or `Manual` with the
+  `banlieue.io/migrate: "true"` annotation, the VM is recreated: the
+  controller records the new placement in `status.scheduled` (with
+  `PlacementValid=False` naming the drift), deletes the infrastructure CR,
+  waits while it is still being deleted (its provider tears the guest down),
+  then creates a new one at the recorded placement. The guest and its disks
+  are lost; set `migrationPolicy: Never` to keep a VM where it is.
 - `desiredPowerState` *(string, optional)* — `PoweredOn` (default) |
   `PoweredOff` | `Suspended`. The provider keeps the VM in this state on every
   pass, on every backend: a VM that powers itself off (for example after an

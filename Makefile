@@ -644,6 +644,23 @@ address-live-test: ## Run duplicate-address blocking (ADR-0083) against a REAL A
 	cargo test -p banlieue-controller --test live_duplicate_address -- \
 	  --ignored --nocapture --test-threads=1
 
+.PHONY: recreate-live-test
+recreate-live-test: ## Run the migrationPolicy recreate round trip against a REAL API server (needs KUBECONFIG; no libvirt)
+	@# What migration_tests.rs cannot prove: reconcile records the new
+	@# placement before the old infra CR goes, waits while it terminates, then
+	@# recreates it in the new failure domain and leaves it there. Needs the
+	@# banlieue CRDs and NO controller running:
+	@#
+	@#   kind create cluster --name banlieue-recreate-test
+	@#   kubectl --context kind-banlieue-recreate-test apply -f deploy/crds/
+	@#   make recreate-live-test
+	@test -n "$$KUBECONFIG" -o -f "$$HOME/.kube/config" || { \
+	  echo "No kubeconfig. Point KUBECONFIG at a cluster with the banlieue CRDs."; \
+	  exit 1; }
+	@echo "Running the recreate round trip against $$(kubectl config current-context) ..."
+	cargo test -p banlieue-controller --test live_recreate -- \
+	  --ignored --nocapture --test-threads=1
+
 pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY, never CI)
 	@# The top tier, and the only one that can check ADR-0047's actual
 	@# promise: after a claim is deleted, libvirtd must not still have the

@@ -304,4 +304,104 @@ mod tests {
             "NetworkMappingChanged"
         );
     }
+
+    // --- Recreate converges ----------------------------------------------------
+
+    const GENERATION: i64 = 7;
+
+    fn drift_to(provider: &str, fd: &str) -> PlacementDriftReason {
+        PlacementDriftReason::FailureDomainChanged {
+            provider: provider.into(),
+            from: "fd-a".into(),
+            to: fd.into(),
+        }
+    }
+
+    fn at() -> k8s_openapi::apimachinery::pkg::apis::meta::v1::Time {
+        k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+            "2026-11-26T22:00:00Z".parse().expect("timestamp"),
+        )
+    }
+
+    /// The recreate path records the placement it is moving to before it
+    /// deletes the infra CR, with `PlacementValid` and `Ready` false.
+    #[test]
+    fn recreate_status_records_the_new_placement() {
+        let current = VirtualMachineStatus {
+            scheduled: Some(placement("p1", "fd-a")),
+            ..Default::default()
+        };
+        let d = decision("p1", "fd-b");
+        let next = recreate_status(&current, &d, &drift_to("p1", "fd-b"), GENERATION, at());
+
+        let scheduled = next.scheduled.expect("a placement");
+        assert_eq!(scheduled.provider_name, "p1");
+        assert_eq!(scheduled.failure_domain, "fd-b");
+        let valid = banlieue_provider_sdk::status::find_condition(
+            &next.conditions,
+            banlieue_api::common::condition_types::PLACEMENT_VALID,
+        )
+        .expect("PlacementValid");
+        assert_eq!(
+            valid.status,
+            banlieue_provider_sdk::status::condition_status::FALSE
+        );
+        assert_eq!(valid.reason, "FailureDomainChanged");
+        let ready = banlieue_provider_sdk::status::find_condition(
+            &next.conditions,
+            banlieue_api::common::condition_types::READY,
+        )
+        .expect("Ready");
+        assert_eq!(
+            ready.status,
+            banlieue_provider_sdk::status::condition_status::FALSE
+        );
+        assert_eq!(ready.reason, REASON_PLACEMENT_INVALID);
+        assert_eq!(next.observed_generation, Some(GENERATION));
+    }
+
+    /// The regression: before the fix the recreate path left `scheduled` on
+    /// the old placement, so every later pass saw the same drift and deleted
+    /// again, and the VM was never recreated. With the new placement
+    /// recorded, the next pass is in place and goes on to build the infra CR.
+    #[test]
+    fn after_a_recreate_the_next_pass_is_in_place() {
+        let d = decision("p2", "fd-b");
+        let before = vm_with(
+            MigrationPolicy::Automatic,
+            BTreeMap::new(),
+            Some(placement("p1", "fd-a")),
+        );
+        let MigrationAction::Recreate { reason } = evaluate(&before, &d) else {
+            panic!("drift under Automatic must recreate");
+        };
+        let mut after = before.clone();
+        after.status = Some(recreate_status(
+            before.status.as_ref().expect("status"),
+            &d,
+            &reason,
+            GENERATION,
+            at(),
+        ));
+        assert_eq!(evaluate(&after, &d), MigrationAction::InPlace);
+    }
+
+    /// Everything else on the status is carried over: the recreate path
+    /// patches the whole status, so it must not drop what it did not set.
+    #[test]
+    fn recreate_status_keeps_the_rest_of_the_status() {
+        let current = VirtualMachineStatus {
+            scheduled: Some(placement("p1", "fd-a")),
+            observed_power_state: Some(PowerState::PoweredOn),
+            ..Default::default()
+        };
+        let next = recreate_status(
+            &current,
+            &decision("p1", "fd-b"),
+            &drift_to("p1", "fd-b"),
+            GENERATION,
+            at(),
+        );
+        assert_eq!(next.observed_power_state, Some(PowerState::PoweredOn));
+    }
 }

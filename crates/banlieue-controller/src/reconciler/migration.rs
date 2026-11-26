@@ -28,10 +28,22 @@
 //! denominator that works on every backend, and the `MigrationPolicy::Never`
 //! escape hatch lets users opt out of even that.
 
-use banlieue_api::banlieue::{MigrationPolicy, ScheduledPlacement, VirtualMachine};
+use banlieue_api::banlieue::{
+    MigrationPolicy, ScheduledPlacement, VirtualMachine, VirtualMachineStatus,
+};
+use banlieue_api::common::condition_types;
+use banlieue_provider_sdk::status::{condition_status, set_condition};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::ResourceExt;
 
 use super::scheduler::Decision;
+
+/// `Ready` reason while a VM's placement no longer satisfies its spec,
+/// whether it waits for a person or is being recreated.
+pub const REASON_PLACEMENT_INVALID: &str = "PlacementInvalid";
+
+/// `Ready` message for [`REASON_PLACEMENT_INVALID`].
+pub const MESSAGE_PLACEMENT_INVALID: &str = "current placement no longer satisfies the spec";
 
 /// Annotation that triggers a manual migration when
 /// `migrationPolicy=Manual`.
@@ -180,6 +192,52 @@ fn migrate_annotation_set(vm: &VirtualMachine) -> bool {
         .get(ANNOTATION_MIGRATE)
         .map(|v| v == ANNOTATION_MIGRATE_TRUE)
         .unwrap_or(false)
+}
+
+/// The status the recreate path writes **before** it deletes the infra CR:
+/// `current` with `scheduled` set to the placement being moved to, and
+/// `PlacementValid` and `Ready` false with the drift's reason.
+///
+/// Recording the new placement first is what lets a recreate converge: the
+/// next pass compares its decision with this placement, finds no drift, and
+/// builds the infra CR there. Left on the old placement, every pass saw the
+/// same drift and deleted again, so the VM was never recreated. The same
+/// order as an allocation failure's re-placement (ADR-0173).
+///
+/// # Arguments
+/// * `current` - the VM's status as last read
+/// * `decision` - the scheduler's decision the VM is moving to
+/// * `reason` - the drift that triggered the recreate
+/// * `generation` - the VM's `metadata.generation`, for `observedGeneration`
+/// * `now` - when the new placement was decided
+#[must_use]
+pub fn recreate_status(
+    current: &VirtualMachineStatus,
+    decision: &Decision,
+    reason: &PlacementDriftReason,
+    generation: i64,
+    now: Time,
+) -> VirtualMachineStatus {
+    let mut next = current.clone();
+    next.scheduled = Some(decision.to_scheduled_placement(now));
+    set_condition(
+        &mut next.conditions,
+        condition_types::PLACEMENT_VALID,
+        condition_status::FALSE,
+        reason.reason(),
+        reason.message(),
+        generation,
+    );
+    set_condition(
+        &mut next.conditions,
+        condition_types::READY,
+        condition_status::FALSE,
+        REASON_PLACEMENT_INVALID,
+        MESSAGE_PLACEMENT_INVALID,
+        generation,
+    );
+    next.observed_generation = Some(generation);
+    next
 }
 
 #[cfg(test)]

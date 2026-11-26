@@ -68,7 +68,10 @@ use super::infra::{
     InfraKind, build_azure_virtual_machine, build_cloud_hypervisor_machine, build_libvirt_machine,
     build_proxmox_machine, build_vsphere_machine, install_mode, machine_name,
 };
-use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
+use super::migration::{
+    MESSAGE_PLACEMENT_INVALID, MigrationAction, PlacementDriftReason, REASON_PLACEMENT_INVALID,
+    evaluate, recreate_status,
+};
 use super::placement_failure::{
     allocation_failure, moves, record_failure, replaced_status, replacement_exclusions,
     scheduling_exclusions,
@@ -439,18 +442,41 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
             return Ok(requeue_default());
         }
         MigrationAction::Recreate { reason } => {
-            // migrationPolicy=Automatic (or Manual + annotation). Delete
-            // the existing VSphereMachine; the next reconcile pass will
-            // create a fresh one with the new placement. This is the
-            // recreate-only path; live migration is Phase 2 work.
+            // migrationPolicy=Automatic (or Manual + annotation). Record the
+            // new placement, then delete the existing infra CR; once it is
+            // gone a later pass, finding no drift against the recorded
+            // placement, creates a fresh one there. Recording first is what
+            // makes this converge: with `scheduled` left on the old
+            // placement every pass saw the same drift and deleted again.
+            // This is the recreate-only path; live migration is Phase 2 work.
             info!(
                 reason = reason.reason(),
+                to = %decision.failure_domain_name,
+                provider = %decision.provider_name,
                 "placement drift; recreating infra CR for new placement"
             );
+            let next = recreate_status(
+                &vm.status.clone().unwrap_or_default(),
+                &decision,
+                reason,
+                generation,
+                Time(k8s_openapi::jiff::Timestamp::now()),
+            );
+            patch_status(&vm_api, &name, &next).await?;
             delete_existing_infra(&infra_apis, infra_kind, &machine_name(&vm)).await?;
-            patch_placement_invalid(&vm_api, &vm, &name, generation, reason).await?;
             return Ok(requeue_default());
         }
+    }
+
+    // ---- Wait out a terminating infra CR --------------------------------
+    // After a recreate or a re-placement (ADR-0173) deletes the infra CR, the
+    // new one has the same name: applying it now would patch the object
+    // still being finalized, which then vanishes with the patch. Its
+    // deletion wakes this VM (it owns the CR), so wait for that.
+    let current_infra = owned_infra_state(&infra_apis, infra_kind, &machine_name(&vm)).await;
+    if waits_for_infra(current_infra) {
+        debug!("infra CR still terminating; waiting before applying the new one");
+        return Ok(requeue_default());
     }
 
     // ---- Resolve + render userData (ADR-0025) ---------------------------
@@ -763,6 +789,24 @@ macro_rules! with_infra_api {
             }
         }
     };
+}
+
+/// The [`InfraState`] of this VM's own infra CR of `infra_kind`, named
+/// `name`.
+async fn owned_infra_state(apis: &InfraApis, infra_kind: InfraKind, name: &str) -> InfraState {
+    with_infra_api!(apis, infra_kind, |api| {
+        infra_state(api, name, infra_kind.kind_name()).await
+    })
+}
+
+/// Whether the apply step must wait before building the infra CR: only
+/// while the VM's existing infra CR is still being finalized. Applying the
+/// new one then would patch an object about to vanish; its deletion wakes
+/// the VM. Absent, present and unknown proceed (an unknown lookup is the
+/// apply's own error to report).
+#[must_use]
+fn waits_for_infra(state: InfraState) -> bool {
+    state == InfraState::Terminating
 }
 
 /// Delete the owned infra CR of `infra_kind` by name. 404 is treated as
@@ -1278,8 +1322,8 @@ async fn patch_placement_invalid(
         ),
         (
             condition_types::READY,
-            "PlacementInvalid",
-            "current placement no longer satisfies the spec",
+            REASON_PLACEMENT_INVALID,
+            MESSAGE_PLACEMENT_INVALID,
         ),
     ];
     patch_false_conditions(api, vm, name, generation, &conditions).await
