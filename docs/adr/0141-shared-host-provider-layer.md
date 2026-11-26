@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0141: The host-resident provider layer is extracted into a shared crate
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Related:** roadmap 20 (phase B),
   [ADR-0137](0137-firecracker-provider-class.md) (the `firecracker` class that

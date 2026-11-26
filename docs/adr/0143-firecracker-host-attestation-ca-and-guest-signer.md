@@ -4,10 +4,11 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0143: The Firecracker host holds an attestation CA the administrator asserts, and signs one certificate per guest
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
-- **Related:** mediatore ADR-0049 (Proposed; the attestor this serves, `x509pop`
+- **Related:** mediatore ADR-0049 (Accepted; the attestor this serves, `x509pop`
   with a certificate the host signs for the guest's own key),
   [ADR-0049](0049-attestation-trust-anchors.md) Decision 10 (trust anchors are
   admin-supplied on the Provider, never discovered),

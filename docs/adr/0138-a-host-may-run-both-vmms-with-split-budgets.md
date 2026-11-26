@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0138: A host may run both VMMs, each as its own Provider with its own budget
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Amends:** roadmap 20, "One VMM per host, in v1" (that constraint is withdrawn by this ADR)
 - **Related:** [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md)
@@ -119,4 +120,4 @@ Roadmap 20's preflight refusal is replaced by the checks in Decision 3.
   would need a stronger answer (whole sockets).
 - Threat model: new DoS boundary pair (two budgets on one host) and one new
   root-owned file (the Firecracker slice). Pass due when implemented.
-- Not implemented. CALM and the threat-model pass follow Acceptance.
+- Accepted, not implemented. CALM follows now; the threat-model pass follows the implementation.
