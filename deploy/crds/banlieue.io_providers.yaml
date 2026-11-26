@@ -473,6 +473,26 @@ spec:
                           whose federated credential trusts this provider's ServiceAccount.
                         minLength: 1
                         type: string
+                      diskEncryptionSetId:
+                        description: |-
+                          Resource ID of a disk encryption set (customer-managed key) that
+                          encrypts every OS disk, upload disk, snapshot and image version this
+                          `Provider` creates (ADR-0172 Decision 2):
+                          `/subscriptions/<subscriptionId>/resourceGroups/<rg>/providers/Microsoft.Compute/diskEncryptionSets/<name>`.
+                          It must be in this `Provider`'s subscription and region (an Azure
+                          restriction); its resource group may differ. Both the provider's
+                          and the publisher's identities need
+                          `Microsoft.Compute/diskEncryptionSets/read` on it. Unset:
+                          platform-managed keys.
+                        nullable: true
+                        type: string
+                      encryptionAtHost:
+                        description: |-
+                          Create every VM with `securityProfile.encryptionAtHost` (ADR-0172
+                          Decision 3): temp disks and disk caches encrypted on the host. The
+                          subscription must have the `Microsoft.Compute/EncryptionAtHost`
+                          feature registered, and every mapped instance size must support it.
+                        type: boolean
                       imageGallery:
                         description: |-
                           The admin's existing Compute Gallery this `Provider` publishes a
@@ -533,6 +553,25 @@ spec:
                         description: Subscription ID.
                         minLength: 1
                         type: string
+                      tags:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Extra tags put on every resource this `Provider` creates by name: the
+                          NIC, the VM, and the publish Job's image definition, upload disk,
+                          snapshot and image version (ADR-0172 Decision 1). For a subscription
+                          whose Azure Policy denies a resource without them. Not the OS disk,
+                          which Azure creates from the VM without copying its tags.
+
+                          banlieue's own ownership tags always win: a name starting with
+                          `banlieue-` (in any case, since Azure folds tag-name case) is refused,
+                          as are two names that differ only in case, a name containing
+                          `<>%&\?/`, a name over 512 or a value over 256 characters, and more
+                          than 45 entries. An invalid set sets the `Provider` `Ready=False`
+                          (`ConnectionInvalid`) and nothing is created. Applies to resources
+                          created afterwards; existing ones are not re-tagged.
+                        maxProperties: 45
+                        type: object
                       tenantId:
                         description: Entra ID tenant (directory) ID.
                         minLength: 1

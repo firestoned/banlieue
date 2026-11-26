@@ -1,0 +1,105 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Settings an azure Provider needs in a policy-governed subscription
+# (ADR-0172): extra tags on everything banlieue creates, a disk encryption
+# set (customer-managed key), encryption at host. The tags and the set's
+# resource ID reach Azure Resource Manager verbatim, so they are checked at
+# admission, before the object is stored.
+#
+# - spec.connection.azure.tags: at most 45 (50 per resource, less banlieue's
+#   own five), names 1..512 characters without < > % & \ ? /, values up to
+#   256, and no name in banlieue's own "banlieue-" namespace in any case:
+#   Azure folds tag-name case, so "Banlieue-Owner-Uid" would replace the
+#   ownership tag banlieue deletes by (ADR-0158 Decision 4).
+# - spec.connection.azure.diskEncryptionSetId: a
+#   Microsoft.Compute/diskEncryptionSets resource ID, in the Provider's own
+#   subscription (an Azure restriction).
+#
+# Two names that differ only in case are not checked here (portable CEL has
+# no case folding); the provider refuses them (Provider Ready=False,
+# ConnectionInvalid) and creates nothing. Enforced in the API server via CEL
+# (no webhook). Requires Kubernetes 1.30+.
+# Offline test: make azure-governance-policy-test.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-azure-governance
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  matchConditions:
+    - name: azure-block
+      expression: "has(object.spec.connection.azure)"
+  validations:
+    - expression: >-
+        !has(object.spec.connection.azure.tags)
+        || size(object.spec.connection.azure.tags) <= 45
+      message: >-
+        spec.connection.azure.tags: at most 45 extra tags fit beside banlieue's
+        own (Azure allows 50 per resource; ADR-0172).
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.azure.tags)
+        || object.spec.connection.azure.tags.all(k, !k.matches('(?i)^banlieue-'))
+      message: >-
+        spec.connection.azure.tags: names starting with banlieue- (in any case)
+        are banlieue's own ownership tags and cannot be set (ADR-0172).
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.azure.tags)
+        || object.spec.connection.azure.tags.all(k,
+             size(k) >= 1 && size(k) <= 512 && !k.matches('[<>%&\\\\?/]'))
+      message: >-
+        spec.connection.azure.tags: a tag name is 1 to 512 characters and has
+        none of < > % & \ ? / (Azure's rules).
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.azure.tags)
+        || object.spec.connection.azure.tags.all(k,
+             size(object.spec.connection.azure.tags[k]) <= 256)
+      message: >-
+        spec.connection.azure.tags: a tag value is at most 256 characters.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.azure.diskEncryptionSetId)
+        || object.spec.connection.azure.diskEncryptionSetId.matches(
+             '(?i)^/subscriptions/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/resourcegroups/[-a-z0-9_.()]{1,90}/providers/microsoft[.]compute/diskencryptionsets/[-a-z0-9_]{1,80}$')
+      messageExpression: >-
+        'spec.connection.azure.diskEncryptionSetId must be a disk encryption set
+        resource ID, /subscriptions/<id>/resourceGroups/<rg>/providers/Microsoft.Compute/diskEncryptionSets/<name>
+        (got ' + object.spec.connection.azure.diskEncryptionSetId + ').'
+      reason: Invalid
+    # Only when subscriptionId is itself a GUID, so it is safe inside the
+    # pattern; anything else is left to the provider, which refuses it.
+    - expression: >-
+        !has(object.spec.connection.azure.diskEncryptionSetId)
+        || !object.spec.connection.azure.subscriptionId.matches(
+             '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+        || object.spec.connection.azure.diskEncryptionSetId.matches(
+             '(?i)^/subscriptions/' + object.spec.connection.azure.subscriptionId + '/')
+      message: >-
+        spec.connection.azure.diskEncryptionSetId must be in the Provider's own
+        subscription (spec.connection.azure.subscriptionId): Azure requires the
+        disk encryption set in the subscription of the disks it encrypts
+        (ADR-0172).
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-azure-governance
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-azure-governance
+  validationActions: ["Deny"]

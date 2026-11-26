@@ -27,7 +27,10 @@
 //! The lifecycle test also needs `AZURE_SUBNET_ID`, `AZURE_IMAGE_VERSION_ID`
 //! and `AZURE_SSH_PUBLIC_KEY` (optionally `AZURE_VM_SIZE`, `AZURE_ZONE`,
 //! `AZURE_OS_DISK_GB`). It creates and deletes one VM (a few minutes and a
-//! few cents) and fails if anything it tagged is left behind.
+//! few cents) and fails if anything it tagged is left behind. In a
+//! policy-governed subscription (ADR-0172), `AZURE_DISK_ENCRYPTION_SET_ID`
+//! encrypts the OS disk with that set and `AZURE_ENCRYPTION_AT_HOST=true`
+//! sets `securityProfile.encryptionAtHost`.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -218,6 +221,10 @@ async fn a_vm_is_created_boots_and_is_deleted_with_its_nic_and_disk() {
         custom_data: b"#cloud-config\n".to_vec(),
         trusted_launch: true,
         tags,
+        disk_encryption_set_id: std::env::var("AZURE_DISK_ENCRYPTION_SET_ID")
+            .ok()
+            .filter(|id| !id.is_empty()),
+        encryption_at_host: std::env::var("AZURE_ENCRYPTION_AT_HOST").is_ok_and(|v| v == "true"),
     };
     let created = c.put_vm(&rg, &vm, &request).await;
     if let Err(e) = &created {

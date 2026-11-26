@@ -56,6 +56,8 @@ mod tests {
             custom_data: b"#cloud-config\n".to_vec(),
             trusted_launch: true,
             tags: tags(),
+            disk_encryption_set_id: None,
+            encryption_at_host: false,
         }
     }
 
@@ -346,6 +348,108 @@ mod tests {
         let skus = f.resource_skus("eastus2").await.expect("skus");
         assert!(skus.iter().any(|s| s.name == "Standard_D2s_v7"));
     }
+
+    // ----- ADR-0172: customer-managed keys, encryption at host, tags -----
+
+    const DES: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+    const DES_OTHER_SUB: &str = "/subscriptions/00000000-0000-0000-0000-0000000000ff/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+
+    fn cmk_vm() -> VmRequest {
+        let mut r = vm("1", "Standard_D2s_v7", IMAGE_NVME);
+        r.disk_encryption_set_id = Some(DES.to_string());
+        r
+    }
+
+    #[tokio::test]
+    async fn a_vm_encrypted_with_a_known_set_is_created_and_records_it() {
+        let f = fake();
+        f.add_disk_encryption_set(DES, "eastus2");
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &cmk_vm())
+            .await
+            .expect("created");
+        assert_eq!(
+            f.vm_disk_encryption_set(RG, &vm_name(UID)).as_deref(),
+            Some(DES)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_set_that_does_not_exist_is_refused() {
+        let f = fake();
+        with_nic(&f).await;
+        let err = f
+            .put_vm(RG, &vm_name(UID), &cmk_vm())
+            .await
+            .expect_err("refused");
+        assert!(matches!(err, Error::InvalidRequest { .. }), "{err:?}");
+        assert!(f.vm_disk_encryption_set(RG, &vm_name(UID)).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_set_in_another_subscription_or_region_is_refused() {
+        let f = fake();
+        f.add_disk_encryption_set(DES_OTHER_SUB, "eastus2");
+        with_nic(&f).await;
+        let mut r = cmk_vm();
+        r.disk_encryption_set_id = Some(DES_OTHER_SUB.to_string());
+        let err = f.put_vm(RG, &vm_name(UID), &r).await.expect_err("refused");
+        assert!(err.to_string().contains("subscription"), "{err}");
+
+        let f = fake();
+        f.add_disk_encryption_set(DES, "westus3");
+        with_nic(&f).await;
+        let err = f
+            .put_vm(RG, &vm_name(UID), &cmk_vm())
+            .await
+            .expect_err("refused");
+        assert!(err.to_string().contains("region"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_malformed_set_id_is_refused() {
+        let f = fake();
+        with_nic(&f).await;
+        let mut r = cmk_vm();
+        r.disk_encryption_set_id = Some("/subscriptions/x/des".to_string());
+        assert!(f.put_vm(RG, &vm_name(UID), &r).await.is_err());
+    }
+
+    /// A subscription without the `Microsoft.Compute/EncryptionAtHost`
+    /// feature refuses the property (ADR-0172 Decision 3).
+    #[tokio::test]
+    async fn encryption_at_host_needs_the_subscription_feature() {
+        let f = fake();
+        with_nic(&f).await;
+        let mut r = vm("1", "Standard_D2s_v7", IMAGE_NVME);
+        r.encryption_at_host = true;
+        let err = f.put_vm(RG, &vm_name(UID), &r).await.expect_err("refused");
+        assert!(err.to_string().contains("EncryptionAtHost"), "{err}");
+        assert!(!f.vm_encryption_at_host(RG, &vm_name(UID)));
+
+        f.register_encryption_at_host();
+        f.put_vm(RG, &vm_name(UID), &r).await.expect("created");
+        assert!(f.vm_encryption_at_host(RG, &vm_name(UID)));
+    }
+
+    #[tokio::test]
+    async fn tags_that_differ_only_in_case_are_refused() {
+        let f = fake();
+        let mut n = nic();
+        n.tags.insert("Env".to_string(), "a".to_string());
+        n.tags.insert("env".to_string(), "b".to_string());
+        assert!(f.put_nic(RG, &nic_name(UID), &n).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn more_than_fifty_tags_are_refused() {
+        let f = fake();
+        let mut n = nic();
+        for i in 0..crate::tags::MAX_TAGS_PER_RESOURCE {
+            n.tags.insert(format!("extra-{i}"), "x".to_string());
+        }
+        assert!(f.put_nic(RG, &nic_name(UID), &n).await.is_err());
+    }
 }
 
 /// The gallery side of the fake (ADR-0162): it refuses what ARM refuses.
@@ -395,6 +499,7 @@ mod publish_tests {
             location: "eastus2".into(),
             upload_size_bytes: size,
             tags: tags(),
+            disk_encryption_set_id: None,
         }
     }
 
@@ -407,6 +512,7 @@ mod publish_tests {
             location: "eastus2".into(),
             source_disk_id: source,
             tags: tags(),
+            disk_encryption_set_id: None,
         }
     }
 
@@ -416,6 +522,7 @@ mod publish_tests {
             snapshot_id,
             end_of_life: None,
             tags: tags(),
+            disk_encryption_set_id: None,
         }
     }
 
@@ -677,5 +784,44 @@ mod publish_tests {
             DISK_STATE_ACTIVE_UPLOAD
         );
         assert!(f.publish_calls() > 0);
+    }
+
+    const DES: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+
+    /// ADR-0172 Decision 2: the upload disk, snapshot and version all name
+    /// the set, and the fake refuses one it does not know.
+    #[tokio::test]
+    async fn the_publish_resources_are_encrypted_with_a_known_set_only() {
+        let f = fake();
+        let mut d = disk(SIZE);
+        d.disk_encryption_set_id = Some(DES.into());
+        assert!(
+            f.put_upload_disk(RG, DISK, &d).await.is_err(),
+            "unknown set"
+        );
+        f.add_disk_encryption_set(DES, "eastus2");
+        f.put_upload_disk(RG, DISK, &d).await.unwrap();
+        assert_eq!(f.upload_disk_encryption_set(RG, DISK).as_deref(), Some(DES));
+
+        f.grant_disk_write_access(RG, DISK, 3600).await.unwrap();
+        f.revoke_disk_access(RG, DISK).await.unwrap();
+        let mut snap = snapshot(disk_id(&f).await);
+        snap.disk_encryption_set_id = Some(DES.into());
+        f.put_snapshot(RG, SNAP, &snap).await.unwrap();
+        assert_eq!(f.snapshot_encryption_set(RG, SNAP).as_deref(), Some(DES));
+
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        let snapshot_id = f.get_snapshot(RG, SNAP).await.unwrap().unwrap().id;
+        let mut v = version(snapshot_id);
+        v.disk_encryption_set_id = Some(DES.into());
+        f.put_gallery_image_version(RG, GAL, DEF, VER, &v)
+            .await
+            .unwrap();
+        assert_eq!(
+            f.version_encryption_set(RG, GAL, DEF, VER).as_deref(),
+            Some(DES)
+        );
     }
 }

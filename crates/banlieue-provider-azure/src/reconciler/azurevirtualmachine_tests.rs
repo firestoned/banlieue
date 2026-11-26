@@ -999,4 +999,114 @@ mod tests {
             format!("{:?}", Action::await_change())
         );
     }
+
+    // ----- ADR-0172: a policy-governed subscription -----
+
+    fn governed_target() -> Target {
+        let mut provider = test_support::provider(Default::default());
+        provider.spec.connection.azure = Some(test_support::governed_azure());
+        Target::from_provider(&provider).expect("target")
+    }
+
+    async fn governed_pass(api: &dyn ArmApi) -> Pass {
+        converge(api, &governed_target(), &machine(), &spec(), None, 1, now()).await
+    }
+
+    #[test]
+    fn the_target_carries_the_providers_governance_settings() {
+        let t = governed_target();
+        assert_eq!(
+            t.extra_tags
+                .get(test_support::EXTRA_TAG.0)
+                .map(String::as_str),
+            Some(test_support::EXTRA_TAG.1)
+        );
+        assert_eq!(
+            t.disk_encryption_set_id.as_deref(),
+            Some(test_support::DES_ID)
+        );
+        assert!(t.encryption_at_host);
+        assert!(target().extra_tags.is_empty());
+        assert!(target().disk_encryption_set_id.is_none());
+        assert!(!target().encryption_at_host);
+    }
+
+    #[test]
+    fn a_provider_with_an_invalid_governance_setting_yields_no_target() {
+        let mut provider = test_support::provider(Default::default());
+        let mut azure = test_support::governed_azure();
+        azure
+            .tags
+            .insert("BANLIEUE-owner-uid".into(), OTHER_UID.into());
+        provider.spec.connection.azure = Some(azure);
+        assert!(Target::from_provider(&provider).is_err());
+    }
+
+    /// The VM and NIC carry the extra tag beside the ownership tags, the OS
+    /// disk names the set, and the VM asks for encryption at host.
+    #[tokio::test]
+    async fn a_governed_provider_tags_and_encrypts_what_it_creates() {
+        let fake = world();
+        fake.add_disk_encryption_set(test_support::DES_ID, LOCATION);
+        fake.register_encryption_at_host();
+        let p = governed_pass(&fake).await;
+        assert_eq!(reason(&p.status, VM_CREATED).0, condition_status::TRUE);
+
+        let vm = vm_name(UID);
+        let tags = fake
+            .vm_tags(RESOURCE_GROUP, &vm)
+            .await
+            .expect("read")
+            .expect("vm");
+        assert_eq!(
+            tags.get(test_support::EXTRA_TAG.0).map(String::as_str),
+            Some(test_support::EXTRA_TAG.1)
+        );
+        assert_eq!(
+            tags.get(banlieue_azure::tags::TAG_OWNER_UID)
+                .map(String::as_str),
+            Some(UID)
+        );
+        assert_eq!(
+            fake.vm_disk_encryption_set(RESOURCE_GROUP, &vm).as_deref(),
+            Some(test_support::DES_ID)
+        );
+        assert!(fake.vm_encryption_at_host(RESOURCE_GROUP, &vm));
+
+        let resources = listed(&fake).await;
+        let nic = resources
+            .iter()
+            .find(|r| r.resource_type.eq_ignore_ascii_case(RESOURCE_TYPE_NIC))
+            .expect("nic");
+        assert_eq!(
+            nic.tags.get(test_support::EXTRA_TAG.0).map(String::as_str),
+            Some(test_support::EXTRA_TAG.1)
+        );
+    }
+
+    /// Encryption at host without the subscription feature is ARM's refusal,
+    /// reported as `CreateRefused` with ARM's message, and backed off.
+    #[tokio::test]
+    async fn encryption_at_host_without_the_feature_is_create_refused() {
+        let fake = world();
+        fake.add_disk_encryption_set(test_support::DES_ID, LOCATION);
+        let p = governed_pass(&fake).await;
+        assert_eq!(
+            reason(&p.status, VM_CREATED),
+            (
+                condition_status::FALSE.to_string(),
+                reasons::CREATE_REFUSED.to_string()
+            )
+        );
+        let message = find_condition(&p.status.conditions, VM_CREATED)
+            .map(|c| c.message.clone())
+            .unwrap_or_default();
+        assert!(message.contains("EncryptionAtHost"), "{message}");
+        assert!(
+            fake.vm_tags(RESOURCE_GROUP, &vm_name(UID))
+                .await
+                .expect("read")
+                .is_none()
+        );
+    }
 }

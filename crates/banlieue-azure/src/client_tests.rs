@@ -94,6 +94,8 @@ mod tests {
             custom_data: b"#cloud-config\n".to_vec(),
             trusted_launch: true,
             tags: tags(),
+            disk_encryption_set_id: None,
+            encryption_at_host: false,
         }
     }
 

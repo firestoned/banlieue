@@ -25,6 +25,13 @@
 //! declares it (the spike's `does not have a matching diskControllerType`);
 //! changing a definition's features; deleting a definition that still has
 //! versions; and a SAS on a host that is not the cloud's upload host.
+//!
+//! For a policy-governed subscription (ADR-0172) it refuses a disk
+//! encryption set that is malformed, unknown ([`FakeArm::add_disk_encryption_set`]),
+//! in another subscription or in another region, on a VM, upload disk,
+//! snapshot or image version; `encryptionAtHost` until
+//! [`FakeArm::register_encryption_at_host`] (the subscription feature); and
+//! tag names that differ only in case, as Azure folds them.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -33,6 +40,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use crate::api::{ArmApi, DiskAccess, PowerAction, PublishApi};
+use crate::encryption::check_disk_encryption_set_id;
 use crate::error::{Error, Result};
 use crate::fake_blob::FakePageBlob;
 use crate::gallery::{
@@ -134,6 +142,8 @@ struct FakeVm {
     power: Power,
     tags: BTreeMap<String, String>,
     created: jiff::Timestamp,
+    disk_encryption_set: Option<String>,
+    encryption_at_host: bool,
 }
 
 struct FakeDisk {
@@ -174,6 +184,7 @@ struct FakeVersion {
     tags: BTreeMap<String, String>,
     /// Reads left before a `Creating` version reports `Succeeded`.
     creating_reads: u32,
+    encryption_set: Option<String>,
 }
 
 struct FakeUploadDisk {
@@ -183,12 +194,14 @@ struct FakeUploadDisk {
     controllers: Option<String>,
     tags: BTreeMap<String, String>,
     blob: Arc<FakePageBlob>,
+    encryption_set: Option<String>,
 }
 
 struct FakeSnapshot {
     id: String,
     controllers: Option<String>,
     tags: BTreeMap<String, String>,
+    encryption_set: Option<String>,
 }
 
 /// The gallery side of the fake: definitions, versions, upload disks,
@@ -216,6 +229,10 @@ struct State {
     deletes_used: u32,
     next_host: u16,
     gallery: Gallery,
+    /// Disk encryption sets that exist: lowercase ID to region.
+    disk_encryption_sets: BTreeMap<String, String>,
+    /// The subscription feature `Microsoft.Compute/EncryptionAtHost`.
+    encryption_at_host_registered: bool,
 }
 
 /// In-memory [`ArmApi`].
@@ -258,6 +275,8 @@ impl FakeArm {
                 deletes_used: 0,
                 next_host: FIRST_HOST_OCTET,
                 gallery: Gallery::default(),
+                disk_encryption_sets: BTreeMap::new(),
+                encryption_at_host_registered: false,
             }),
         })
     }
@@ -279,6 +298,98 @@ impl FakeArm {
                 controllers: controllers.iter().map(|c| (*c).to_string()).collect(),
             },
         );
+    }
+
+    /// A disk encryption set exists with resource ID `id` in `location`
+    /// (ADR-0172). Without this, naming `id` is refused.
+    pub fn add_disk_encryption_set(&self, id: &str, location: &str) {
+        self.lock()
+            .disk_encryption_sets
+            .insert(id.to_ascii_lowercase(), location.to_string());
+    }
+
+    /// The subscription registers `Microsoft.Compute/EncryptionAtHost`.
+    pub fn register_encryption_at_host(&self) {
+        self.lock().encryption_at_host_registered = true;
+    }
+
+    /// The disk encryption set a VM's OS disk was created with.
+    #[must_use]
+    pub fn vm_disk_encryption_set(&self, resource_group: &str, name: &str) -> Option<String> {
+        self.lock()
+            .vms
+            .get(&key(resource_group, name))
+            .and_then(|vm| vm.disk_encryption_set.clone())
+    }
+
+    /// Whether a VM was created with `encryptionAtHost`.
+    #[must_use]
+    pub fn vm_encryption_at_host(&self, resource_group: &str, name: &str) -> bool {
+        self.lock()
+            .vms
+            .get(&key(resource_group, name))
+            .is_some_and(|vm| vm.encryption_at_host)
+    }
+
+    /// The disk encryption set an upload disk was created with.
+    #[must_use]
+    pub fn upload_disk_encryption_set(&self, resource_group: &str, name: &str) -> Option<String> {
+        self.lock()
+            .gallery
+            .upload_disks
+            .get(&key(resource_group, name))
+            .and_then(|d| d.encryption_set.clone())
+    }
+
+    /// The disk encryption set a snapshot was created with.
+    #[must_use]
+    pub fn snapshot_encryption_set(&self, resource_group: &str, name: &str) -> Option<String> {
+        self.lock()
+            .gallery
+            .snapshots
+            .get(&key(resource_group, name))
+            .and_then(|snap| snap.encryption_set.clone())
+    }
+
+    /// The disk encryption set an image version's replica was created with.
+    #[must_use]
+    pub fn version_encryption_set(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+    ) -> Option<String> {
+        self.lock()
+            .gallery
+            .versions
+            .get(&version_key(resource_group, gallery, image, version))
+            .and_then(|v| v.encryption_set.clone())
+    }
+
+    /// Refuses what ARM refuses of a referenced disk encryption set: a
+    /// malformed ID, one in another subscription, one that does not exist,
+    /// or one in another region than the resource (ADR-0172).
+    fn check_disk_encryption_set(state: &State, id: Option<&String>, location: &str) -> Result<()> {
+        let Some(id) = id else {
+            return Ok(());
+        };
+        check_disk_encryption_set_id(id, FAKE_SUBSCRIPTION)?;
+        let Some(des_location) = state.disk_encryption_sets.get(&id.to_ascii_lowercase()) else {
+            return Err(invalid(
+                CODE_INVALID_PARAMETER,
+                format!("Disk encryption set {id} was not found."),
+            ));
+        };
+        if !des_location.eq_ignore_ascii_case(location) {
+            return Err(invalid(
+                CODE_INVALID_PARAMETER,
+                format!(
+                    "Disk encryption set {id} is in region {des_location}; a resource in region {location} cannot use it."
+                ),
+            ));
+        }
+        Ok(())
     }
 
     /// Switches quota to the captured figures.
@@ -366,6 +477,7 @@ impl FakeArm {
                 state: state.to_string(),
                 tags,
                 creating_reads,
+                encryption_set: None,
             },
         );
     }
@@ -424,6 +536,7 @@ impl FakeArm {
                 id: compute_id(resource_group, "snapshots", name),
                 controllers: controllers.map(ToString::to_string),
                 tags,
+                encryption_set: None,
             },
         );
     }
@@ -604,6 +717,17 @@ impl ArmApi for FakeArm {
         if s.vms.contains_key(&vm_key) {
             return Ok(None);
         }
+        Self::check_disk_encryption_set(
+            &s,
+            request.disk_encryption_set_id.as_ref(),
+            &request.location,
+        )?;
+        if request.encryption_at_host && !s.encryption_at_host_registered {
+            return Err(invalid(
+                CODE_INVALID_PARAMETER,
+                "The property 'securityProfile.encryptionAtHost' is not valid because the 'Microsoft.Compute/EncryptionAtHost' feature is not enabled for this subscription.".to_string(),
+            ));
+        }
 
         let nic_key = s
             .nics
@@ -704,6 +828,8 @@ impl ArmApi for FakeArm {
                 power: Power::Starting,
                 tags: request.tags.clone(),
                 created: now,
+                disk_encryption_set: request.disk_encryption_set_id.clone(),
+                encryption_at_host: request.encryption_at_host,
             },
         );
         Ok(None)
@@ -1028,6 +1154,11 @@ impl PublishApi for FakeArm {
         check_version_name(version)?;
         request.to_body()?;
         let mut s = self.gallery_call();
+        Self::check_disk_encryption_set(
+            &s,
+            request.disk_encryption_set_id.as_ref(),
+            &request.location,
+        )?;
         let def = s
             .gallery
             .definitions
@@ -1071,6 +1202,7 @@ impl PublishApi for FakeArm {
                 state: PROVISIONING_CREATING.to_string(),
                 tags: request.tags.clone(),
                 creating_reads: reads,
+                encryption_set: request.disk_encryption_set_id.clone(),
             },
         );
         Ok(None)
@@ -1114,6 +1246,11 @@ impl PublishApi for FakeArm {
             ));
         }
         let mut s = self.gallery_call();
+        Self::check_disk_encryption_set(
+            &s,
+            request.disk_encryption_set_id.as_ref(),
+            &request.location,
+        )?;
         let k = key(resource_group, name);
         if let Some(existing) = s.gallery.upload_disks.get(&k) {
             if existing.upload_size != size {
@@ -1133,6 +1270,7 @@ impl PublishApi for FakeArm {
                 controllers: Some(crate::gallery::DISK_CONTROLLER_TYPES.to_string()),
                 tags: request.tags.clone(),
                 blob: Arc::new(FakePageBlob::new(size)),
+                encryption_set: request.disk_encryption_set_id.clone(),
             },
         );
         Ok(None)
@@ -1213,6 +1351,11 @@ impl PublishApi for FakeArm {
     ) -> Result<Option<OperationHandle>> {
         request.to_body()?;
         let mut s = self.gallery_call();
+        Self::check_disk_encryption_set(
+            &s,
+            request.disk_encryption_set_id.as_ref(),
+            &request.location,
+        )?;
         let source = s
             .gallery
             .upload_disks
@@ -1244,6 +1387,7 @@ impl PublishApi for FakeArm {
                 id: compute_id(resource_group, "snapshots", name),
                 controllers,
                 tags: request.tags.clone(),
+                encryption_set: request.disk_encryption_set_id.clone(),
             },
         );
         Ok(None)

@@ -34,6 +34,13 @@ pub const MAX_TAG_NAME_LEN: usize = 512;
 pub const MAX_TAG_VALUE_LEN: usize = 256;
 /// Azure's limit on tags per resource.
 pub const MAX_TAGS_PER_RESOURCE: usize = 50;
+/// The prefix of every tag banlieue sets itself. Configured extra tags may
+/// not use it, in any case (ADR-0172 Decision 1).
+pub const RESERVED_TAG_PREFIX: &str = "banlieue-";
+/// The most extra tags a `Provider` may configure: [`MAX_TAGS_PER_RESOURCE`]
+/// less the four ownership tags and [`TAG_SOURCE_SHA256`], so every
+/// resource fits (ADR-0172 Decision 1).
+pub const MAX_EXTRA_TAGS: usize = 45;
 
 /// Characters Azure refuses in a tag name.
 const RESERVED_TAG_NAME_CHARS: [char; 7] = ['<', '>', '%', '&', '\\', '?', '/'];
@@ -111,29 +118,66 @@ impl OwnershipTags {
         tags.get(TAG_OWNER_UID) == Some(&self.owner_uid)
     }
 
-    /// The ownership tags plus `extra` (for example tags an organisation's
-    /// Azure Policy requires), validated and within Azure's count limit.
+    /// The ownership tags plus `extra` (tags an organisation's Azure Policy
+    /// requires, ADR-0172 Decision 1), validated and within Azure's count
+    /// limit. The ownership tags always win: `extra` may not name anything
+    /// in [`RESERVED_TAG_PREFIX`], in any case.
     ///
     /// # Errors
-    /// [`Error::InvalidTag`] if `extra` names an ownership tag, if any name
-    /// or value is invalid, or if the result exceeds
-    /// [`MAX_TAGS_PER_RESOURCE`].
+    /// [`Error::InvalidTag`] when [`validate_extra_tags`] refuses `extra`,
+    /// or when the result is not a valid tag set.
     pub fn merged_with(
         &self,
         extra: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, String>> {
+        validate_extra_tags(extra)?;
         let mut merged = self.to_map();
         for (name, value) in extra {
-            if merged.contains_key(name) {
-                return Err(Error::InvalidTag(format!(
-                    "{name} is an ownership tag and cannot be set from configuration"
-                )));
-            }
             merged.insert(name.clone(), value.clone());
         }
         validate_tags(&merged)?;
         Ok(merged)
     }
+}
+
+/// Validates tags configured on a `Provider` (ADR-0172 Decision 1): each
+/// name and value as Azure requires, no name in [`RESERVED_TAG_PREFIX`]
+/// (compared case-insensitively, since Azure folds tag-name case and
+/// `Banlieue-Owner-Uid` would replace the ownership tag), no two names that
+/// differ only in case, and at most [`MAX_EXTRA_TAGS`].
+///
+/// # Errors
+/// [`Error::InvalidTag`] naming the first rule broken.
+pub fn validate_extra_tags(extra: &BTreeMap<String, String>) -> Result<()> {
+    if extra.len() > MAX_EXTRA_TAGS {
+        return Err(Error::InvalidTag(format!(
+            "{} extra tags; at most {MAX_EXTRA_TAGS} fit beside banlieue's own",
+            extra.len()
+        )));
+    }
+    for (name, value) in extra {
+        validate_tag_name(name)?;
+        validate_tag_value(value)?;
+        if name.to_ascii_lowercase().starts_with(RESERVED_TAG_PREFIX) {
+            return Err(Error::InvalidTag(format!(
+                "{name} is in banlieue's own {RESERVED_TAG_PREFIX} tag namespace and cannot be set from configuration"
+            )));
+        }
+    }
+    check_case_folded_duplicates(extra)
+}
+
+/// Refuses two names that differ only in case: Azure treats them as one tag.
+fn check_case_folded_duplicates(tags: &BTreeMap<String, String>) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for name in tags.keys() {
+        if !seen.insert(name.to_lowercase()) {
+            return Err(Error::InvalidTag(format!(
+                "tag {name} differs from another only in case; Azure tag names are case-insensitive"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Validates a tag name against Azure's rules.
@@ -176,10 +220,12 @@ pub fn validate_tag_value(value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validates every tag and the count.
+/// Validates every tag, the count, and that no two names differ only in
+/// case.
 ///
 /// # Errors
-/// [`Error::InvalidTag`] on the first invalid name or value, or too many tags.
+/// [`Error::InvalidTag`] on the first invalid name or value, too many tags,
+/// or a case-folded duplicate.
 pub fn validate_tags(tags: &BTreeMap<String, String>) -> Result<()> {
     if tags.len() > MAX_TAGS_PER_RESOURCE {
         return Err(Error::InvalidTag(format!(
@@ -191,7 +237,7 @@ pub fn validate_tags(tags: &BTreeMap<String, String>) -> Result<()> {
         validate_tag_name(name)?;
         validate_tag_value(value)?;
     }
-    Ok(())
+    check_case_folded_duplicates(tags)
 }
 
 #[cfg(test)]

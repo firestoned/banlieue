@@ -1246,6 +1246,12 @@
           }
         }
       ]
+    },
+    {
+      "unique-id": "data-asset-azure-disk-encryption-set",
+      "node-type": "data-asset",
+      "name": "Azure disk encryption set (external, admin-owned)",
+      "description": "A disk encryption set the subscription's admin creates and points at a customer-managed key in Key Vault (ADR-0172 Decision 2). banlieue never creates, reads the key of, or deletes it: it names the set's resource ID (Provider spec.connection.azure.diskEncryptionSetId, same subscription and region) on every OS disk, upload disk, snapshot and image version it creates, and ARM checks that the caller may read the set. Revoking the key stops every VM whose disk uses it: the key owner's control, not banlieue's."
     }
   ],
   "relationships": [
@@ -3917,7 +3923,7 @@
     },
     {
       "unique-id": "rel-provider-azure-arm",
-      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
+      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep. In a policy-governed subscription (ADR-0172) the NIC and VM also carry the Provider's extra tags, the OS disk names the Provider's disk encryption set, and the VM sets securityProfile.encryptionAtHost when the Provider asks.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3979,6 +3985,54 @@
               }
             }
           ]
+        },
+        "azure-governance-tags": {
+          "description": "IMPLEMENTED (ADR-0172 Decision 1): the Provider's spec.connection.azure.tags are added to every resource the provider and the publish Job create. A name in the banlieue- namespace (case-insensitive, since Azure folds tag-name case), a case-folded duplicate, a reserved character or more than 45 extra tags is refused by admission (deploy/admission/provider-azure-governance.yaml), by the provider (Provider Ready=False ConnectionInvalid) and by the request bodies, so configuration can never override or forge an ownership tag or the published digest tag.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "CM-8",
+                  "AC-6",
+                  "SI-10"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
+              }
+            }
+          ]
+        },
+        "azure-customer-managed-keys": {
+          "description": "IMPLEMENTED (ADR-0172 Decision 2): when the Provider names a disk encryption set, the OS disk is created with storageProfile.osDisk.managedDisk.diskEncryptionSet.id. The ID must be a Microsoft.Compute/diskEncryptionSets resource in the Provider's own subscription; the provider's identity holds only diskEncryptionSets/read on that set (deploy/provider-azure/disk-encryption-set-reader-role-definition.json).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-28",
+                  "SC-12"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
+              }
+            }
+          ]
+        },
+        "azure-encryption-at-host": {
+          "description": "IMPLEMENTED (ADR-0172 Decision 3): Provider spec.connection.azure.encryptionAtHost sets securityProfile.encryptionAtHost on every VM, encrypting temp disks and caches on the host. Needs the subscription feature Microsoft.Compute/EncryptionAtHost, which the admin registers; banlieue does not.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-28"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
+              }
+            }
+          ]
         }
       }
     },
@@ -4027,6 +4081,22 @@
                   "SI-7"
                 ],
                 "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "azure-publisher-governance": {
+          "description": "IMPLEMENTED (ADR-0172 Decisions 1-2): the publish Job receives the Provider's extra tags (--tags, JSON) and disk encryption set (--disk-encryption-set-id) as flags; the image definition, upload disk, snapshot and version carry the tags, and the disk, snapshot and version's target region are encrypted with the set. The ownership and banlieue-source-sha256 tags are added after the extra tags and cannot be overridden.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-28",
+                  "CM-8"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
               }
             }
           ]
@@ -4113,6 +4183,70 @@
         }
       },
       "protocol": "HTTPS"
+    },
+    {
+      "unique-id": "rel-provider-azure-disk-encryption-set",
+      "description": "IMPLEMENTED (ADR-0172 Decision 2): the provider names the disk encryption set by resource ID on each OS disk it creates; ARM performs a linked read check against the provider's identity. No key material is ever read.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-azure"
+          },
+          "destination": {
+            "node": "data-asset-azure-disk-encryption-set"
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-des-read-only-scoped": {
+          "description": "IMPLEMENTED (ADR-0172 Decision 6): a separate custom role with only Microsoft.Compute/diskEncryptionSets/read, assigned on the set itself, so neither identity gains anything in the set's (often the security team's) resource group.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-azure-image-publisher-disk-encryption-set",
+      "description": "IMPLEMENTED (ADR-0172 Decision 2): the publish Job names the disk encryption set on the upload disk, the snapshot and the image version's target region; ARM performs a linked read check against the publisher's identity.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-azure-image-publisher"
+          },
+          "destination": {
+            "node": "data-asset-azure-disk-encryption-set"
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "azure-des-read-only-scoped": {
+          "description": "IMPLEMENTED (ADR-0172 Decision 6): a separate custom role with only Microsoft.Compute/diskEncryptionSets/read, assigned on the set itself, so neither identity gains anything in the set's (often the security team's) resource group.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0172-azure-policy-governed-subscriptions.md"
+              }
+            }
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -5778,6 +5912,7 @@
     "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md",
     "docs/adr/0163-guestready-on-a-cloud.md",
     "docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md",
-    "docs/adr/0165-trusted-launch-vtpm-identity-on-azure.md"
+    "docs/adr/0165-trusted-launch-vtpm-identity-on-azure.md",
+    "docs/adr/0172-azure-policy-governed-subscriptions.md"
   ]
 }

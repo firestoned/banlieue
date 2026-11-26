@@ -44,8 +44,12 @@ mod tests {
             custom_data: b"#cloud-config\n".to_vec(),
             trusted_launch: true,
             tags: tags(),
+            disk_encryption_set_id: None,
+            encryption_at_host: false,
         }
     }
+
+    const DES: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
 
     #[test]
     fn the_body_is_the_shape_that_booted_in_the_spike() {
@@ -104,6 +108,68 @@ mod tests {
             true
         );
         assert!(body["properties"].get("securityProfile").is_none());
+    }
+
+    /// ADR-0172 Decision 2: the OS disk names the customer-managed key.
+    #[test]
+    fn a_disk_encryption_set_encrypts_the_os_disk() {
+        let mut r = request();
+        r.disk_encryption_set_id = Some(DES.to_string());
+        let body = r.to_body().expect("valid");
+        assert_eq!(
+            body["properties"]["storageProfile"]["osDisk"]["managedDisk"],
+            json!({"storageAccountType": "StandardSSD_LRS", "diskEncryptionSet": {"id": DES}})
+        );
+    }
+
+    #[test]
+    fn without_a_disk_encryption_set_the_platform_key_is_used() {
+        let body = request().to_body().expect("valid");
+        assert!(
+            body["properties"]["storageProfile"]["osDisk"]["managedDisk"]
+                .get("diskEncryptionSet")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_malformed_disk_encryption_set_is_refused_before_the_call() {
+        let mut r = request();
+        r.disk_encryption_set_id = Some("des-1".to_string());
+        assert!(matches!(
+            r.to_body(),
+            Err(crate::Error::InvalidRequest { ref code, .. })
+                if code == crate::encryption::CODE_INVALID_DISK_ENCRYPTION_SET
+        ));
+    }
+
+    /// ADR-0172 Decision 3: encryption at host sits beside Trusted Launch in
+    /// the one `securityProfile`.
+    #[test]
+    fn encryption_at_host_joins_trusted_launch_in_the_security_profile() {
+        let mut r = request();
+        r.encryption_at_host = true;
+        let body = r.to_body().expect("valid");
+        assert_eq!(
+            body["properties"]["securityProfile"],
+            json!({
+                "securityType": "TrustedLaunch",
+                "uefiSettings": {"secureBootEnabled": true, "vTpmEnabled": true},
+                "encryptionAtHost": true
+            })
+        );
+    }
+
+    #[test]
+    fn encryption_at_host_alone_sets_only_that() {
+        let mut r = request();
+        r.trusted_launch = false;
+        r.encryption_at_host = true;
+        let body = r.to_body().expect("valid");
+        assert_eq!(
+            body["properties"]["securityProfile"],
+            json!({"encryptionAtHost": true})
+        );
     }
 
     #[test]

@@ -51,6 +51,24 @@ pub fn azure() -> AzureConnection {
         authority_host: None,
         image_gallery: None,
         publisher: None,
+        ..AzureConnection::default()
+    }
+}
+
+/// A disk encryption set in [`SUBSCRIPTION`] (ADR-0172).
+pub const DES_ID: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+/// An extra tag a required-tag policy asks for (ADR-0172).
+pub const EXTRA_TAG: (&str, &str) = ("cost-centre", "1234");
+
+/// The `azure` connection block of a policy-governed subscription: an extra
+/// tag, a disk encryption set and encryption at host (ADR-0172).
+#[must_use]
+pub fn governed_azure() -> AzureConnection {
+    AzureConnection {
+        tags: BTreeMap::from([(EXTRA_TAG.0.to_string(), EXTRA_TAG.1.to_string())]),
+        disk_encryption_set_id: Some(DES_ID.into()),
+        encryption_at_host: true,
+        ..azure()
     }
 }
 

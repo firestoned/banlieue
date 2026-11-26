@@ -209,6 +209,15 @@ pub fn job_args(inputs: &JobInputs<'_>) -> Vec<String> {
         if let Some(checksum) = inputs.checksum {
             flag("checksum", checksum);
         }
+        // ADR-0172: the Provider's extra tags and disk encryption set go on
+        // everything the publish creates. A delete creates nothing.
+        if !inputs.azure.tags.is_empty() {
+            let tags = serde_json::to_string(&inputs.azure.tags).unwrap_or_default();
+            flag("tags", &tags);
+        }
+        if let Some(des) = inputs.azure.disk_encryption_set_id.as_deref() {
+            flag("disk-encryption-set-id", des);
+        }
     }
     flag("owner-uid", &inputs.vmimage.uid().unwrap_or_default());
     flag("provider", &provider_tag(inputs.provider));

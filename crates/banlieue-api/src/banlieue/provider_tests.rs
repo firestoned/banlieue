@@ -477,6 +477,7 @@ mod tests {
             authority_host: None,
             image_gallery: None,
             publisher: None,
+            ..AzureConnection::default()
         };
         let json = serde_json::to_value(&conn).unwrap();
         assert_eq!(json["resourceGroup"], "rg");
@@ -516,6 +517,54 @@ mod tests {
             })
         );
         assert_eq!(serde_json::to_value(&conn).unwrap(), json);
+    }
+
+    /// ADR-0172: extra tags, a disk encryption set and encryption at host,
+    /// in camelCase, all omitted when unset.
+    #[test]
+    fn azure_connection_carries_the_governance_settings() {
+        let json = serde_json::json!({
+            "tenantId": "t",
+            "clientId": "c",
+            "subscriptionId": "00000000-0000-0000-0000-000000000000",
+            "location": "canadacentral",
+            "resourceGroup": "rg",
+            "tags": { "cost-centre": "1234", "env": "prod" },
+            "diskEncryptionSetId": "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1",
+            "encryptionAtHost": true,
+        });
+        let conn: AzureConnection = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            conn.tags.get("cost-centre").map(String::as_str),
+            Some("1234")
+        );
+        assert!(conn.encryption_at_host);
+        assert!(
+            conn.disk_encryption_set_id
+                .as_deref()
+                .is_some_and(|id| id.ends_with("/diskEncryptionSets/des-1"))
+        );
+        assert_eq!(serde_json::to_value(&conn).unwrap(), json);
+    }
+
+    /// The schema caps the extra tags where Azure would (ADR-0172).
+    #[test]
+    fn azure_connection_tags_are_capped_in_the_schema() {
+        use kube::CustomResourceExt;
+        let crd = Provider::crd();
+        let schema = crd.spec.versions[0].schema.clone().unwrap();
+        let root = serde_json::to_value(schema.open_api_v3_schema.unwrap()).unwrap();
+        let tags = &root["properties"]["spec"]["properties"]["connection"]["properties"]["azure"]["properties"]
+            ["tags"];
+        assert_eq!(tags["maxProperties"], 45, "got {tags}");
+    }
+
+    #[test]
+    fn azure_connection_omits_unset_governance_settings() {
+        let json = serde_json::to_value(AzureConnection::default()).unwrap();
+        assert!(json.get("tags").is_none());
+        assert!(json.get("diskEncryptionSetId").is_none());
+        assert!(json.get("encryptionAtHost").is_none());
     }
 
     #[test]

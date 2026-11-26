@@ -16,6 +16,10 @@
 //!   inherits). With only the first, the version create fails.
 //! - Every version is created with `blockDeletionBeforeEndOfLife: false`
 //!   and no implicit end-of-life, so banlieue can delete what it published.
+//!
+//! In a subscription that requires customer-managed keys (ADR-0172
+//! Decision 2) the upload disk, the snapshot and the version's one target
+//! region name the `Provider`'s disk encryption set.
 
 use std::collections::BTreeMap;
 
@@ -23,6 +27,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use crate::encryption::{disk_encryption_body, parse_disk_encryption_set_id};
 use crate::error::{Error, Result};
 use crate::tags::validate_tags;
 
@@ -268,6 +273,14 @@ pub fn snapshot_name(gallery: &str, definition: &str, version: &str) -> String {
     )
 }
 
+/// Checks the optional disk encryption set ID's shape.
+fn check_des(id: Option<&String>) -> Result<()> {
+    if let Some(id) = id {
+        parse_disk_encryption_set_id(id)?;
+    }
+    Ok(())
+}
+
 /// `PUT .../galleries/{g}/images/{def}`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageDefinitionRequest {
@@ -335,8 +348,10 @@ pub struct UploadDiskRequest {
     pub location: String,
     /// The VHD's whole length, footer included.
     pub upload_size_bytes: u64,
-    /// Ownership tags.
+    /// Ownership tags and the `Provider`'s extra tags.
     pub tags: BTreeMap<String, String>,
+    /// The `Provider`'s disk encryption set, if any (ADR-0172).
+    pub disk_encryption_set_id: Option<String>,
 }
 
 impl UploadDiskRequest {
@@ -346,10 +361,12 @@ impl UploadDiskRequest {
     /// without one; Trusted Launch is the definition's feature.
     ///
     /// # Errors
-    /// [`Error::InvalidTag`] for a tag Azure would refuse.
+    /// [`Error::InvalidTag`] for a tag Azure would refuse;
+    /// [`Error::InvalidRequest`] for a malformed disk encryption set ID.
     pub fn to_body(&self) -> Result<Value> {
         validate_tags(&self.tags)?;
-        Ok(json!({
+        check_des(self.disk_encryption_set_id.as_ref())?;
+        let mut body = json!({
             "location": self.location,
             "tags": self.tags,
             "sku": { "name": STANDARD_LRS },
@@ -362,7 +379,11 @@ impl UploadDiskRequest {
                 },
                 "supportedCapabilities": { "diskControllerTypes": DISK_CONTROLLER_TYPES },
             }
-        }))
+        });
+        if let Some(id) = &self.disk_encryption_set_id {
+            body["properties"]["encryption"] = disk_encryption_body(id);
+        }
+        Ok(body)
     }
 }
 
@@ -373,18 +394,22 @@ pub struct SnapshotRequest {
     pub location: String,
     /// The upload disk's resource ID.
     pub source_disk_id: String,
-    /// Ownership tags.
+    /// Ownership tags and the `Provider`'s extra tags.
     pub tags: BTreeMap<String, String>,
+    /// The `Provider`'s disk encryption set, if any (ADR-0172).
+    pub disk_encryption_set_id: Option<String>,
 }
 
 impl SnapshotRequest {
     /// The request body; declares both controllers, as the disk does.
     ///
     /// # Errors
-    /// [`Error::InvalidTag`] for a tag Azure would refuse.
+    /// [`Error::InvalidTag`] for a tag Azure would refuse;
+    /// [`Error::InvalidRequest`] for a malformed disk encryption set ID.
     pub fn to_body(&self) -> Result<Value> {
         validate_tags(&self.tags)?;
-        Ok(json!({
+        check_des(self.disk_encryption_set_id.as_ref())?;
+        let mut body = json!({
             "location": self.location,
             "tags": self.tags,
             "sku": { "name": STANDARD_LRS },
@@ -398,7 +423,11 @@ impl SnapshotRequest {
                 "incremental": false,
                 "supportedCapabilities": { "diskControllerTypes": DISK_CONTROLLER_TYPES },
             }
-        }))
+        });
+        if let Some(id) = &self.disk_encryption_set_id {
+            body["properties"]["encryption"] = disk_encryption_body(id);
+        }
+        Ok(body)
     }
 }
 
@@ -411,8 +440,12 @@ pub struct GalleryImageVersionRequest {
     pub snapshot_id: String,
     /// An end-of-life date (`YYYY-MM-DD`), or none.
     pub end_of_life: Option<String>,
-    /// Ownership tags and [`crate::tags::TAG_SOURCE_SHA256`].
+    /// Ownership tags, the `Provider`'s extra tags and
+    /// [`crate::tags::TAG_SOURCE_SHA256`].
     pub tags: BTreeMap<String, String>,
+    /// The `Provider`'s disk encryption set, if any: encrypts the one
+    /// replica (ADR-0172).
+    pub disk_encryption_set_id: Option<String>,
 }
 
 impl GalleryImageVersionRequest {
@@ -420,9 +453,11 @@ impl GalleryImageVersionRequest {
     /// end-of-life, deletion never blocked (ADR-0162 finding 5).
     ///
     /// # Errors
-    /// [`Error::InvalidTag`] for a tag Azure would refuse.
+    /// [`Error::InvalidTag`] for a tag Azure would refuse;
+    /// [`Error::InvalidRequest`] for a malformed disk encryption set ID.
     pub fn to_body(&self) -> Result<Value> {
         validate_tags(&self.tags)?;
+        check_des(self.disk_encryption_set_id.as_ref())?;
         let mut publishing = json!({
             "targetRegions": [{
                 "name": self.location,
@@ -434,6 +469,10 @@ impl GalleryImageVersionRequest {
         });
         if let Some(date) = &self.end_of_life {
             publishing["endOfLifeDate"] = json!(date);
+        }
+        if let Some(id) = &self.disk_encryption_set_id {
+            publishing["targetRegions"][0]["encryption"] =
+                json!({ "osDiskImage": { "diskEncryptionSetId": id } });
         }
         Ok(json!({
             "location": self.location,
