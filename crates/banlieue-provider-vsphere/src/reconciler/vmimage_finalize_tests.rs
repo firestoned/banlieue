@@ -97,6 +97,9 @@ mod tests {
                     reason: None,
                     message: None,
                     zones,
+                    source_digest: None,
+                    min_os_disk_size_gib: None,
+                    superseded_refs: Vec::new(),
                 }],
                 ..Default::default()
             }),
@@ -333,6 +336,9 @@ mod tests {
             reason: None,
             message: None,
             zones,
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         }
     }
 

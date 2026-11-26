@@ -55,6 +55,7 @@ pub mod finalizer;
 pub mod guestdata;
 pub mod health;
 pub mod httpd;
+pub mod k8s_name;
 pub mod leader;
 pub mod metrics;
 pub mod naming;

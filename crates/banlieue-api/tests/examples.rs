@@ -277,6 +277,89 @@ fn proxmox_example_matches_the_types() {
     }
 }
 
+/// Every document in `31-virtualmachine-azure.yaml` must parse into the type
+/// its `kind` names with no dropped key. The Provider carries no credential
+/// (ADR-0159 Decision 1), names its Azure identity, and maps the class the
+/// VirtualMachine uses to an instance size (ADR-0160 Decision 1).
+#[test]
+fn azure_example_matches_the_types() {
+    use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
+
+    let path = format!("{EXAMPLES}/31-virtualmachine-azure.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut seen = Vec::new();
+    let mut sized = Vec::new();
+    let mut class_names = Vec::new();
+
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        let kind = doc["kind"].as_str().expect("kind").to_string();
+        let spec = doc.get("spec").cloned();
+        match kind.as_str() {
+            "Provider" => {
+                let p: Provider = serde_json::from_value(doc.clone()).expect("Provider");
+                assert_no_dropped_keys(&spec.unwrap(), &p.spec);
+                assert_eq!(p.spec.provider_class_ref.name, "azure");
+                assert!(
+                    p.spec.connection.credentials_ref.is_none(),
+                    "an azure Provider must not name a Secret (ADR-0159 Decision 1)"
+                );
+                assert!(p.spec.connection.endpoint.starts_with("https://"));
+                let azure = p.spec.connection.azure.as_ref().expect("connection.azure");
+                assert_eq!(azure.location, "canadacentral");
+                assert_eq!(azure.resource_group, "banlieue-vms");
+                let caps = &p.spec.capabilities;
+                assert!(
+                    caps.storage_classes
+                        .iter()
+                        .all(|c| c.target.as_ref().is_some_and(|t| t.contains_key("sku"))),
+                    "Azure storage classes name a managed-disk `sku`"
+                );
+                assert!(
+                    caps.network_classes.iter().all(|c| c
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| t.contains_key("subnetId"))),
+                    "Azure network classes name a `subnetId`"
+                );
+                sized.extend(caps.instance_sizes.iter().map(|s| s.vm_class.clone()));
+            }
+            "VMImage" => {
+                let i: VMImage = serde_json::from_value(doc.clone()).expect("VMImage");
+                assert_no_dropped_keys(&spec.unwrap(), &i.spec);
+                assert!(
+                    i.spec.sources.iter().any(|s| s.provider_class == "azure"
+                        && s.reference
+                            .contains("/providers/Microsoft.Compute/galleries/")),
+                    "the image needs an azure gallery image version source"
+                );
+            }
+            "VMClass" => {
+                let c: VMClass = serde_json::from_value(doc.clone()).expect("VMClass");
+                assert_no_dropped_keys(&spec.unwrap(), &c.spec);
+                class_names.push(c.metadata.name.clone().unwrap_or_default());
+            }
+            "VirtualMachine" => {
+                let v: VirtualMachine =
+                    serde_json::from_value(doc.clone()).expect("VirtualMachine");
+                assert_no_dropped_keys(&spec.unwrap(), &v.spec);
+                assert!(v.spec.user_data.is_some(), "the example shows userData");
+            }
+            _ => {}
+        }
+        seen.push(kind);
+    }
+    for kind in ["Provider", "VMImage", "VMClass", "VirtualMachine"] {
+        assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
+    }
+    for class in &class_names {
+        assert!(
+            sized.contains(class),
+            "VMClass {class} has no instance size"
+        );
+    }
+}
+
 /// The Cloud Hypervisor Provider example (ADR-0060, ADR-0107): it must parse
 /// with no dropped key, carry no credential (an External provider reads no
 /// Secret), map every class to a `hostClass`, and show the scheduling knob

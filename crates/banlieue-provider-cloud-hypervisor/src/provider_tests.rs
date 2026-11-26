@@ -32,8 +32,10 @@ mod tests {
                     credentials_ref: None,
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
+                    azure: None,
                 },
                 capabilities: ProviderCapabilities {
+                    instance_sizes: Vec::new(),
                     storage_classes: vec![
                         StorageClassMapping {
                             name: "gold".into(),

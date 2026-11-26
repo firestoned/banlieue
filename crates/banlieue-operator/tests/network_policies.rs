@@ -59,13 +59,19 @@ const LIBVIRT_TLS: u16 = 16514;
 /// Backends whose provider pods the operator spawns as Deployments.
 /// `cloud-hypervisor` is host-resident (`ProviderDeployment::External`) and
 /// has no pod for a NetworkPolicy to select.
-const OPERATOR_SPAWNED_BACKENDS: [&str; 3] = ["vsphere", "libvirt", "proxmox"];
+const OPERATOR_SPAWNED_BACKENDS: [&str; 4] = ["vsphere", "libvirt", "proxmox", "azure"];
 
 /// Component labels on the Jobs banlieue launches, and where each is stamped:
 /// - `registry-push`: `crates/banlieue-imagebuilder/src/reconciler/push.rs`
 /// - `libvirt-import`: `crates/banlieue-provider-libvirt/src/reconciler/vmimage.rs`
 /// - `vsphere-import`: `crates/banlieue-provider-vsphere/src/reconciler/vmimage.rs`
-const JOB_COMPONENTS: [&str; 3] = ["registry-push", "libvirt-import", "vsphere-import"];
+/// - `azure-publish`: `crates/banlieue-provider-azure/src/reconciler/publish_job.rs`
+const JOB_COMPONENTS: [&str; 4] = [
+    "registry-push",
+    "libvirt-import",
+    "vsphere-import",
+    "azure-publish",
+];
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -249,6 +255,8 @@ fn expected_egress() -> BTreeMap<String, BTreeSet<(String, u16)>> {
         ("imagebuilder".to_string(), with(&[])),
         (component("vsphere"), with(&[(TCP, HTTPS)])),
         (component("proxmox"), with(&[(TCP, PROXMOX_API)])),
+        // Azure Resource Manager and Entra ID, both HTTPS (ADR-0164).
+        (component("azure"), with(&[(TCP, HTTPS)])),
         (component("libvirt"), with(&[(TCP, LIBVIRT_TLS)])),
         ("vsphere-import".to_string(), with(&[(TCP, HTTPS)])),
         ("libvirt-import".to_string(), with(&[(TCP, LIBVIRT_TLS)])),
@@ -256,6 +264,12 @@ fn expected_egress() -> BTreeMap<String, BTreeSet<(String, u16)>> {
         // calls the API server: DNS and the registry only.
         (
             "registry-push".to_string(),
+            ports(&[(UDP, DNS), (TCP, DNS), (TCP, HTTPS)]),
+        ),
+        // The Azure publish Job (ADR-0162) mounts no API server token either:
+        // DNS, then Entra ID, ARM and the disk's blob endpoint over HTTPS.
+        (
+            "azure-publish".to_string(),
             ports(&[(UDP, DNS), (TCP, DNS), (TCP, HTTPS)]),
         ),
     ])

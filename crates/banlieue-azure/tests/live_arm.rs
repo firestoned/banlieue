@@ -67,7 +67,7 @@ fn env_or(name: &str, default: &str) -> String {
 }
 
 fn install_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
 }
 
 fn token_source() -> Arc<FederatedToken> {

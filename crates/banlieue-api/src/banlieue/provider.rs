@@ -86,7 +86,8 @@ pub struct ProviderSpec {
     /// Reference to a ProviderClass that identifies the backend type.
     ///
     /// For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
-    /// drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`. A future
+    /// drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
+    /// `cloud-hypervisor`, `azure`. A future
     /// ProviderClass CRD will provide install metadata (image, RBAC) without
     /// changing this reference.
     pub provider_class_ref: LocalObjectReference,
@@ -327,6 +328,7 @@ pub struct ProviderConnection {
     ///   vsphere:  https://vcenter.example.com/sdk
     ///   proxmox:  https://pve.example.com:8006
     ///   libvirt:  qemu+ssh://kvm-host.example.com/system
+    ///   azure:    https://management.azure.com
     pub endpoint: String,
 
     /// Reference to a Secret in the Provider's namespace containing the
@@ -363,6 +365,86 @@ pub struct ProviderConnection {
     /// system trust roots are used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ca_bundle: Option<CABundleSource>,
+
+    /// `azure` only: the subscription, region and resource group this
+    /// `Provider` creates into, and the Entra ID identity it federates to
+    /// (ADR-0158 Decision 1, ADR-0159 Decision 1). `endpoint` is the ARM
+    /// endpoint (`https://management.azure.com`) and `credentialsRef` is
+    /// not set: the provider's ServiceAccount token is its only credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub azure: Option<AzureConnection>,
+}
+
+/// Where an `azure` `Provider` creates VMs, and who it acts as. Every field
+/// is declared by the admin; nothing is discovered (non-negotiable 4).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureConnection {
+    /// Entra ID tenant (directory) ID.
+    #[schemars(length(min = 1))]
+    pub tenant_id: String,
+    /// Client ID of the user-assigned managed identity or app registration
+    /// whose federated credential trusts this provider's ServiceAccount.
+    #[schemars(length(min = 1))]
+    pub client_id: String,
+    /// Subscription ID.
+    #[schemars(length(min = 1))]
+    pub subscription_id: String,
+    /// The region (`location`), such as `canadacentral`. One `Provider` is
+    /// one region; its availability zones are the failure domains
+    /// (ADR-0158 Decisions 1 and 3).
+    #[schemars(length(min = 1))]
+    pub location: String,
+    /// The resource group VMs, NICs and disks are created in. Must exist;
+    /// banlieue never creates or deletes it, and never touches anything in
+    /// it that does not carry its ownership tags (ADR-0158 Decision 4).
+    #[schemars(length(min = 1))]
+    pub resource_group: String,
+    /// Entra ID authority host. Defaults to the public cloud
+    /// (`https://login.microsoftonline.com/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authority_host: Option<String>,
+    /// The admin's existing Compute Gallery this `Provider` publishes a
+    /// `VMImage`'s `Url` source into (ADR-0162 Decisions 4 and 8). banlieue
+    /// never creates or deletes the gallery; it creates and deletes only the
+    /// image definitions and versions it tags. Unset: no `Url` source is
+    /// published to this `Provider`, and its rows report
+    /// `GalleryNotConfigured`. `Template` sources need no gallery here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_gallery: Option<AzureImageGallery>,
+    /// The image publisher's own identity (ADR-0159 Decision 3, ADR-0162
+    /// Decision 1), separate from `clientId`: the publish Job federates to it,
+    /// and only it holds the rights to create and delete images. Its tenant
+    /// is `tenantId`. Unset: no `Url` source is published to this `Provider`
+    /// (`PublisherNotConfigured`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<AzurePublisherIdentity>,
+}
+
+/// An existing Azure Compute Gallery, declared by the admin (ADR-0162
+/// Decision 8).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureImageGallery {
+    /// The resource group the gallery is in. It may differ from the
+    /// `Provider`'s `resourceGroup`.
+    #[schemars(length(min = 1))]
+    pub resource_group: String,
+    /// The gallery's name.
+    #[schemars(length(min = 1))]
+    pub name: String,
+}
+
+/// The Entra ID identity the image publish Job runs as (ADR-0159 Decision 3).
+/// Its federated credential trusts the subject
+/// `system:serviceaccount:<imagebuild namespace>:banlieue-azure-publisher`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AzurePublisherIdentity {
+    /// Client ID of the publisher's user-assigned managed identity or app
+    /// registration.
+    #[schemars(length(min = 1))]
+    pub client_id: String,
 }
 
 /// The capability surface an admin asserts a backend exposes. The scheduler
@@ -388,6 +470,16 @@ pub struct ProviderCapabilities {
     /// nestedVirtualization, gpuPassthrough.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub features: Vec<String>,
+
+    /// Cloud `Provider`s only: which instance size each `VMClass` runs as
+    /// (ADR-0160 Decision 1). A `VMClass` with no entry is not schedulable on
+    /// this `Provider`; nothing is guessed from vCPU and memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["vmClass"],
+    ))]
+    pub instance_sizes: Vec<InstanceSizeMapping>,
 }
 
 impl ProviderCapabilities {
@@ -395,7 +487,56 @@ impl ProviderCapabilities {
         self.storage_classes.is_empty()
             && self.network_classes.is_empty()
             && self.features.is_empty()
+            && self.instance_sizes.is_empty()
     }
+
+    /// The instance size `vm_class` runs as in `zone`, or `None` when the
+    /// class is not mapped on this `Provider` (ADR-0160 Decision 1).
+    #[must_use]
+    pub fn instance_size_for(&self, vm_class: &str, zone: &str) -> Option<&str> {
+        self.instance_sizes
+            .iter()
+            .find(|m| m.vm_class == vm_class)
+            .map(|m| m.size_for_zone(zone))
+    }
+}
+
+/// One `VMClass` mapped to a cloud instance size (ADR-0160 Decision 1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceSizeMapping {
+    /// The `VMClass` name.
+    pub vm_class: String,
+    /// The cloud's size name, such as `Standard_D2s_v5`.
+    pub size: String,
+    /// Per-zone overrides of `size`, for a zone that does not offer it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend(
+        "x-kubernetes-list-type" = "map",
+        "x-kubernetes-list-map-keys" = ["zone"],
+    ))]
+    pub per_zone: Vec<ZonedInstanceSize>,
+}
+
+impl InstanceSizeMapping {
+    /// The size in `zone`: a `per_zone` entry wins, else `size`.
+    #[must_use]
+    pub fn size_for_zone(&self, zone: &str) -> &str {
+        self.per_zone
+            .iter()
+            .find(|z| z.zone == zone)
+            .map_or(self.size.as_str(), |z| z.size.as_str())
+    }
+}
+
+/// An instance size for one availability zone (ADR-0160 Decision 1).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ZonedInstanceSize {
+    /// Zone name as the cloud reports it (`1`, `2`).
+    pub zone: String,
+    /// The cloud's size name in that zone.
+    pub size: String,
 }
 
 /// A concrete backend target scoped to one specific failure domain — a
@@ -405,13 +546,23 @@ impl ProviderCapabilities {
 /// admin-renamed) display name, which would make the mapping fragile to a
 /// rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
 /// same shape, same identity key (ADR-0030).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
+/// availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
+/// and `cluster` empty (ADR-0158 Decision 3).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopedTarget {
-    /// Datacenter name as vCenter reports it.
+    /// Datacenter name as vCenter reports it. Empty on a cloud `Provider`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub datacenter: String,
-    /// Cluster name as vCenter reports it.
+    /// Cluster name as vCenter reports it. Empty on a cloud `Provider`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cluster: String,
+    /// Availability zone name as the cloud reports it (`1`, `2`), on a cloud
+    /// `Provider` (ADR-0158 Decision 3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone: Option<String>,
     /// Concrete backend target for this zone, same shape as
     /// [`StorageClassMapping::target`] / [`NetworkClassMapping::target`].
     pub target: BTreeMap<String, String>,
@@ -429,6 +580,20 @@ fn zone_target<'a>(
     per_zone
         .iter()
         .find(|z| z.datacenter == datacenter && z.cluster == cluster)
+        .map(|z| &z.target)
+        .or(default)
+}
+
+/// Shared body of the `target_for_zone` methods: a `per_zone` entry keyed by
+/// this cloud zone wins, else the default target (ADR-0158 Decision 3).
+fn cloud_zone_target<'a>(
+    per_zone: &'a [ScopedTarget],
+    default: Option<&'a BTreeMap<String, String>>,
+    zone: &str,
+) -> Option<&'a BTreeMap<String, String>> {
+    per_zone
+        .iter()
+        .find(|z| z.zone.as_deref() == Some(zone))
         .map(|z| &z.target)
         .or(default)
 }
@@ -457,6 +622,7 @@ pub struct StorageClassMapping {
     ///             { tagCategory: "tier", tag: "gold" }
     ///   proxmox:  { storage: "ceph-pool-1" }
     ///   libvirt:  { pool: "nvme-pool" }
+    ///   azure:    { sku: "Premium_LRS" }   (a managed-disk SKU, ADR-0160)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<BTreeMap<String, String>>,
     /// Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
@@ -471,6 +637,13 @@ impl StorageClassMapping {
     #[must_use]
     pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
         zone_target(&self.per_zone, self.target.as_ref(), datacenter, cluster)
+    }
+
+    /// Effective concrete target in a cloud availability zone: a `per_zone`
+    /// entry keyed by `zone` wins, else the default `target` (ADR-0158).
+    #[must_use]
+    pub fn target_for_zone(&self, zone: &str) -> Option<&BTreeMap<String, String>> {
+        cloud_zone_target(&self.per_zone, self.target.as_ref(), zone)
     }
 }
 
@@ -516,6 +689,15 @@ impl NetworkClassMapping {
     #[must_use]
     pub fn target_for(&self, datacenter: &str, cluster: &str) -> Option<&BTreeMap<String, String>> {
         zone_target(&self.per_zone, self.target.as_ref(), datacenter, cluster)
+    }
+
+    /// Effective concrete target in a cloud availability zone: a `per_zone`
+    /// entry keyed by `zone` wins, else the default `target` (ADR-0158).
+    /// On `azure` the target carries `subnetId` (a subnet resource ID) and
+    /// may carry `acceleratedNetworking: "true"` (ADR-0160 Decision 4).
+    #[must_use]
+    pub fn target_for_zone(&self, zone: &str) -> Option<&BTreeMap<String, String>> {
+        cloud_zone_target(&self.per_zone, self.target.as_ref(), zone)
     }
 
     /// Effective subnet shape for a given `(datacenter, cluster)`: an exact

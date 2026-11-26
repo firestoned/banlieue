@@ -18,9 +18,11 @@ error, so you apply them on purpose, after reading this.
 | `imagebuilder.yaml` | `imagebuilder` | DNS, API server | `metrics`, `health` |
 | `provider-vsphere.yaml` | `provider-vsphere` | DNS, API server, TCP 443 | `metrics`, `health` |
 | `provider-proxmox.yaml` | `provider-proxmox` | DNS, API server, TCP 8006 | `metrics`, `health` |
+| `provider-azure.yaml` | `provider-azure` | DNS, API server, TCP 443 (ARM and Entra ID) | `metrics`, `health` |
 | `provider-libvirt.yaml` | `provider-libvirt` | DNS, API server, TCP 16514 | `metrics`, `health` |
 | `vsphere-import.yaml` | `vsphere-import` (Job) | DNS, API server, TCP 443 | none |
 | `libvirt-import.yaml` | `libvirt-import` (Job) | DNS, API server, TCP 16514 | none |
+| `azure-publish.yaml` | `azure-publish` (Job) | DNS, TCP 443 (Entra ID, ARM, blob upload) | none |
 | `registry-push.yaml` | `registry-push` (Job) | DNS, TCP 443 | none |
 
 - **DNS** is UDP and TCP 53 to pods labelled `k8s-app=kube-dns` in
@@ -72,7 +74,10 @@ comment shows where:
 ```
 
 On vSphere, port 443 is both the API server rule and the vCenter rule; 443
-stays open to any address until you narrow both.
+stays open to any address until you narrow both. The same holds on Azure,
+where 443 is also Azure Resource Manager and Entra ID: those are global front
+ends published only as Azure service tags, so their rule cannot be narrowed
+to CIDRs in a NetworkPolicy at all; use an egress proxy or an FQDN-aware CNI.
 
 ## Not covered
 

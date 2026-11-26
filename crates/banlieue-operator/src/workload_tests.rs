@@ -1044,4 +1044,299 @@ mod tests {
             "Managed pods use projected tokens"
         );
     }
+
+    // ----------------------------------------------------------------------
+    // Azure: workload identity federation (ADR-0159 Decision 1)
+    // ----------------------------------------------------------------------
+
+    fn azure_class() -> ProviderClassSpec {
+        ProviderClassSpec {
+            backend: "azure".to_string(),
+            ..class_spec()
+        }
+    }
+
+    /// An azure Provider names no credentialsRef (admission forbids it).
+    fn azure_inputs(class: &ProviderClassSpec) -> WorkloadInputs<'_> {
+        WorkloadInputs {
+            class_name: "azure",
+            provider_name: "az-cc",
+            credentials_secret: None,
+            ..inputs(class)
+        }
+    }
+
+    fn pod_spec(deployment: &Deployment) -> &k8s_openapi::api::core::v1::PodSpec {
+        deployment.spec.template.spec.as_ref().unwrap()
+    }
+
+    #[test]
+    fn azure_pod_projects_an_entra_audience_token_for_one_hour() {
+        let class = azure_class();
+        let deployment = build_deployment(&azure_inputs(&class));
+        let volumes = pod_spec(&deployment).volumes.clone().expect("volumes");
+        assert_eq!(volumes.len(), 1);
+        let volume = &volumes[0];
+        assert_eq!(volume.name, "azure-identity-token");
+        let sources = volume
+            .projected
+            .as_ref()
+            .and_then(|p| p.sources.clone())
+            .expect("a projected volume");
+        assert_eq!(sources.len(), 1);
+        let token = sources[0]
+            .service_account_token
+            .as_ref()
+            .expect("a ServiceAccount token projection");
+        assert_eq!(
+            token.audience.as_deref(),
+            Some("api://AzureADTokenExchange")
+        );
+        assert_eq!(token.expiration_seconds, Some(3600));
+        assert_eq!(token.path, "azure-identity-token");
+    }
+
+    #[test]
+    fn azure_container_mounts_the_token_read_only_and_names_the_file() {
+        let class = azure_class();
+        let deployment = build_deployment(&azure_inputs(&class));
+        let c = container(&deployment);
+        let mounts = c.volume_mounts.clone().expect("volume mounts");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "azure-identity-token");
+        assert_eq!(mounts[0].mount_path, "/var/run/secrets/azure/tokens");
+        assert_eq!(mounts[0].read_only, Some(true));
+        let env = c.env.clone().expect("env");
+        let file = env
+            .iter()
+            .find(|e| e.name == "AZURE_FEDERATED_TOKEN_FILE")
+            .expect("AZURE_FEDERATED_TOKEN_FILE");
+        assert_eq!(
+            file.value.as_deref(),
+            Some("/var/run/secrets/azure/tokens/azure-identity-token")
+        );
+        assert_eq!(azure_federated_token_file(), file.value.clone().unwrap());
+        // The downward API identity is still there, first and unchanged.
+        let names: Vec<&str> = env.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "POD_NAME",
+                "POD_NAMESPACE",
+                "POD_SERVICE_ACCOUNT",
+                "AZURE_FEDERATED_TOKEN_FILE"
+            ]
+        );
+    }
+
+    /// The token is the only credential: the Role grants no Secret at all.
+    #[test]
+    fn azure_role_grants_no_secret_access() {
+        let class = azure_class();
+        let i = azure_inputs(&class);
+        assert!(rule_for(&build_role(&i), "", "secrets").is_empty());
+        assert!(rule_for(&build_import_role(&i), "", "secrets").is_empty());
+    }
+
+    /// The Entra federated credential's subject is
+    /// `system:serviceaccount:<namespace>:<this name>`, so the docs pin it.
+    #[test]
+    fn azure_pod_runs_as_the_derived_service_account() {
+        let class = azure_class();
+        let i = azure_inputs(&class);
+        let set = build_workload(&i, "banlieue-imagebuild");
+        assert_eq!(
+            set.service_account.metadata.name.as_deref(),
+            Some("banlieue-provider-azure-az-cc")
+        );
+        assert_eq!(
+            set.service_account.metadata.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+        let deployment = set.deployment.expect("azure is Managed");
+        assert_eq!(
+            pod_spec(&deployment).service_account_name.as_deref(),
+            Some("banlieue-provider-azure-az-cc")
+        );
+    }
+
+    /// Every other backend's pod spec is exactly what it was: no volumes, no
+    /// mounts, and only the downward API environment.
+    #[test]
+    fn other_backends_get_no_token_volume_mount_or_env() {
+        for backend in ["vsphere", "libvirt", "proxmox"] {
+            let class = ProviderClassSpec {
+                backend: backend.to_string(),
+                ..class_spec()
+            };
+            let deployment = build_deployment(&inputs(&class));
+            let spec = serde_json::to_value(pod_spec(&deployment)).unwrap();
+            assert!(spec.get("volumes").is_none(), "{backend}: {spec}");
+            let c = &spec["containers"][0];
+            assert!(c.get("volumeMounts").is_none(), "{backend}: {c}");
+            assert_eq!(
+                c["env"],
+                serde_json::to_value(downward_api_env(DOWNWARD_API_ENV)).unwrap(),
+                "{backend}"
+            );
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // Job Role in the build namespace (least privilege for Job create)
+    // ----------------------------------------------------------------------
+
+    fn class_for(backend: &str) -> ProviderClassSpec {
+        ProviderClassSpec {
+            backend: backend.to_string(),
+            ..class_spec()
+        }
+    }
+
+    fn verbs_on(role: &Role, group: &str, resource: &str) -> Vec<String> {
+        role.rules
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter(|r| {
+                r.api_groups.as_deref() == Some(&[group.to_string()])
+                    && r.resources.as_deref() == Some(&[resource.to_string()])
+            })
+            .flat_map(|r| r.verbs.clone())
+            .collect()
+    }
+
+    /// Each backend that runs Jobs gets exactly the verbs its own Job code
+    /// uses, in a Role in the build namespace.
+    #[test]
+    fn a_job_running_backend_gets_its_job_verbs_in_the_build_namespace() {
+        let expected: [(&str, &[&str], &[&str]); 3] = [
+            ("libvirt", &["get", "create", "patch"], &[]),
+            (
+                "vsphere",
+                &["get", "list", "watch", "create", "patch", "delete"],
+                &[],
+            ),
+            (
+                "azure",
+                &["get", "list", "watch", "create", "patch", "delete"],
+                &["list"],
+            ),
+        ];
+        for (backend, jobs, pods) in expected {
+            let class = class_for(backend);
+            let set = build_workload(&inputs(&class), "banlieue-imagebuild");
+            let role = set
+                .jobs_role
+                .unwrap_or_else(|| panic!("{backend}: no Job Role"));
+            assert_eq!(
+                role.metadata.namespace.as_deref(),
+                Some("banlieue-imagebuild"),
+                "{backend}"
+            );
+            assert_eq!(verbs_on(&role, "batch", "jobs"), jobs, "{backend}");
+            assert_eq!(verbs_on(&role, "", "pods"), pods, "{backend}");
+            assert_eq!(
+                role.rules.as_ref().unwrap().len(),
+                1 + usize::from(!pods.is_empty()),
+                "{backend}: nothing but jobs (and azure's pods list)"
+            );
+            for rule in role.rules.as_ref().unwrap() {
+                assert!(
+                    !rule.verbs.iter().any(|v| v == "update" || v == "*"),
+                    "{backend}: {rule:?}"
+                );
+            }
+        }
+    }
+
+    /// The binding lives with the Role in the build namespace and names the
+    /// provider's own ServiceAccount where it lives, never the import one.
+    #[test]
+    fn the_job_role_binding_names_the_provider_account_across_namespaces() {
+        let class = class_for("vsphere");
+        let mut i = inputs(&class);
+        i.provider_namespace = "tenant-a";
+        i.workload_namespace = "banlieue-system";
+        i.owner = Some(owner_reference("prod-vc", "uid-1"));
+        let set = build_workload(&i, "banlieue-imagebuild");
+        let role = set.jobs_role.unwrap();
+        let binding = set.jobs_role_binding.unwrap();
+        assert_eq!(
+            binding.metadata.namespace.as_deref(),
+            Some("banlieue-imagebuild")
+        );
+        assert_eq!(binding.role_ref.kind, "Role");
+        assert_eq!(Some(binding.role_ref.name.clone()), role.metadata.name);
+        let subject = &binding.subjects.as_ref().unwrap()[0];
+        assert_eq!(subject.name, workload_name("vsphere", "prod-vc"));
+        assert_eq!(subject.namespace.as_deref(), Some("banlieue-system"));
+        assert_ne!(subject.name, IMPORT_SERVICE_ACCOUNT);
+        // Unowned: the owner would be in another namespace. The labels pin
+        // the Provider, which is how the finalizer finds and removes them.
+        assert!(role.metadata.owner_references.is_none());
+        assert!(binding.metadata.owner_references.is_none());
+        let labels = role.metadata.labels.as_ref().unwrap();
+        assert_eq!(labels["banlieue.io/provider"], "prod-vc");
+        assert_eq!(labels["banlieue.io/provider-namespace"], "tenant-a");
+        assert_eq!(binding.metadata.labels, role.metadata.labels);
+    }
+
+    /// Every Provider's Job Role shares one build namespace, so the name
+    /// carries the Provider's namespace or two would collide.
+    #[test]
+    fn job_role_names_do_not_collide_across_provider_namespaces() {
+        let class = class_for("libvirt");
+        let mut a = inputs(&class);
+        a.provider_namespace = "tenant-a";
+        let mut b = inputs(&class);
+        b.provider_namespace = "tenant-b";
+        let name_a = build_jobs_role(&a, "build").unwrap().metadata.name;
+        let name_b = build_jobs_role(&b, "build").unwrap().metadata.name;
+        assert_ne!(name_a, name_b);
+        assert_eq!(
+            name_a.as_deref(),
+            Some(jobs_role_name("vsphere", "tenant-a", "prod-vc").as_str())
+        );
+        assert_ne!(
+            name_a,
+            build_role(&a).metadata.name,
+            "distinct from the credentials Role"
+        );
+    }
+
+    /// Backends that run no Job get no Job Role; neither does an External
+    /// provider, which runs nothing in the cluster.
+    #[test]
+    fn backends_without_jobs_and_external_providers_get_no_job_role() {
+        for backend in ["proxmox", "cloud-hypervisor"] {
+            assert!(job_rules(backend).is_none(), "{backend}");
+            let class = class_for(backend);
+            let set = build_workload(&inputs(&class), "banlieue-imagebuild");
+            assert!(
+                set.jobs_role.is_none() && set.jobs_role_binding.is_none(),
+                "{backend}"
+            );
+        }
+        let class = ProviderClassSpec {
+            backend: "libvirt".to_string(),
+            deployment: Some(banlieue_api::banlieue::ProviderDeployment::External),
+            image: None,
+            ..class_spec()
+        };
+        let set = build_workload(&inputs(&class), "banlieue-imagebuild");
+        assert!(set.jobs_role.is_none() && set.jobs_role_binding.is_none());
+    }
+
+    /// The per-instance Role in the Provider's namespace never carries Jobs:
+    /// that namespace holds the operator's ServiceAccount.
+    #[test]
+    fn the_per_instance_role_grants_no_jobs() {
+        for backend in ["vsphere", "libvirt", "azure"] {
+            let class = class_for(backend);
+            let role = build_role(&inputs(&class));
+            assert!(verbs_on(&role, "batch", "jobs").is_empty(), "{backend}");
+            assert!(verbs_on(&role, "", "pods").is_empty(), "{backend}");
+        }
+    }
 }

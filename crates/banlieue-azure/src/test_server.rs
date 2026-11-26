@@ -39,7 +39,7 @@ impl Recorded {
 }
 
 pub(crate) fn install_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
 }
 
 /// A response with `status`, extra `headers` and a JSON `body`.

@@ -297,13 +297,63 @@ mod tests {
         libvirt: InfraState,
         cloud_hypervisor: InfraState,
         proxmox: InfraState,
-    ) -> [(InfraKind, InfraState); 4] {
+    ) -> [(InfraKind, InfraState); INFRA_KIND_COUNT] {
+        states5(
+            vsphere,
+            libvirt,
+            cloud_hypervisor,
+            proxmox,
+            InfraState::Absent,
+        )
+    }
+
+    fn states5(
+        vsphere: InfraState,
+        libvirt: InfraState,
+        cloud_hypervisor: InfraState,
+        proxmox: InfraState,
+        azure: InfraState,
+    ) -> [(InfraKind, InfraState); INFRA_KIND_COUNT] {
         [
             (InfraKind::VSphere, vsphere),
             (InfraKind::Libvirt, libvirt),
             (InfraKind::CloudHypervisor, cloud_hypervisor),
             (InfraKind::Proxmox, proxmox),
+            (InfraKind::Azure, azure),
         ]
+    }
+
+    #[test]
+    fn infra_kinds_cover_every_kind_including_azure() {
+        assert_eq!(INFRA_KINDS.len(), INFRA_KIND_COUNT);
+        assert!(INFRA_KINDS.contains(&InfraKind::Azure));
+        assert!(INFRA_KINDS.contains(&InfraKind::Proxmox));
+    }
+
+    #[test]
+    fn a_present_azure_machine_is_deleted_and_blocks_the_finalizer() {
+        let plan = plan_finalize(&states5(
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Present,
+        ));
+        assert_eq!(plan.delete, vec![InfraKind::Azure]);
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn an_unknown_azure_lookup_blocks_the_finalizer() {
+        let plan = plan_finalize(&states5(
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Absent,
+            InfraState::Unknown,
+        ));
+        assert!(plan.delete.is_empty());
+        assert!(!plan.remove_finalizer);
     }
 
     #[test]

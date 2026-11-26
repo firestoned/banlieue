@@ -47,8 +47,10 @@ mod tests {
                     }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
+                    azure: None,
                 },
                 capabilities: ProviderCapabilities {
+                    instance_sizes: Vec::new(),
                     storage_classes: storage
                         .into_iter()
                         .map(|(name, pool)| StorageClassMapping {

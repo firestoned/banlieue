@@ -6,6 +6,7 @@
 //! InfraCluster), so they can be referenced from CAPI `Machine` /
 //! `Cluster` objects as well as from banlieue's own VirtualMachine.
 
+pub mod azure_virtual_machine;
 pub mod cloud_hypervisor_machine;
 pub mod firecracker_machine;
 pub mod libvirt_machine;
@@ -13,6 +14,11 @@ pub mod proxmox_machine;
 pub mod vsphere_cluster;
 pub mod vsphere_machine;
 
+pub use azure_virtual_machine::{
+    AzureOperation, AzureOperationAction, AzureVirtualMachine, AzureVirtualMachineSpec,
+    AzureVirtualMachineStatus, AzureVirtualMachineTemplate, AzureVirtualMachineTemplateResource,
+    AzureVirtualMachineTemplateSpec, azure_provider_id,
+};
 pub use cloud_hypervisor_machine::{
     ChAddressSource, ChBootSource, ChBootSourceKind, ChCpuSpec, ChMachineIdentity, ChMemorySpec,
     ChMoveIn, ChMoveInPhase, ChMoveInStatus, ChMoveOut, ChMoveOutPhase, ChMoveOutStatus,

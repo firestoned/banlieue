@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-24
 - **Proposed:** 2026-11-24
+- **Amended:** 2026-11-25 (Decision 4 adds `banlieue-owner-namespace`;
+  Decision 5 bounds a home-only provider's sweep to its home namespace)
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 22 (public-cloud foundation) and roadmap 23 (Azure),
   whose phase 0 spike this records; roadmap 24 (EC2) confirms the AWS half.
@@ -83,13 +85,14 @@ reuses ADR-0098 unchanged.
 ### 4. An ownership tag on every resource banlieue creates
 
 Every cloud resource the provider or the publish Job creates (VM, NIC, disk,
-snapshot, image version, published image) carries three tags:
+snapshot, image version, published image) carries these tags:
 
 | Tag | Value |
 | --- | --- |
 | `banlieue-owner-uid` | the owning object's `metadata.uid` |
 | `banlieue-owner-kind` | the kind that created it: the cloud InfraMachine kind (named by ADR-0164), `VMImage`, ... |
 | `banlieue-provider` | `<namespace>.<name>` of the `Provider` |
+| `banlieue-owner-namespace` | the owning object's namespace, for a namespaced owner (amended 2026-11-25) |
 
 Names use `-`, never `/` (finding 3), and the same names are used on both
 clouds. **banlieue deletes only a resource whose `banlieue-owner-uid` equals
@@ -115,6 +118,15 @@ the create path. Deletes honour the cloud's retry hint and are paced (finding
 The sweep never touches an untagged resource, a resource tagged for another
 `Provider`, or anything outside the resource group (or account boundary) the
 `Provider` names.
+
+**A sweep judges only what its listing can see** (amended 2026-11-25). A
+provider that serves tenant namespaces (ADR-0133) lists machines
+cluster-wide and may judge any namespace's resources. A provider that serves
+only its home namespace lists that namespace alone, so it judges only
+resources whose `banlieue-owner-namespace` is its home namespace, and never
+one without the tag. Without this, a `Provider` switched from serving tenant
+namespaces back to home-only would read every tenant machine's UID as
+missing and delete live tenant VMs.
 
 ### 6. Deletion
 

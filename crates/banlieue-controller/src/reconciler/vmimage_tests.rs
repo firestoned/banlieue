@@ -16,6 +16,9 @@ mod tests {
             reason: reason.map(str::to_string),
             message: None,
             zones: vec![],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         }
     }
 

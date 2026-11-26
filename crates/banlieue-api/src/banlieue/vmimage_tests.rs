@@ -286,6 +286,9 @@ mod tests {
             reason: None,
             message: None,
             zones: vec![],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         };
         let json = serde_json::to_value(&p).unwrap();
         let obj = json.as_object().unwrap();
@@ -307,10 +310,44 @@ mod tests {
             reason: Some("ImagePending".to_string()),
             message: Some("Importing from URL".to_string()),
             zones: vec![],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         };
         let json = serde_json::to_value(&p).unwrap();
         let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, p);
+    }
+
+    /// ADR-0162 Decisions 4 and 8: a cloud row's digest, disk floor and
+    /// superseded versions, in their wire names, and absent when unset.
+    #[test]
+    fn image_per_provider_status_cloud_fields_round_trip() {
+        let json = serde_json::json!({
+            "providerName": "az-east",
+            "providerNamespace": "banlieue-system",
+            "ready": true,
+            "resolvedRef": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/galleries/g/images/i/versions/1.0.0",
+            "sourceDigest": "sha256:00",
+            "minOsDiskSizeGiB": 64,
+            "supersededRefs": ["/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/galleries/g/images/i/versions/0.9.0"],
+        });
+        let row: ImagePerProviderStatus = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(row.source_digest.as_deref(), Some("sha256:00"));
+        assert_eq!(row.min_os_disk_size_gib, Some(64));
+        assert_eq!(row.superseded_refs.len(), 1);
+        assert_eq!(serde_json::to_value(&row).unwrap(), json);
+
+        let bare: ImagePerProviderStatus = serde_json::from_value(serde_json::json!({
+            "providerName": "p",
+            "providerNamespace": "n",
+            "ready": false,
+        }))
+        .unwrap();
+        let obj = serde_json::to_value(&bare).unwrap();
+        for key in ["sourceDigest", "minOsDiskSizeGiB", "supersededRefs"] {
+            assert!(obj.get(key).is_none(), "{key}");
+        }
     }
 
     #[test]
@@ -402,6 +439,9 @@ mod tests {
                     message: Some("uploading to datastore2".to_string()),
                 },
             ],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["zones"].as_array().unwrap().len(), 2);

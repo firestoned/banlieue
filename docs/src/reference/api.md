@@ -17,6 +17,8 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 
 **`infrastructure.banlieue.io`**
 
+- [AzureVirtualMachine](#azurevirtualmachine)
+- [AzureVirtualMachineTemplate](#azurevirtualmachinetemplate)
 - [CloudHypervisorMachine](#cloudhypervisormachine)
 - [CloudHypervisorMachineTemplate](#cloudhypervisormachinetemplate)
 - [FirecrackerMachine](#firecrackermachine)
@@ -180,8 +182,30 @@ to be considered by the scheduler.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `features` | string[] |  | Feature flags admin asserts are available. Provider's controller may downgrade these in status if introspection finds otherwise. Well-known values: hotAddCPU, hotAddMemory, efiSecureBoot, nestedVirtualization, gpuPassthrough. |
+| `instanceSizes` | object[] |  | Cloud `Provider`s only: which instance size each `VMClass` runs as (ADR-0160 Decision 1). A `VMClass` with no entry is not schedulable on this `Provider`; nothing is guessed from vCPU and memory. |
 | `networkClasses` | object[] |  | Network classes the admin asserts are available on this backend. |
 | `storageClasses` | object[] |  | Storage classes the admin asserts are available on this backend. Each entry maps an abstract class name to a provider-interpreted concrete target. |
+
+##### `.spec.capabilities.instanceSizes[]`
+
+Cloud `Provider`s only: which instance size each `VMClass` runs as
+(ADR-0160 Decision 1). A `VMClass` with no entry is not schedulable on
+this `Provider`; nothing is guessed from vCPU and memory.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `perZone` | object[] |  | Per-zone overrides of `size`, for a zone that does not offer it. |
+| `size` | string | Yes | The cloud's size name, such as `Standard_D2s_v5`. |
+| `vmClass` | string | Yes | The `VMClass` name. |
+
+###### `.spec.capabilities.instanceSizes[].perZone[]`
+
+Per-zone overrides of `size`, for a zone that does not offer it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `size` | string | Yes | The cloud's size name in that zone. |
+| `zone` | string | Yes | Zone name as the cloud reports it (`1`, `2`). |
 
 ##### `.spec.capabilities.networkClasses[]`
 
@@ -201,9 +225,10 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cluster` | string | Yes | Cluster name as vCenter reports it. |
-| `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
+| `cluster` | string |  | Cluster name as vCenter reports it. Empty on a cloud `Provider`. |
+| `datacenter` | string |  | Datacenter name as vCenter reports it. Empty on a cloud `Provider`. |
 | `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
+| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2`), on a cloud `Provider` (ADR-0158 Decision 3). |
 
 ###### `.spec.capabilities.networkClasses[].perZoneSubnet[]`
 
@@ -250,7 +275,7 @@ concrete target.
 | --- | --- | --- | --- |
 | `name` | string | Yes | Abstract name referenced by VMClass.hardware.disks[].storageClass. |
 | `perZone` | object[] |  | Per-`(datacenter, cluster)` overrides of `target` (ADR-0030). |
-| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } |
+| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } azure: { sku: "Premium_LRS" } (a managed-disk SKU, ADR-0160) |
 
 ###### `.spec.capabilities.storageClasses[].perZone[]`
 
@@ -258,9 +283,10 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cluster` | string | Yes | Cluster name as vCenter reports it. |
-| `datacenter` | string | Yes | Datacenter name as vCenter reports it. |
+| `cluster` | string |  | Cluster name as vCenter reports it. Empty on a cloud `Provider`. |
+| `datacenter` | string |  | Datacenter name as vCenter reports it. Empty on a cloud `Provider`. |
 | `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
+| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2`), on a cloud `Provider` (ADR-0158 Decision 3). |
 
 #### `.spec.connection`
 
@@ -268,10 +294,56 @@ Connection details for the backend.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `azure` | object |  | `azure` only: the subscription, region and resource group this `Provider` creates into, and the Entra ID identity it federates to (ADR-0158 Decision 1, ADR-0159 Decision 1). `endpoint` is the ARM endpoint (`https://management.azure.com`) and `credentialsRef` is not set: the provider's ServiceAccount token is its only credential. |
 | `caBundle` | object |  | Optional CA bundle to validate the endpoint's TLS certificate. |
 | `credentialsRef` | object |  | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (the full API token id, user@realm!tokenid), tokenValue (API tokens only; password/ticket auth is not supported, ADR-0074) libvirt: tls.crt, tls.key (mutual TLS, ADR-0011) |
-| `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system |
+| `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system azure: https://management.azure.com |
 | `insecureSkipTLSVerify` | boolean |  | Skip TLS verification. Applies to vsphere and proxmox. |
+
+##### `.spec.connection.azure`
+
+`azure` only: the subscription, region and resource group this
+`Provider` creates into, and the Entra ID identity it federates to
+(ADR-0158 Decision 1, ADR-0159 Decision 1). `endpoint` is the ARM
+endpoint (`https://management.azure.com`) and `credentialsRef` is
+not set: the provider's ServiceAccount token is its only credential.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `authorityHost` | string |  | Entra ID authority host. Defaults to the public cloud (`https://login.microsoftonline.com/`). |
+| `clientId` | string | Yes | Client ID of the user-assigned managed identity or app registration whose federated credential trusts this provider's ServiceAccount. |
+| `imageGallery` | object |  | The admin's existing Compute Gallery this `Provider` publishes a `VMImage`'s `Url` source into (ADR-0162 Decisions 4 and 8). banlieue never creates or deletes the gallery; it creates and deletes only the image definitions and versions it tags. Unset: no `Url` source is published to this `Provider`, and its rows report `GalleryNotConfigured`. `Template` sources need no gallery here. |
+| `location` | string | Yes | The region (`location`), such as `canadacentral`. One `Provider` is one region; its availability zones are the failure domains (ADR-0158 Decisions 1 and 3). |
+| `publisher` | object |  | The image publisher's own identity (ADR-0159 Decision 3, ADR-0162 Decision 1), separate from `clientId`: the publish Job federates to it, and only it holds the rights to create and delete images. Its tenant is `tenantId`. Unset: no `Url` source is published to this `Provider` (`PublisherNotConfigured`). |
+| `resourceGroup` | string | Yes | The resource group VMs, NICs and disks are created in. Must exist; banlieue never creates or deletes it, and never touches anything in it that does not carry its ownership tags (ADR-0158 Decision 4). |
+| `subscriptionId` | string | Yes | Subscription ID. |
+| `tenantId` | string | Yes | Entra ID tenant (directory) ID. |
+
+###### `.spec.connection.azure.imageGallery`
+
+The admin's existing Compute Gallery this `Provider` publishes a
+`VMImage`'s `Url` source into (ADR-0162 Decisions 4 and 8). banlieue
+never creates or deletes the gallery; it creates and deletes only the
+image definitions and versions it tags. Unset: no `Url` source is
+published to this `Provider`, and its rows report
+`GalleryNotConfigured`. `Template` sources need no gallery here.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | The gallery's name. |
+| `resourceGroup` | string | Yes | The resource group the gallery is in. It may differ from the `Provider`'s `resourceGroup`. |
+
+###### `.spec.connection.azure.publisher`
+
+The image publisher's own identity (ADR-0159 Decision 3, ADR-0162
+Decision 1), separate from `clientId`: the publish Job federates to it,
+and only it holds the rights to create and delete images. Its tenant
+is `tenantId`. Unset: no `Url` source is published to this `Provider`
+(`PublisherNotConfigured`).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `clientId` | string | Yes | Client ID of the publisher's user-assigned managed identity or app registration. |
 
 ##### `.spec.connection.caBundle`
 
@@ -377,7 +449,8 @@ in the platform's provider namespace; tenants must not be able to write it.
 Reference to a ProviderClass that identifies the backend type.
 
 For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
-drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`. A future
+drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
+`cloud-hypervisor`, `azure`. A future
 ProviderClass CRD will provide install metadata (image, RBAC) without
 changing this reference.
 
@@ -2131,11 +2204,14 @@ row. That was a real, reproduced bug, not a theoretical one.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `message` | string |  | Long human-readable detail. |
+| `minOsDiskSizeGiB` | integer |  | Cloud `Provider`s only (ADR-0162 Decision 4, ADR-0160 Decision 4): the smallest OS disk, in GiB, a VM booting the published image may have. Unset until the publish reports it. |
 | `providerName` | string | Yes | Name of the Provider. |
 | `providerNamespace` | string | Yes | Namespace of the Provider. |
 | `ready` | boolean | Yes | True when the image can be used to clone/create a VM on this provider. |
 | `reason` | string |  | Short reason if not ready. Stable values from `condition_reasons::IMAGE_*`. |
-| `resolvedRef` | string |  | Resolved concrete reference on the backend, for backends with one reference per provider. Proxmox: VMID. Libvirt: path. Unset for vSphere, whose per-zone references are in `Self::zones` (ADR-0104). |
+| `resolvedRef` | string |  | Resolved concrete reference on the backend, for backends with one reference per provider. Proxmox: VMID. Libvirt: path. Azure: the Compute Gallery image version resource ID. Unset for vSphere, whose per-zone references are in `Self::zones` (ADR-0104). |
+| `sourceDigest` | string |  | Cloud `Provider`s only (ADR-0162 Decision 4): the digest (`sha256:<hex>`) of the build the published image in `resolvedRef` was made from. Unset for a `Template` source, which banlieue did not publish. |
+| `supersededRefs` | string[] |  | Cloud `Provider`s only (ADR-0162 Decision 8): images this `VMImage` published into this `Provider` for an earlier digest, still waiting to be deleted because a machine references them or the delete has not finished. Emptied as each is deleted; recorded here because the provider can read a published image only by its name. |
 | `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated by the vSphere provider for both `Url` sources (import progress) and `Template` sources (whether the adopted template exists in each zone's folder, ADR-0104). For `Url`, `ready` means every zone is ready; for `Template` it means at least one zone is, and the scheduler places VMs only in ready zones. Empty for backends without zones (libvirt, Proxmox). |
 
 ##### `.status.perProvider[].zones[]`
@@ -2156,6 +2232,175 @@ Proxmox).
 | `reason` | string |  |  |
 | `resolvedRef` | string |  | The template's bare display name within this zone once ready — the value a provider passes to a name-based template lookup. NOT a decorated string (no `[dc]`/folder prefix): the folder lives in `Self::template_folder`, kept separate so a lookup can be built from structured fields instead of parsing this one. |
 | `templateFolder` | string |  | The vCenter folder path (relative to the datacenter's VM folder, e.g. `templates/cluster-01`) the template in `Self::resolved_ref` lives in: `<spec.template.rootFolder>/<zone>` for both `Url` imports (ADR-0020 Decision #5) and `Template` sources (ADR-0104). Unset while the zone is not ready. |
+
+---
+
+## AzureVirtualMachine
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `AzureVirtualMachine` · **Scope:** Namespaced · **Short names:** `azvm`
+
+AzureVirtualMachine: the concrete, scheduled VM request for Azure.
+
+You normally do not create this by hand: banlieue's controller does,
+owned by the `VirtualMachine` it was scheduled from, and the Azure
+provider creates the NIC and VM and reports CAPI-shaped status.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Provider | string | `.spec.providerRef.name` | 0 |
+| Zone | string | `.spec.zone` | 0 |
+| Size | string | `.spec.size` | 0 |
+| Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| State | string | `.status.provisioningState` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
+| ProviderID | string | `.spec.providerID` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `acceleratedNetworking` | boolean |  | Enable accelerated networking on the NIC. The image must not configure the VF itself (ADR-0163 Decision 3). |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. `PoweredOff` deallocates the VM, which stops compute billing (ADR-0164 Decision 3). `Suspended` is refused. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement, the name of one of the `Provider`'s failure domains (one per availability zone). |
+| `imageVersionId` | string | Yes | Resource ID of the Compute Gallery image version to boot, from the `VMImage`'s `azure` source (a hand-published `Template`, ADR-0162 Decision 4). |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB, from the `VMClass` (ADR-0160 Decision 4). |
+| `osDiskSku` | string | Yes | Managed-disk SKU of the OS disk (`Premium_LRS`, `StandardSSD_LRS`), from the storage class's `sku` target. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node. Format: `azure:///subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Compute/virtualMachines/<name>`. Set by the provider once the VM exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection names the subscription, region and resource group. |
+| `size` | string | Yes | VM size (`Standard_D2s_v5`), resolved from the `Provider`'s `instanceSizes` mapping for the `VMClass` (ADR-0160). |
+| `subnetId` | string | Yes | Resource ID of the subnet the NIC is created in, from the network class's `subnetId` target for this zone. |
+| `trustedLaunch` | boolean |  | Trusted Launch: Secure Boot and a vTPM (ADR-0165). Set from the `VMClass`'s `tpmEnabled`; the image definition must declare Trusted Launch support. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Sent as `customData`; at most 64 KiB. The provider reads no Secret or ConfigMap. |
+| `zone` | string | Yes | Availability zone the VM is created in, as the subscription names it (`1`, `2`, `3`). Resolved from the failure domain's `labels.zone`. |
+
+#### `.spec.providerRef`
+
+The `Provider` whose connection names the subscription, region and
+resource group.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
+
+### `.status`
+
+Observed state of an AzureVirtualMachine, shaped to the CAPI v1beta2
+InfraMachine status contract. The non-contract fields mean what they mean
+on the siblings, so the controller's status mirror treats backends alike.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addresses` | object[] |  | CAPI contract field (optional): the NIC's private address. No public address in v1. |
+| `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
+| `guestInstalled` | boolean |  | Sticky: the guest reported ready once (ADR-0163 Decision 1, ADR-0043 Decision 5). |
+| `initialization` | object |  | CAPI contract field. |
+| `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
+| `observedPowerState` | string |  | The VM's last observed run state (deallocated reads `PoweredOff`). Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `pendingOperation` | object |  | The ARM operation in flight, if any. |
+| `provisioningState` | string |  | The VM's ARM `provisioningState` (`Creating`, `Succeeded`, `Failed`). |
+| `vmName` | string |  | The VM's resource name, derived from this object's UID. |
+
+#### `.status.addresses[]`
+
+CAPI contract field (optional): the NIC's private address. No public
+address in v1.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.initialization`
+
+CAPI contract field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+#### `.status.pendingOperation`
+
+The ARM operation in flight, if any.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `action` | string | Yes | What the operation is doing. Allowed: `CreateNic`, `CreateVm`, `Start`, `Deallocate`, `DeleteVm`, `DeleteNic`, `DeleteDisk`. |
+| `kind` | string | Yes | Which header the URL came from: `AsyncOperation` (`Azure-AsyncOperation`) or `Location`. |
+| `url` | string | Yes | The operation URL ARM returned. The provider polls it only when it sits under the ARM endpoint it is configured for. |
+
+---
+
+## AzureVirtualMachineTemplate
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `AzureVirtualMachineTemplate` · **Scope:** Namespaced · **Short names:** `azvmt`
+
+AzureVirtualMachineTemplate: a stamped-out AzureVirtualMachine spec.
+
+CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+can mint identical machines. banlieue ships it for CAPI compatibility;
+standalone VirtualMachine users do not need it.
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `template` | object | Yes | The spec stamped into every machine created from this template. |
+
+#### `.spec.template`
+
+The spec stamped into every machine created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec` | object | Yes | The AzureVirtualMachine spec for machines created from this template. |
+
+##### `.spec.template.spec`
+
+The AzureVirtualMachine spec for machines created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `acceleratedNetworking` | boolean |  | Enable accelerated networking on the NIC. The image must not configure the VF itself (ADR-0163 Decision 3). |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. `PoweredOff` deallocates the VM, which stops compute billing (ADR-0164 Decision 3). `Suspended` is refused. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement, the name of one of the `Provider`'s failure domains (one per availability zone). |
+| `imageVersionId` | string | Yes | Resource ID of the Compute Gallery image version to boot, from the `VMImage`'s `azure` source (a hand-published `Template`, ADR-0162 Decision 4). |
+| `osDiskSizeGiB` | integer | Yes | OS disk size in GiB, from the `VMClass` (ADR-0160 Decision 4). |
+| `osDiskSku` | string | Yes | Managed-disk SKU of the OS disk (`Premium_LRS`, `StandardSSD_LRS`), from the storage class's `sku` target. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node. Format: `azure:///subscriptions/<sub>/resourceGroups/<rg>/providers/Microsoft.Compute/virtualMachines/<name>`. Set by the provider once the VM exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection names the subscription, region and resource group. |
+| `size` | string | Yes | VM size (`Standard_D2s_v5`), resolved from the `Provider`'s `instanceSizes` mapping for the `VMClass` (ADR-0160). |
+| `subnetId` | string | Yes | Resource ID of the subnet the NIC is created in, from the network class's `subnetId` target for this zone. |
+| `trustedLaunch` | boolean |  | Trusted Launch: Secure Boot and a vTPM (ADR-0165). Set from the `VMClass`'s `tpmEnabled`; the image definition must declare Trusted Launch support. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Sent as `customData`; at most 64 KiB. The provider reads no Secret or ConfigMap. |
+| `zone` | string | Yes | Availability zone the VM is created in, as the subscription names it (`1`, `2`, `3`). Resolved from the failure domain's `labels.zone`. |
+
+###### `.spec.template.spec.providerRef`
+
+The `Provider` whose connection names the subscription, region and
+resource group.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
 
 ---
 

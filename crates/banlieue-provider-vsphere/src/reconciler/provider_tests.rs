@@ -343,6 +343,7 @@ mod tests {
     #[test]
     fn compute_attributes_matches_targets_by_kind() {
         let caps = ProviderCapabilities {
+            instance_sizes: Vec::new(),
             storage_classes: vec![
                 StorageClassMapping {
                     name: "gold".into(),
@@ -433,6 +434,7 @@ mod tests {
             .with_network("dc", "c1", "pg-prod", true)
             .build();
         let caps = ProviderCapabilities {
+            instance_sizes: Vec::new(),
             storage_classes: vec![StorageClassMapping {
                 name: "gold".into(),
                 target: Some(target(&[("datastoreCluster", "DSC-GOLD")])),
@@ -476,6 +478,7 @@ mod tests {
 
     fn gold_on(target_key: &str, value: &str) -> ProviderCapabilities {
         ProviderCapabilities {
+            instance_sizes: Vec::new(),
             storage_classes: vec![StorageClassMapping {
                 name: "gold".into(),
                 target: Some(target(&[(target_key, value)])),

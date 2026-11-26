@@ -125,17 +125,24 @@ rules:
       - secrets
       - configmaps
     verbs: ["get"]
-  # Import Jobs, granted to the libvirt (ADR-0011) and vSphere (ADR-0020)
-  # providers. RBAC refuses to let a grantor hand out permissions it does not
-  # hold, so the operator must carry the union of what both providers need to
-  # create their ClusterRoleBindings at all — the same trap that Secrets hit
-  # above. `delete` is vSphere-only (`banlieue.io/force-reimport`); `list`
-  # and `watch` are vSphere-only too (its VMImage Controller now `.watches()`
-  # the import Job — event-driven, not a 5-minute poll); the operator never
-  # creates, deletes, lists, or watches a Job itself.
+  # Import and publish Jobs, granted to the libvirt (ADR-0011), vSphere
+  # (ADR-0020) and Azure (ADR-0162) providers. The operator never creates,
+  # deletes, lists or watches a Job or lists a pod itself, and it grants these
+  # only through a Role in the build namespace
+  # (crates/banlieue-operator/src/workload.rs, build_jobs_role), never through
+  # the providers' cluster-wide ClusterRoles. RBAC refuses to let a grantor hand
+  # out permissions it does not hold, so the operator must carry the union of
+  # those Roles' rules. It keeps them here, cluster-wide, because the build
+  # namespace is a runtime choice that a static manifest cannot name, and the
+  # operator already writes RoleBindings in every namespace, so a stolen
+  # operator token reaches Job create anywhere through a binding of its own. `delete`, `list` and `watch` are vSphere's and
+  # Azure's; `pods` `list` is Azure's (a publish Job's termination message).
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "list", "watch", "create", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
   # Per-instance leader-election Leases.
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
@@ -176,6 +183,8 @@ rules:
       - cloudhypervisormachines
       - proxmoxmachines
       - proxmoxmachinetemplates
+      - azurevirtualmachines
+      - azurevirtualmachinetemplates
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
@@ -184,6 +193,7 @@ rules:
       - libvirtmachines/status
       - cloudhypervisormachines/status
       - proxmoxmachines/status
+      - azurevirtualmachines/status
     verbs: ["get", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
@@ -191,6 +201,7 @@ rules:
       - libvirtmachines/finalizers
       - cloudhypervisormachines/finalizers
       - proxmoxmachines/finalizers
+      - azurevirtualmachines/finalizers
     verbs: ["update"]
   # CAPI IPAM contract, used by Pool-based IpamSpec.
   - apiGroups: ["ipam.cluster.x-k8s.io"]

@@ -66,6 +66,7 @@ mod tests {
                     }),
                     insecure_skip_tls_verify: true,
                     ca_bundle: None,
+                    azure: None,
                 },
                 capabilities: Default::default(),
                 paused: false,
@@ -618,6 +619,43 @@ mod tests {
         assert_eq!(
             job["spec"]["template"]["spec"]["serviceAccountName"],
             "banlieue-import"
+        );
+    }
+
+    /// The import Job's pod is restricted, as deploy/admission/provider-jobs.yaml
+    /// requires of every Job a provider identity creates: non-root, no
+    /// privilege escalation, no capabilities, no host namespaces or paths.
+    #[test]
+    fn build_import_job_runs_a_restricted_pod() {
+        let p = provider("vc", "banlieue-system");
+        let artifact = iso_artifact(BuildArtifactPhase::Ready);
+        let job = build_import_job(&ImportJobInputs {
+            service_account: Some("banlieue-import"),
+            ..inputs(&p, &artifact)
+        });
+        let pod = &job["spec"]["template"]["spec"];
+        assert_eq!(pod["securityContext"]["runAsNonRoot"], true);
+        assert_eq!(pod["securityContext"]["runAsUser"], 65532);
+        assert_eq!(
+            pod["securityContext"]["seccompProfile"]["type"],
+            "RuntimeDefault"
+        );
+        let container = &pod["containers"][0]["securityContext"];
+        assert_eq!(container["allowPrivilegeEscalation"], false);
+        assert_eq!(
+            container["capabilities"]["drop"],
+            serde_json::json!(["ALL"])
+        );
+        assert!(container.get("privileged").is_none());
+        for host in ["hostNetwork", "hostPID", "hostIPC"] {
+            assert!(pod.get(host).is_none(), "{host}");
+        }
+        assert!(
+            pod["volumes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|v| v.get("hostPath").is_none())
         );
     }
 

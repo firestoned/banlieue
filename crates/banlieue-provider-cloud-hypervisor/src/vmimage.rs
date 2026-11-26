@@ -173,6 +173,9 @@ fn status_row(
         reason: Some(reason.to_string()),
         message: Some(message),
         zones: Vec::new(),
+        source_digest: None,
+        min_os_disk_size_gib: None,
+        superseded_refs: Vec::new(),
     }
 }
 

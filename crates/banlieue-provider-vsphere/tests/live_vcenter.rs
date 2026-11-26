@@ -92,6 +92,7 @@ fn settings() -> Option<Settings> {
             }),
             insecure_skip_tls_verify: insecure,
             ca_bundle: None,
+            azure: None,
         },
         credentials: Credentials { username, password },
         ca_bundle_pem,
@@ -387,6 +388,7 @@ async fn capacity_reads_against_real_vcenter() {
     // What the reconciler publishes, from the same reads.
     let class_of = |i: usize| format!("ds{i}");
     let capabilities = ProviderCapabilities {
+        instance_sizes: Vec::new(),
         storage_classes: reach
             .keys()
             .enumerate()

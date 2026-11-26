@@ -50,6 +50,9 @@ pub const FIELD_MANAGER_PROVIDER_VSPHERE: &str = "banlieue.io/provider-vsphere";
 /// Field manager for the Proxmox provider.
 pub const FIELD_MANAGER_PROVIDER_PROXMOX: &str = "banlieue.io/provider-proxmox";
 
+/// Field manager for the Azure provider (ADR-0164).
+pub const FIELD_MANAGER_PROVIDER_AZURE: &str = "banlieue.io/provider-azure";
+
 /// Field manager for the libvirt provider.
 pub const FIELD_MANAGER_PROVIDER_LIBVIRT: &str = "banlieue.io/provider-libvirt";
 

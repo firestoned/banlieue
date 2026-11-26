@@ -1,0 +1,108 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the Azure provider binary (ADR-0158, ADR-0164).
+#
+# Mirrors deploy/provider-proxmox/rbac/clusterrole.yaml with AzureVirtualMachine
+# in place of ProxmoxMachine. The image publish Jobs (ADR-0162 Decision 1) are
+# granted by a Role in the build namespace, not here. The provider creates those Jobs but does not run as the publisher: each Job
+# runs as `banlieue-azure-publisher` in the imagebuild namespace, whose token
+# federates to a separate Entra ID identity holding the image rights.
+#
+# No Secrets anywhere, here or in the per-instance Role (ADR-0159 Decision 1):
+# the provider's only cloud credential is the projected ServiceAccount token the
+# operator mounts into its pod, exchanged with Entra ID for an ARM token.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-azure
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-azure
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group: read Providers, patch their status
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # VMImage: the Azure provider verifies a Template source (a gallery image
+  # version), publishes a Url source (ADR-0162), and owns status.perProvider
+  # rows for its own Providers (keyed list, ADR-0010). buildArtifact and the
+  # aggregate Ready belong to other field managers. `update`/`patch` on the
+  # main resource are for its own finalizer, banlieue.io/vmimage-azure, held
+  # until the versions a VMImage published are deleted (ADR-0162 Decision 8).
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
+    verbs: ["update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group: AzureVirtualMachine lifecycle (ADR-0164)
+  # ---------------------------------------------------------------------------
+  # No `create` and no `delete`: AzureVirtualMachines are created and deleted
+  # by banlieue-controller, which owns them. This provider only realises them
+  # and reports back: it can read, patch spec.providerID, own status, and clear
+  # its finalizer. A compromised provider must not be able to mint machines the
+  # controller never scheduled.
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - azurevirtualmachines
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - azurevirtualmachines/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - azurevirtualmachines/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # Image publish and delete Jobs (ADR-0162 Decision 1): NOT here
+  # ---------------------------------------------------------------------------
+  # The provider's `jobs` and `pods` verbs live in a Role in the build
+  # namespace (default `banlieue-imagebuild`), rendered per Provider by the
+  # operator (crates/banlieue-operator/src/workload.rs, build_jobs_role) and
+  # by `banlieue bootstrap provider azure`. This ClusterRole is bound
+  # cluster-wide, so a `jobs` `create` here would be pod create in EVERY
+  # namespace, as any ServiceAccount there. deploy/admission/provider-jobs.yaml
+  # confines what a provider identity's Jobs may run.
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # NO secrets / configmaps here, deliberately (security review 2026-07-31
+  # CHAIN-002, ADR-0159 Decision 1). This ClusterRole is bound cluster-wide, so
+  # any rule here would reach EVERY Secret in the cluster. The Azure provider
+  # reads no Secret at all: an azure Provider carries no credentialsRef
+  # (enforced by deploy/admission/provider-connection.yaml).
+
+  # Namespaces, read-only (ADR-0133), kept identical to the other providers so
+  # the provider can probe a namespace selector if one is ever rendered for it.
+  # No write verb: labelling a namespace in is a platform admin's act.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+
+  # Emit Events for state transitions visible via `kubectl describe provider`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leader-election Leases are NOT granted here: a ClusterRoleBinding would
+  # grant them on every Lease in the cluster. The operator builds a namespaced
+  # Role narrowed to this provider's own Lease instead (ADR-0102).

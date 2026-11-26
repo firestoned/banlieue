@@ -126,6 +126,29 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "azure")]
+    fn provider_azure_subcommand_parses() {
+        let cli = Cli::parse_from([
+            "banlieue",
+            "provider",
+            "azure",
+            "--provider-name",
+            "az-east",
+            "--no-leader-elect",
+        ]);
+        match cli.command {
+            Command::Provider(p) => assert!(matches!(p.backend, ProviderBackend::Azure(_))),
+            _ => panic!("expected provider subcommand"),
+        }
+    }
+
+    #[test]
+    #[cfg(feature = "azure")]
+    fn azure_is_a_bootstrap_backend() {
+        assert!(COMPILED_BACKENDS.contains(&"azure"));
+    }
+
+    #[test]
     #[cfg(feature = "cloud-hypervisor")]
     fn cloud_hypervisor_is_a_cluster_bootstrap_backend() {
         assert!(COMPILED_BACKENDS.contains(&"cloud-hypervisor"));

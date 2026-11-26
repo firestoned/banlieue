@@ -146,6 +146,14 @@ pub enum Error {
     /// A URL ARM returned that banlieue must not follow.
     #[error("refusing to follow {0}: not the configured Resource Manager endpoint")]
     UntrustedUrl(String),
+    /// A disk upload SAS whose host is not the cloud's managed-disk upload
+    /// host. Carries the host only, never the SAS.
+    #[error("refusing to upload to {0}: not the cloud's managed-disk upload host")]
+    UntrustedUploadHost(String),
+    /// The local source of an upload could not be read, or was not the
+    /// length it was declared to be.
+    #[error("upload source: {0}")]
+    UploadSource(String),
     /// Network or TLS failure.
     #[error("transport: {0}")]
     Transport(String),
@@ -218,6 +226,25 @@ pub fn classify(status: u16, retry_after: Option<Duration>, body: &[u8]) -> Erro
         s if s >= HTTP_BAD_REQUEST => Error::InvalidRequest { code, message },
         s => Error::Decode(format!("status {s} is not an error")),
     }
+}
+
+/// Classifies a long-running operation that ended `Failed` by its code
+/// alone: a placement code (size, capacity, quota) reads as it would on a
+/// synchronous refusal, so the caller decides the same way whichever path
+/// ARM took; any other code is [`Error::OperationFailed`].
+#[must_use]
+pub fn operation_failure(code: &str, message: &str) -> Error {
+    let (code, message) = (code.to_string(), truncate(message));
+    if SKU_NOT_AVAILABLE_CODES.contains(&code.as_str()) {
+        return Error::SkuNotAvailable { code, message };
+    }
+    if ALLOCATION_FAILED_CODES.contains(&code.as_str()) {
+        return Error::AllocationFailed { code, message };
+    }
+    if code == QUOTA_EXCEEDED_CODE {
+        return Error::QuotaExceeded { code, message };
+    }
+    Error::OperationFailed { code, message }
 }
 
 impl Error {

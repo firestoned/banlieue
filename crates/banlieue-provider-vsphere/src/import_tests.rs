@@ -53,8 +53,10 @@ mod tests {
                     }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
+                    azure: None,
                 },
                 capabilities: ProviderCapabilities {
+                    instance_sizes: Vec::new(),
                     storage_classes: vec![StorageClassMapping {
                         name: "gold".to_string(),
                         target: Some(target(&[("datastore", "ds-fast-01")])),
@@ -158,6 +160,7 @@ mod tests {
         // exists to fix.
         let mut p = provider_with_zone();
         p.spec.capabilities.storage_classes[0].per_zone = vec![ScopedTarget {
+            zone: None,
             datacenter: "dc-east".to_string(),
             cluster: "cluster-a".to_string(),
             target: target(&[("datastore", "ds-cluster-a-specific")]),
@@ -172,6 +175,7 @@ mod tests {
         // — the default target still applies here.
         let mut p = provider_with_zone();
         p.spec.capabilities.storage_classes[0].per_zone = vec![ScopedTarget {
+            zone: None,
             datacenter: "dc-east".to_string(),
             cluster: "cluster-b".to_string(),
             target: target(&[("datastore", "ds-cluster-b-specific")]),
@@ -184,6 +188,7 @@ mod tests {
     fn resolve_nic_networks_uses_the_per_zone_override_network_for_this_cluster() {
         let mut p = provider_with_zone();
         p.spec.capabilities.network_classes[0].per_zone = vec![ScopedTarget {
+            zone: None,
             datacenter: "dc-east".to_string(),
             cluster: "cluster-a".to_string(),
             target: target(&[("distributedPortGroup", "pg-cluster-a-specific")]),

@@ -427,7 +427,7 @@ mod tests {
     /// `Provider` only for these, so the two cannot disagree.
     #[test]
     fn every_implemented_backend_supports_shared_serving() {
-        for backend in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"] {
+        for backend in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor", "azure"] {
             assert!(supports_shared_provider(backend), "{backend}");
         }
     }
@@ -437,6 +437,7 @@ mod tests {
         assert!(!supports_shared_provider("firecracker"));
         assert!(!supports_shared_provider(""));
         assert!(!supports_shared_provider("VSphere"));
+        assert!(!supports_shared_provider("Azure"));
     }
 
     // ---- SharedServing (ADR-0133 Decisions 4 and 5), shared by every provider ----

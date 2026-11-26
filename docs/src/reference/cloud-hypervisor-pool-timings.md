@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 > the vTPM fix below. A point-in-time measurement, not a living table: rerun
 > it with `make ch-pool-timings` when the provider's pacing, the image or the
 > VMM version changes. The broader per-provider numbers are in
-> [Provider comparison](provider-comparison.md).
+> [Provider comparison](../providers/comparison.md).
 
 This page answers one question for roadmap 17's sandbox pools on Cloud
 Hypervisor: **how long does each stage of a `GuestReady` pool take, from the
@@ -60,7 +60,7 @@ reflinks*, and roadmap 18 phase C for the per-stage table.
 
 - **Host:** two 8-core Intel Xeon E5-2630 v3 (32 threads), 62 GiB, one SATA
   SSD, ext4; Debian 13. The same host as the Cloud Hypervisor column in
-  [Provider comparison](provider-comparison.md). All fourteen members landed
+  [Provider comparison](../providers/comparison.md). All fourteen members landed
   on it: with two Cloud Hypervisor Providers serving the class, the scheduler
   broke the tie alphabetically rather than spreading. Since ADR-0098 it
   spreads pool members across failure domains.

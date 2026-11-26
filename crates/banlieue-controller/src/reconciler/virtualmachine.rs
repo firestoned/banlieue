@@ -38,7 +38,7 @@ use banlieue_api::common::{
     LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
 };
 use banlieue_api::infrastructure::{
-    CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
 };
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
@@ -65,8 +65,8 @@ use super::address_conflict::{
     held_addresses,
 };
 use super::infra::{
-    InfraKind, build_cloud_hypervisor_machine, build_libvirt_machine, build_proxmox_machine,
-    build_vsphere_machine, install_mode, machine_name,
+    InfraKind, build_azure_virtual_machine, build_cloud_hypervisor_machine, build_libvirt_machine,
+    build_proxmox_machine, build_vsphere_machine, install_mode, machine_name,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
 use super::provider_lookup::{candidate_providers, placement_peers};
@@ -502,6 +502,14 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 "ProxmoxMachine"
             )
         }
+        InfraKind::Azure => {
+            build_and_apply!(
+                build_azure_virtual_machine,
+                azure,
+                azure_virtual_machine,
+                "AzureVirtualMachine"
+            )
+        }
     };
     let applied = match applied {
         Ok(m) => m,
@@ -596,6 +604,7 @@ async fn existing_machine_provider(apis: &InfraApis, name: &str) -> Result<Optio
         InfraKind::Libvirt,
         InfraKind::VSphere,
         InfraKind::Proxmox,
+        InfraKind::Azure,
     ] {
         if let Some(m) = get_infra(apis, kind, name).await?
             && let Some(p) = m.provider_name()
@@ -634,12 +643,17 @@ async fn mirror_only_path(
 }
 
 /// Every infra kind, in the order the controller checks them.
-const INFRA_KINDS: [InfraKind; 4] = [
+const INFRA_KINDS: [InfraKind; INFRA_KIND_COUNT] = [
     InfraKind::VSphere,
     InfraKind::Libvirt,
     InfraKind::CloudHypervisor,
     InfraKind::Proxmox,
+    InfraKind::Azure,
 ];
+
+/// How many infra kinds there are: the length of [`INFRA_KINDS`] and of the
+/// state array [`plan_finalize`] decides from.
+const INFRA_KIND_COUNT: usize = 5;
 
 /// Evaluate `$body` with `$api` bound to the typed [`Api`] in `$apis` for the
 /// [`InfraKind`] `$kind`. A macro because each kind's `Api<K>` is a different
@@ -661,6 +675,10 @@ macro_rules! with_infra_api {
             }
             InfraKind::Proxmox => {
                 let $api = &$apis.proxmox;
+                $body
+            }
+            InfraKind::Azure => {
+                let $api = &$apis.azure;
                 $body
             }
         }
@@ -700,6 +718,7 @@ struct InfraApis {
     libvirt: Api<LibvirtMachine>,
     cloud_hypervisor: Api<CloudHypervisorMachine>,
     proxmox: Api<ProxmoxMachine>,
+    azure: Api<AzureVirtualMachine>,
 }
 
 impl InfraApis {
@@ -709,6 +728,7 @@ impl InfraApis {
             libvirt: Api::namespaced(client.clone(), namespace),
             cloud_hypervisor: Api::namespaced(client.clone(), namespace),
             proxmox: Api::namespaced(client.clone(), namespace),
+            azure: Api::namespaced(client.clone(), namespace),
         }
     }
 }
@@ -744,12 +764,12 @@ struct FinalizePlan {
 /// Pure decision step of the deletion cascade (ADR-0090): which kinds need
 /// a delete issued, and whether every kind is confirmed gone.
 ///
-/// `remove_finalizer` is `true` only when all four states are
+/// `remove_finalizer` is `true` only when every kind's state is
 /// [`InfraState::Absent`] — [`InfraState::Unknown`] is deliberately not
 /// treated as absent, since removing the finalizer on an unresolved lookup
 /// is exactly the dangling-VM risk the finalizer exists to prevent.
 #[must_use]
-fn plan_finalize(states: &[(InfraKind, InfraState); 4]) -> FinalizePlan {
+fn plan_finalize(states: &[(InfraKind, InfraState); INFRA_KIND_COUNT]) -> FinalizePlan {
     FinalizePlan {
         delete: states
             .iter()
@@ -815,7 +835,7 @@ where
 /// live: an RBAC gap on `proxmoxmachines`) used to abort before the "issue
 /// delete" branch ran for any kind, including ones already confirmed
 /// `Present`. Each kind's state is now resolved independently via
-/// [`infra_state`], and [`plan_finalize`] decides the plan from all four
+/// [`infra_state`], and [`plan_finalize`] decides the plan from every kind's
 /// results at once, so one backend's permission or connectivity fault only
 /// ever stalls that backend's own VMs.
 async fn finalize_vm(
@@ -853,6 +873,9 @@ async fn finalize_vm(
             }
             InfraKind::Proxmox => {
                 info!(proxmox_machine = %owned_name, "requesting ProxmoxMachine deletion; waiting for cascade");
+            }
+            InfraKind::Azure => {
+                info!(azure_virtual_machine = %owned_name, "requesting AzureVirtualMachine deletion; waiting for cascade");
             }
         }
         let result = delete_existing_infra(apis, *kind, &owned_name).await;

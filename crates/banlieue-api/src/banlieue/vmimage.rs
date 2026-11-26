@@ -816,7 +816,8 @@ pub struct ImagePerProviderStatus {
     /// True when the image can be used to clone/create a VM on this provider.
     pub ready: bool,
     /// Resolved concrete reference on the backend, for backends with one
-    /// reference per provider. Proxmox: VMID. Libvirt: path. Unset for
+    /// reference per provider. Proxmox: VMID. Libvirt: path. Azure: the
+    /// Compute Gallery image version resource ID. Unset for
     /// vSphere, whose per-zone references are in [`Self::zones`] (ADR-0104).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolved_ref: Option<String>,
@@ -836,6 +837,28 @@ pub struct ImagePerProviderStatus {
     /// Proxmox).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub zones: Vec<ZoneImageStatus>,
+    /// Cloud `Provider`s only (ADR-0162 Decision 4): the digest
+    /// (`sha256:<hex>`) of the build the published image in `resolvedRef`
+    /// was made from. Unset for a `Template` source, which banlieue did not
+    /// publish.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<String>,
+    /// Cloud `Provider`s only (ADR-0162 Decision 4, ADR-0160 Decision 4): the
+    /// smallest OS disk, in GiB, a VM booting the published image may have.
+    /// Unset until the publish reports it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "minOsDiskSizeGiB"
+    )]
+    pub min_os_disk_size_gib: Option<u32>,
+    /// Cloud `Provider`s only (ADR-0162 Decision 8): images this `VMImage`
+    /// published into this `Provider` for an earlier digest, still waiting to
+    /// be deleted because a machine references them or the delete has not
+    /// finished. Emptied as each is deleted; recorded here because the
+    /// provider can read a published image only by its name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded_refs: Vec<String>,
 }
 
 /// Readiness of a `VMImage` in one failure domain (zone) of a Provider. For

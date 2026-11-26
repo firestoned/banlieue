@@ -18,33 +18,47 @@
 //!   on: usable zones per size, quota headroom, provisioning and power
 //!   state, the NIC's address, and tagged orphans.
 //!
+//! - [`gallery`]: publishing into a Compute Gallery (ADR-0162): the
+//!   deterministic names, the requests, and what ARM reports back.
+//! - [`upload`]: Put Page to an upload disk through a write SAS, all-zero
+//!   ranges skipped, a few in parallel, never with the ARM token.
+//!
 //! - [`auth`]: the federated token source, cached and refreshed.
 //! - [`client`]: [`ArmClient`], the HTTP implementation of [`api::ArmApi`].
 //!
 //! TLS: [`ArmClient`] uses the process's rustls provider, which the binary
-//! installs. Post-quantum key exchange (X25519MLKEM768) needs the
-//! workspace to move from `ring` to `aws-lc-rs`, roadmap 22's open phase 0
-//! question; ARM and Entra ID do not negotiate it yet in any case.
+//! installs: `banlieue-tls`'s aws-lc-rs build, offering X25519MLKEM768 first
+//! (ADR-0170). ARM and Entra ID do not accept it yet (measured 2026-11-26),
+//! so those handshakes fall back to a classical group until they do.
 
 pub mod api;
 pub mod auth;
 pub mod client;
 pub mod error;
 pub mod fake;
+pub mod fake_blob;
+pub mod gallery;
 pub mod operation;
 pub mod retry;
 pub mod tags;
 pub mod token;
 pub mod types;
+pub mod upload;
 pub mod vm;
 
 #[cfg(test)]
 mod test_server;
 
+pub use api::{ArmApi, DiskAccess, PowerAction, PublishApi};
 pub use auth::{FederatedConfig, FederatedToken, TokenProvider};
 pub use client::{ArmClient, ArmConfig};
 pub use error::{Error, Result};
+pub use gallery::{
+    GalleryImageDefinition, GalleryImageVersion, ManagedDisk, Snapshot, gallery_version_name,
+    image_definition_name,
+};
 pub use operation::{OperationHandle, OperationKind, OperationStatus};
-pub use tags::OwnershipTags;
+pub use tags::{OwnershipTags, TAG_SOURCE_SHA256};
 pub use token::AccessToken;
+pub use upload::{PageWriter, PageWriterFactory, SasUrl};
 pub use vm::{NicRequest, VmRequest};

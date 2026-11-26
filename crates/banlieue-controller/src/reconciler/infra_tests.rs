@@ -7,8 +7,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use banlieue_api::banlieue::{
-        ANNOTATION_CREATED_BY, Architecture, DiskOverride, DiskSpec, GuestAgent, HardwareOverride,
-        HardwareSpec, ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy,
+        ANNOTATION_CREATED_BY, Architecture, BuildArtifactKind, BuildArtifactPhase,
+        BuildArtifactStatus, DiskOverride, DiskSpec, GuestAgent, HardwareOverride, HardwareSpec,
+        ImagePerProviderStatus, ImageSource, ImageSourceKind, MigrationPolicy,
         NetworkInterfaceOverride, NetworkInterfaceSpec, NetworkSpec, OsFamily, PlacementSpec,
         Provider, ProviderCapabilities, ProviderConnection, ProviderSpec, ResolvedResource,
         SubnetShape, VMClass, VMClassSpec, VMImage, VMImageSpec, VMImageStatus, VirtualMachine,
@@ -41,6 +42,7 @@ mod tests {
                     }),
                     ca_bundle: None,
                     insecure_skip_tls_verify: false,
+                    azure: None,
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,
@@ -151,6 +153,9 @@ mod tests {
                     reason: None,
                     message: None,
                     zones: vec![],
+                    source_digest: None,
+                    min_os_disk_size_gib: None,
+                    superseded_refs: Vec::new(),
                 }],
                 build_artifact: None,
                 conditions: vec![],
@@ -765,6 +770,9 @@ mod tests {
                 reason: None,
                 message: None,
             }],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         }];
         let m = build_vsphere_machine(
             &parent_vm(),
@@ -799,6 +807,9 @@ mod tests {
                 reason: None,
                 message: None,
             }],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: Vec::new(),
         }];
         image
     }
@@ -925,6 +936,9 @@ mod tests {
                 reason: None,
                 message: None,
                 zones: vec![],
+                source_digest: None,
+                min_os_disk_size_gib: None,
+                superseded_refs: Vec::new(),
             }];
         }
         img
@@ -1326,6 +1340,9 @@ mod tests {
                 reason: None,
                 message: None,
                 zones: vec![],
+                source_digest: None,
+                min_os_disk_size_gib: None,
+                superseded_refs: Vec::new(),
             }];
         }
         img
@@ -1582,6 +1599,9 @@ mod tests {
                 reason: None,
                 message: None,
                 zones: vec![],
+                source_digest: None,
+                min_os_disk_size_gib: None,
+                superseded_refs: Vec::new(),
             }];
         }
         img
@@ -2048,5 +2068,640 @@ mod tests {
     fn pve_machine_beside_its_provider_names_no_namespace() {
         let m = build_pve(&parent_vm(), &parent_class(), None).expect("ok");
         assert_eq!(m.spec.provider_ref.namespace, None);
+    }
+
+    // ======================================================================
+    // build_azure_virtual_machine (ADR-0164)
+    // ======================================================================
+
+    const AZ_IMAGE_VERSION: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-images/providers/Microsoft.Compute/galleries/g/images/kairos/versions/1.0.0";
+    const AZ_SUBNET_DEFAULT: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/v/subnets/default";
+    const AZ_SUBNET_ZONE_2: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-net/providers/Microsoft.Network/virtualNetworks/v/subnets/zone-2";
+
+    fn az_scoped(zone: &str, key: &str, value: &str) -> banlieue_api::banlieue::ScopedTarget {
+        banlieue_api::banlieue::ScopedTarget {
+            zone: Some(zone.into()),
+            target: BTreeMap::from([(key.to_string(), value.to_string())]),
+            ..Default::default()
+        }
+    }
+
+    /// An `azure` Provider mapping `db-prod-large` to a size with a zone-2
+    /// override, `gold` to a disk SKU with a zone-2 override, and `prod` to a
+    /// subnet (zone 2 has its own) with accelerated networking.
+    fn az_provider() -> Provider {
+        use banlieue_api::banlieue::{
+            InstanceSizeMapping, NetworkClassMapping, StorageClassMapping, ZonedInstanceSize,
+        };
+        let mut p = parent_provider();
+        p.metadata.name = Some("az1".into());
+        p.spec.provider_class_ref = LocalObjectReference {
+            name: "azure".into(),
+        };
+        p.spec.connection.credentials_ref = None;
+        p.spec.capabilities = ProviderCapabilities {
+            instance_sizes: vec![InstanceSizeMapping {
+                vm_class: "db-prod-large".into(),
+                size: "Standard_D8s_v5".into(),
+                per_zone: vec![ZonedInstanceSize {
+                    zone: "2".into(),
+                    size: "Standard_D8as_v5".into(),
+                }],
+            }],
+            storage_classes: vec![StorageClassMapping {
+                name: "gold".into(),
+                target: Some(BTreeMap::from([("sku".into(), "Premium_LRS".into())])),
+                per_zone: vec![az_scoped("3", "sku", "StandardSSD_LRS")],
+            }],
+            network_classes: vec![NetworkClassMapping {
+                name: "prod".into(),
+                target: Some(BTreeMap::from([
+                    ("subnetId".into(), AZ_SUBNET_DEFAULT.into()),
+                    ("acceleratedNetworking".into(), "true".into()),
+                ])),
+                per_zone: vec![banlieue_api::banlieue::ScopedTarget {
+                    zone: Some("2".into()),
+                    target: BTreeMap::from([
+                        ("subnetId".to_string(), AZ_SUBNET_ZONE_2.to_string()),
+                        ("acceleratedNetworking".to_string(), "true".to_string()),
+                    ]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        p
+    }
+
+    /// A decision for zone `zone`, carrying it the way the Azure provider
+    /// publishes it: `attributes.raw.zone` and `labels.zone`.
+    fn az_decision(zone: &str) -> Decision {
+        Decision {
+            provider_name: "az1".into(),
+            provider_namespace: "banlieue-system".into(),
+            provider_class: "azure".into(),
+            failure_domain_name: format!("az1-zone-{zone}"),
+            resolved_storage: vec![ResolvedResource {
+                class_name: "gold".into(),
+                backend_id: "Premium_LRS".into(),
+            }],
+            resolved_networks: vec![ResolvedResource {
+                class_name: "prod".into(),
+                backend_id: AZ_SUBNET_DEFAULT.into(),
+            }],
+            failure_domain_raw: BTreeMap::from([("zone".to_string(), zone.to_string())]),
+            failure_domain_labels: BTreeMap::from([("zone".to_string(), zone.to_string())]),
+        }
+    }
+
+    fn az_image(reference: &str) -> VMImage {
+        let mut img = parent_image();
+        img.spec.sources = vec![ImageSource {
+            provider_class: "azure".into(),
+            kind: ImageSourceKind::Template,
+            reference: reference.into(),
+            import_from: None,
+            checksum: None,
+        }];
+        if let Some(status) = img.status.as_mut() {
+            status.per_provider = vec![ImagePerProviderStatus {
+                provider_name: "az1".into(),
+                provider_namespace: "banlieue-system".into(),
+                ready: true,
+                resolved_ref: Some(reference.into()),
+                reason: None,
+                message: None,
+                zones: vec![],
+                source_digest: None,
+                min_os_disk_size_gib: None,
+                superseded_refs: Vec::new(),
+            }];
+        }
+        img
+    }
+
+    fn build_az(
+        vm: &VirtualMachine,
+        class: &VMClass,
+        image: &VMImage,
+        decision: &Decision,
+        provider: &Provider,
+        user_data: Option<&str>,
+    ) -> Result<banlieue_api::infrastructure::AzureVirtualMachine, InfraBuildError> {
+        build_azure_virtual_machine(vm, class, image, decision, provider, user_data)
+    }
+
+    fn build_az_default(
+        decision: &Decision,
+    ) -> Result<banlieue_api::infrastructure::AzureVirtualMachine, InfraBuildError> {
+        build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            decision,
+            &az_provider(),
+            None,
+        )
+    }
+
+    #[test]
+    fn az_happy_path_resolves_every_field_for_the_zone() {
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let mut vm = parent_vm();
+        vm.spec.desired_power_state = PowerState::PoweredOff;
+        let m = build_az(
+            &vm,
+            &class,
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("2"),
+            &az_provider(),
+            Some("#cloud-config\n"),
+        )
+        .expect("ok");
+
+        assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
+        assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
+        let o = &m.metadata.owner_references.as_ref().expect("owner")[0];
+        assert_eq!(o.kind, "VirtualMachine");
+        assert_eq!(o.controller, Some(true));
+        assert_eq!(
+            m.metadata
+                .labels
+                .as_ref()
+                .and_then(|l| l.get("banlieue.io/owned-by"))
+                .map(String::as_str),
+            Some("db-01")
+        );
+        assert_eq!(m.spec.provider_ref.name, "az1");
+        assert_eq!(m.spec.provider_ref.namespace, None);
+        assert_eq!(m.spec.failure_domain.as_deref(), Some("az1-zone-2"));
+        assert_eq!(m.spec.zone, "2");
+        assert_eq!(m.spec.size, "Standard_D8as_v5", "the zone-2 override wins");
+        assert_eq!(m.spec.image_version_id, AZ_IMAGE_VERSION);
+        assert_eq!(m.spec.os_disk_size_gi_b, 100);
+        assert_eq!(m.spec.os_disk_sku, "Premium_LRS");
+        assert_eq!(m.spec.subnet_id, AZ_SUBNET_ZONE_2);
+        assert!(m.spec.accelerated_networking);
+        assert!(m.spec.trusted_launch);
+        assert_eq!(m.spec.user_data.as_deref(), Some("#cloud-config\n"));
+        assert_eq!(m.spec.desired_power_state, PowerState::PoweredOff);
+        assert_eq!(m.spec.provider_id, None);
+        m.spec.validate().expect("validates");
+    }
+
+    #[test]
+    fn az_default_targets_apply_in_a_zone_with_no_override() {
+        let m = build_az_default(&az_decision("1")).expect("ok");
+        assert_eq!(m.spec.size, "Standard_D8s_v5");
+        assert_eq!(m.spec.subnet_id, AZ_SUBNET_DEFAULT);
+        assert_eq!(m.spec.os_disk_sku, "Premium_LRS");
+        assert!(!m.spec.trusted_launch);
+        assert_eq!(m.spec.user_data, None);
+
+        let m = build_az_default(&az_decision("3")).expect("ok");
+        assert_eq!(m.spec.os_disk_sku, "StandardSSD_LRS", "zone-3 SKU override");
+    }
+
+    #[test]
+    fn az_zone_falls_back_to_the_failure_domain_label() {
+        let mut d = az_decision("2");
+        d.failure_domain_raw.clear();
+        let m = build_az_default(&d).expect("ok");
+        assert_eq!(m.spec.zone, "2");
+    }
+
+    #[test]
+    fn az_failure_domain_without_a_zone_is_an_error() {
+        let mut d = az_decision("2");
+        d.failure_domain_raw.clear();
+        d.failure_domain_labels.clear();
+        let e = build_az_default(&d).unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingZone(_)), "{e}");
+        assert!(e.to_string().contains("az1-zone-2"), "{e}");
+    }
+
+    #[test]
+    fn az_unmapped_class_is_an_error_naming_the_class() {
+        let mut class = parent_class();
+        class.metadata.name = Some("tiny".into());
+        let e = build_az(
+            &parent_vm(),
+            &class,
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::UnmappedInstanceSize { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("tiny"), "{e}");
+        assert!(e.to_string().contains("instanceSizes"), "{e}");
+    }
+
+    /// A `Url` image published by banlieue (ADR-0162 Decision 4): the
+    /// chosen Provider's ready row for the current build.
+    fn az_url_image(digest: &str) -> VMImage {
+        let mut img = az_image(AZ_IMAGE_VERSION);
+        img.spec.sources[0].kind = ImageSourceKind::Url;
+        img.spec.sources[0].reference = "https://example.com/kairos.raw".into();
+        let status = img.status.as_mut().expect("status");
+        status.per_provider[0].source_digest = Some(digest.into());
+        status.build_artifact = Some(BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
+            phase: BuildArtifactPhase::Ready,
+            os_artifact_ref: "kairos".into(),
+            os_artifact_uid: None,
+            pvc_ref: None,
+            file: Some("kairos.raw".into()),
+            reason: None,
+            message: None,
+            checksum: Some(digest.into()),
+            oci_artifact: None,
+            first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
+        });
+        img
+    }
+
+    const AZ_DIGEST: &str =
+        "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    #[test]
+    fn az_url_image_boots_the_version_published_into_the_chosen_provider() {
+        let m = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_url_image(AZ_DIGEST),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.image_version_id, AZ_IMAGE_VERSION);
+    }
+
+    #[test]
+    fn az_url_image_not_yet_published_is_an_error() {
+        type Mutate = fn(&mut VMImage);
+        let cases: [(&str, Mutate); 4] = [
+            ("row not ready", |img| {
+                img.status.as_mut().unwrap().per_provider[0].ready = false;
+            }),
+            ("row of another provider", |img| {
+                img.status.as_mut().unwrap().per_provider[0].provider_namespace = "other".into();
+            }),
+            ("no resolvedRef", |img| {
+                img.status.as_mut().unwrap().per_provider[0].resolved_ref = None;
+            }),
+            ("published from an earlier build", |img| {
+                img.status.as_mut().unwrap().per_provider[0].source_digest =
+                    Some("sha256:00".into());
+            }),
+        ];
+        for (case, mutate) in cases {
+            let mut img = az_url_image(AZ_DIGEST);
+            mutate(&mut img);
+            let e = build_az(
+                &parent_vm(),
+                &parent_class(),
+                &img,
+                &az_decision("1"),
+                &az_provider(),
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(e, InfraBuildError::MissingResolvedImageRef { .. }),
+                "{case}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn az_image_without_an_azure_template_or_url_source_is_an_error() {
+        let mut img = az_image(AZ_IMAGE_VERSION);
+        img.spec.sources[0].kind = ImageSourceKind::BackingFile;
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &img,
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingImageSource { .. }),
+            "{e}"
+        );
+
+        let mut img = az_image(AZ_IMAGE_VERSION);
+        img.spec.sources[0].provider_class = "vsphere".into();
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &img,
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingImageSource { .. }),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn az_image_reference_that_is_not_a_resource_id_is_an_error() {
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image("kairos-1.0.0"),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::InvalidImageReference { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("kairos-1.0.0"), "{e}");
+    }
+
+    #[test]
+    fn az_storage_class_without_a_sku_is_an_error() {
+        let mut p = az_provider();
+        p.spec.capabilities.storage_classes[0].target =
+            Some(BTreeMap::from([("storage".into(), "x".into())]));
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingTarget { .. }), "{e}");
+        assert!(e.to_string().contains("sku"), "{e}");
+        assert!(e.to_string().contains("gold"), "{e}");
+    }
+
+    #[test]
+    fn az_storage_class_not_mapped_at_all_is_an_error() {
+        let mut p = az_provider();
+        p.spec.capabilities.storage_classes.clear();
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingTarget { .. }), "{e}");
+    }
+
+    #[test]
+    fn az_network_class_without_a_subnet_id_is_an_error() {
+        let mut p = az_provider();
+        p.spec.capabilities.network_classes[0].target =
+            Some(BTreeMap::from([("bridge".into(), "br0".into())]));
+        p.spec.capabilities.network_classes[0].per_zone.clear();
+        let e = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingTarget { .. }), "{e}");
+        assert!(e.to_string().contains("subnetId"), "{e}");
+    }
+
+    #[test]
+    fn az_accelerated_networking_is_off_unless_the_target_says_true() {
+        let mut p = az_provider();
+        p.spec.capabilities.network_classes[0].target = Some(BTreeMap::from([(
+            "subnetId".into(),
+            AZ_SUBNET_DEFAULT.into(),
+        )]));
+        let m = build_az(
+            &parent_vm(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &p,
+            None,
+        )
+        .expect("ok");
+        assert!(!m.spec.accelerated_networking);
+    }
+
+    #[test]
+    fn az_two_nics_are_refused() {
+        let mut class = parent_class();
+        let mut second = class.spec.network.interfaces[0].clone();
+        second.name = "eth1".into();
+        class.spec.network.interfaces.push(second);
+        let e = build_az(
+            &parent_vm(),
+            &class,
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::Unsupported { .. }), "{e}");
+        assert!(e.to_string().contains("network interface"), "{e}");
+    }
+
+    #[test]
+    fn az_no_nic_is_an_error() {
+        let mut class = parent_class();
+        class.spec.network.interfaces.clear();
+        let e = build_az(
+            &parent_vm(),
+            &class,
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::UnresolvedClass(_)), "{e}");
+    }
+
+    #[test]
+    fn az_data_disks_are_refused() {
+        let mut class = parent_class();
+        class.spec.hardware.disks.push(DiskSpec {
+            name: "data".into(),
+            size_gi_b: 50,
+            storage_class: "gold".into(),
+            provisioning: DiskProvisioning::Thin,
+        });
+        let e = build_az(
+            &parent_vm(),
+            &class,
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::Unsupported { .. }), "{e}");
+    }
+
+    #[test]
+    fn az_os_disk_size_honours_the_per_vm_override() {
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus: None,
+            memory_mi_b: None,
+            disk_overrides: vec![DiskOverride {
+                name: "os".into(),
+                size_gi_b: 200,
+            }],
+        });
+        let m = build_az(
+            &vm,
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.os_disk_size_gi_b, 200);
+    }
+
+    /// The instance size fixes vCPUs and memory, so a per-VM override of
+    /// either is refused rather than silently ignored.
+    #[test]
+    fn az_cpu_or_memory_override_is_refused() {
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            cpus: Some(4),
+            memory_mi_b: None,
+            disk_overrides: vec![],
+        });
+        let e = build_az(
+            &vm,
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::Unsupported { .. }), "{e}");
+    }
+
+    #[test]
+    fn az_static_address_override_is_refused() {
+        let mut vm = parent_vm();
+        vm.spec.network_overrides = vec![static_override("eth0", "192.0.2.10")];
+        let e = build_az(
+            &vm,
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::Unsupported { .. }), "{e}");
+    }
+
+    /// ADR-0162 Decision 7: a cloud has no install-media path.
+    #[test]
+    fn az_deferred_install_mode_is_refused() {
+        use banlieue_api::banlieue::InstallMode;
+        for mode in [InstallMode::Deferred, InstallMode::Manual] {
+            let mut img = az_image(AZ_IMAGE_VERSION);
+            img.spec.template = Some(banlieue_api::banlieue::VMImageTemplate {
+                install_mode: mode,
+                ..Default::default()
+            });
+            let e = build_az(
+                &parent_vm(),
+                &parent_class(),
+                &img,
+                &az_decision("1"),
+                &az_provider(),
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(e, InfraBuildError::Unsupported { .. }), "{e}");
+            assert!(e.to_string().contains("installMode"), "{e}");
+        }
+    }
+
+    #[test]
+    fn az_spec_validation_failure_is_reported() {
+        let mut vm = parent_vm();
+        vm.spec.desired_power_state = PowerState::Suspended;
+        let e = build_az(
+            &vm,
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::InvalidSpec(_)), "{e}");
+    }
+
+    #[test]
+    fn az_machine_for_a_shared_provider_names_its_namespace() {
+        let m = build_az(
+            &in_tenant_namespace(),
+            &parent_class(),
+            &az_image(AZ_IMAGE_VERSION),
+            &az_decision("1"),
+            &az_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn infra_kind_maps_the_azure_class() {
+        assert_eq!(
+            InfraKind::from_provider_class("azure"),
+            Some(InfraKind::Azure)
+        );
+        assert_eq!(PROVIDER_CLASS_AZURE, "azure");
+        assert!(CLOUD_PROVIDER_CLASSES.contains(&PROVIDER_CLASS_AZURE));
+    }
+
+    #[test]
+    fn azure_kind_name_matches_the_crd() {
+        use kube::CustomResourceExt;
+        assert_eq!(
+            InfraKind::Azure.kind_name(),
+            banlieue_api::infrastructure::AzureVirtualMachine::crd()
+                .spec
+                .names
+                .kind
+        );
     }
 }

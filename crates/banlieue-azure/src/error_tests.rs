@@ -158,4 +158,25 @@ mod tests {
         };
         assert!(message.chars().count() <= MAX_MESSAGE_LEN);
     }
+
+    #[test]
+    fn a_failed_operation_with_a_placement_code_reads_as_a_placement_error() {
+        let zonal = operation_failure("ZonalAllocationFailed", "no capacity");
+        assert!(matches!(zonal, Error::AllocationFailed { .. }));
+        assert!(zonal.is_zone_specific());
+        assert!(operation_failure("SkuNotAvailable", "").is_zone_specific());
+        assert!(matches!(
+            operation_failure("QuotaExceeded", ""),
+            Error::QuotaExceeded { .. }
+        ));
+    }
+
+    #[test]
+    fn a_failed_operation_with_any_other_code_is_operation_failed() {
+        let e = operation_failure("OSProvisioningTimedOut", "the guest never reported");
+        assert!(matches!(e, Error::OperationFailed { .. }));
+        assert_eq!(e.code(), Some("OSProvisioningTimedOut"));
+        assert!(!e.is_zone_specific());
+        assert!(!e.is_retryable());
+    }
 }

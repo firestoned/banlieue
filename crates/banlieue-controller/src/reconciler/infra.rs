@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Build provider-specific infrastructure CRs from a scheduler [`Decision`].
 //!
-//! Four backends: `vsphere` ([`build_vsphere_machine`]), `libvirt`
+//! Five backends: `vsphere` ([`build_vsphere_machine`]), `libvirt`
 //! ([`build_libvirt_machine`], ADR-0050), `cloud-hypervisor`
-//! ([`build_cloud_hypervisor_machine`], ADR-0062) and `proxmox`
-//! ([`build_proxmox_machine`], ADR-0075). Dispatch by
+//! ([`build_cloud_hypervisor_machine`], ADR-0062), `proxmox`
+//! ([`build_proxmox_machine`], ADR-0075) and `azure`
+//! ([`build_azure_virtual_machine`], ADR-0164). Dispatch by
 //! `Provider.spec.providerClassRef.name` lives in [`super::virtualmachine`],
 //! not here — these builders are pure and know only their own backend.
 
@@ -13,16 +14,18 @@ use std::collections::BTreeMap;
 
 use banlieue_api::banlieue::InstallMode;
 use banlieue_api::banlieue::{
-    ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, NetworkClassMapping,
-    NetworkInterfaceSpec, Provider, SubnetShape, VMClass, VMImage, VirtualMachine,
+    ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, ImageSourceKind,
+    NetworkClassMapping, NetworkInterfaceSpec, Provider, SubnetShape, VMClass, VMImage,
+    VirtualMachine,
 };
 use banlieue_api::common::{FirstBootSealing, IpamShape, IpamSpec, StaticIpamConfig};
 use banlieue_api::infrastructure::{
-    ChBootSource, ChBootSourceKind, ChCpuSpec, ChMemorySpec, ChNicSpec, CloudHypervisorMachine,
-    CloudHypervisorMachineSpec, LibvirtBootSource, LibvirtBootSourceKind, LibvirtDiskBus,
-    LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec, LibvirtNicSource, LibvirtNicSourceKind,
-    LibvirtNicSpec, ProxmoxDataDisk, ProxmoxMachine, ProxmoxMachineSpec, ProxmoxNicModel,
-    ProxmoxNicSpec, VSphereDiskSpec, VSphereMachine, VSphereMachineSpec, VSphereNicSpec,
+    AzureVirtualMachine, AzureVirtualMachineSpec, ChBootSource, ChBootSourceKind, ChCpuSpec,
+    ChMemorySpec, ChNicSpec, CloudHypervisorMachine, CloudHypervisorMachineSpec, LibvirtBootSource,
+    LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec,
+    LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec, ProxmoxDataDisk, ProxmoxMachine,
+    ProxmoxMachineSpec, ProxmoxNicModel, ProxmoxNicSpec, VSphereDiskSpec, VSphereMachine,
+    VSphereMachineSpec, VSphereNicSpec,
 };
 use kube::ResourceExt;
 use kube::api::ObjectMeta;
@@ -40,6 +43,19 @@ pub const PROVIDER_CLASS_CLOUD_HYPERVISOR: &str = "cloud-hypervisor";
 /// `Provider.spec.providerClassRef.name` for the Proxmox VE backend
 /// (ADR-0074, ADR-0075).
 pub const PROVIDER_CLASS_PROXMOX: &str = "proxmox";
+/// `Provider.spec.providerClassRef.name` for the Azure backend (ADR-0158,
+/// ADR-0164).
+pub const PROVIDER_CLASS_AZURE: &str = "azure";
+
+/// Provider classes that are clouds: their failure domains are availability
+/// zones and every `VMClass` reaches them through an explicit instance-size
+/// mapping (ADR-0158 Decision 3, ADR-0160 Decision 1). The scheduler treats
+/// an empty `instanceSizes` on one of these as "nothing is schedulable".
+pub const CLOUD_PROVIDER_CLASSES: &[&str] = &[PROVIDER_CLASS_AZURE];
+
+/// Failure-domain key (in `attributes.raw`, else `labels`) carrying the
+/// cloud availability zone a domain stands for (ADR-0158 Decision 3).
+pub const FD_ZONE_KEY: &str = "zone";
 
 /// Which infrastructure CR kind a scheduled `VirtualMachine` becomes.
 ///
@@ -57,6 +73,8 @@ pub enum InfraKind {
     CloudHypervisor,
     /// `infrastructure.banlieue.io/ProxmoxMachine` (ADR-0075).
     Proxmox,
+    /// `infrastructure.banlieue.io/AzureVirtualMachine` (ADR-0164).
+    Azure,
 }
 
 impl InfraKind {
@@ -64,7 +82,7 @@ impl InfraKind {
     ///
     /// `None` for a provider class this controller has no builder for. That
     /// is a real state, not an impossible one: a `ProviderClass` can name any
-    /// class, while the set of builders is closed to these four (see
+    /// class, while the set of builders is closed to these five (see
     /// `docs/src/concepts/providers.md`, "Adding a provider"). It must
     /// surface as a condition rather than a panic or a silent no-op.
     #[must_use]
@@ -74,6 +92,7 @@ impl InfraKind {
             PROVIDER_CLASS_LIBVIRT => Some(Self::Libvirt),
             PROVIDER_CLASS_CLOUD_HYPERVISOR => Some(Self::CloudHypervisor),
             PROVIDER_CLASS_PROXMOX => Some(Self::Proxmox),
+            PROVIDER_CLASS_AZURE => Some(Self::Azure),
             _ => None,
         }
     }
@@ -86,6 +105,7 @@ impl InfraKind {
             Self::Libvirt => "LibvirtMachine",
             Self::CloudHypervisor => "CloudHypervisorMachine",
             Self::Proxmox => "ProxmoxMachine",
+            Self::Azure => "AzureVirtualMachine",
         }
     }
 }
@@ -135,6 +155,51 @@ pub enum InfraBuildError {
     /// The assembled infra spec failed its own cross-field validation.
     #[error("built spec is invalid: {0}")]
     InvalidSpec(String),
+
+    /// A cloud failure domain carries no availability zone in
+    /// `attributes.raw.zone` or `labels.zone` (ADR-0158 Decision 3).
+    #[error("failure domain {0} carries no availability zone (attributes.raw.zone or labels.zone)")]
+    MissingZone(String),
+
+    /// The `Provider` maps no instance size for this `VMClass`
+    /// (ADR-0160 Decision 1). The scheduler normally rejects the placement
+    /// first; this guards a Provider edited between the two.
+    #[error(
+        "VMClass {vm_class} has no instance size on Provider {provider} (zone {zone}); add it to spec.capabilities.instanceSizes (ADR-0160)"
+    )]
+    UnmappedInstanceSize {
+        vm_class: String,
+        provider: String,
+        zone: String,
+    },
+
+    /// The `VMImage` has no source for this provider class of the kind the
+    /// backend boots from (an `azure` `Template`, ADR-0162 Decision 4).
+    #[error("VMImage {image} has no {provider_class} {kind} source (ADR-0162 Decision 4)")]
+    MissingImageSource {
+        image: String,
+        provider_class: &'static str,
+        kind: &'static str,
+    },
+
+    /// The image source's `ref` is not the cloud resource identifier the
+    /// backend needs.
+    #[error("VMImage {image} ref {reference:?} is not {expected}")]
+    InvalidImageReference {
+        image: String,
+        reference: String,
+        expected: &'static str,
+    },
+
+    /// A storage or network class has no target, or no required key in it,
+    /// for the chosen zone.
+    #[error("{what} class {class} has no '{key}' target in zone {zone}")]
+    MissingTarget {
+        what: &'static str,
+        class: String,
+        key: &'static str,
+        zone: String,
+    },
 }
 
 /// The name of the infrastructure machine `vm` owns (ADR-0127 Decision 4): the one its
@@ -923,6 +988,262 @@ pub fn build_proxmox_machine(
         spec,
         status: None,
     })
+}
+
+/// Target key naming an Azure managed-disk SKU (ADR-0160 Decision 4).
+const TARGET_KEY_AZURE_SKU: &str = "sku";
+/// Target key naming an Azure subnet resource ID (ADR-0160 Decision 4).
+const TARGET_KEY_AZURE_SUBNET_ID: &str = "subnetId";
+/// Target key enabling accelerated networking when its value is
+/// [`TARGET_VALUE_TRUE`].
+const TARGET_KEY_AZURE_ACCELERATED_NETWORKING: &str = "acceleratedNetworking";
+/// The one target value that turns a boolean key on.
+const TARGET_VALUE_TRUE: &str = "true";
+/// Prefix of every ARM resource ID.
+const ARM_RESOURCE_ID_PREFIX: &str = "/subscriptions/";
+/// NICs an Azure VM takes in v1 (ADR-0164).
+const AZURE_MAX_NICS: usize = 1;
+
+/// Build an [`AzureVirtualMachine`] from the scheduler [`Decision`], the
+/// original VM, its class, image, and the chosen [`Provider`] (ADR-0164).
+///
+/// Owner-reference is set to `vm`, as for the other backends. Every field is
+/// resolved here so the provider interprets nothing.
+///
+/// # Where each resolved field comes from
+///
+/// - **`zone`**: the failure domain's raw `zone` attribute, else its `zone`
+///   label (ADR-0158 Decision 3).
+/// - **`size`**: `Provider.spec.capabilities.instanceSizes` for the
+///   `VMClass` in that zone, a per-zone entry winning (ADR-0160 Decision 1).
+/// - **`imageVersionId`**: the `ref` of the `VMImage`'s `azure` `Template`
+///   source, or for a `Url` source the version banlieue published into this
+///   `Provider` (its row's `resolvedRef`), a Compute Gallery image version
+///   resource ID (ADR-0162 Decision 4).
+/// - **`osDiskSizeGiB`**: the class's OS disk, after the VM's disk override.
+/// - **`osDiskSku`**: the OS disk's storage class target `sku` in the zone.
+/// - **`subnetId` / `acceleratedNetworking`**: the single NIC's network
+///   class target in the zone.
+/// - **`trustedLaunch`**: the class's `tpmEnabled` (ADR-0165).
+///
+/// # Errors
+/// [`InfraBuildError::Unsupported`] for an install-media image (ADR-0162
+/// Decision 7), data disks, more than one NIC, a per-VM vCPU, memory or
+/// static address override; [`InfraBuildError::UnresolvedClass`] for a class
+/// with no disk or no NIC; [`InfraBuildError::MissingZone`];
+/// [`InfraBuildError::UnmappedInstanceSize`];
+/// [`InfraBuildError::MissingImageSource`] /
+/// [`InfraBuildError::InvalidImageReference`] for the image, and
+/// [`InfraBuildError::MissingResolvedImageRef`] for a `Url` image not yet
+/// published into this `Provider` for its current build;
+/// [`InfraBuildError::MissingTarget`] for a class with no `sku` or
+/// `subnetId`; and [`InfraBuildError::InvalidSpec`] when the result fails
+/// [`AzureVirtualMachineSpec::validate`].
+pub fn build_azure_virtual_machine(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    decision: &Decision,
+    provider: &Provider,
+    rendered_user_data: Option<&str>,
+) -> Result<AzureVirtualMachine, InfraBuildError> {
+    let unsupported = |what: String| InfraBuildError::Unsupported {
+        backend: PROVIDER_CLASS_AZURE,
+        what,
+    };
+
+    // ADR-0162 Decision 7: a cloud boots a published image; there is no
+    // install-media path for a per-VM install.
+    let mode = install_mode(image);
+    if mode != InstallMode::Immediate {
+        return Err(unsupported(format!(
+            "installMode {mode:?} (no install-media path on a cloud, ADR-0162 Decision 7)"
+        )));
+    }
+
+    let hardware_override = vm.spec.hardware_override.as_ref();
+    if hardware_override.is_some_and(|h| h.cpus.is_some() || h.memory_mi_b.is_some()) {
+        return Err(unsupported(
+            "hardwareOverride cpus or memoryMiB (the instance size fixes them, ADR-0160)".into(),
+        ));
+    }
+    if !vm.spec.network_overrides.is_empty() {
+        return Err(unsupported(
+            "static address overrides (the NIC's private address is assigned by Azure)".into(),
+        ));
+    }
+
+    let disks = &class.spec.hardware.disks;
+    let os_disk = disks
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no disks)".into()))?;
+    if disks.len() > 1 {
+        return Err(unsupported(format!(
+            "data disks (class {} declares {})",
+            class.name_any(),
+            disks.len()
+        )));
+    }
+    let interfaces = &class.spec.network.interfaces;
+    let nic = interfaces
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no network interfaces)".into()))?;
+    if interfaces.len() > AZURE_MAX_NICS {
+        return Err(unsupported(format!(
+            "more than {AZURE_MAX_NICS} network interface (class {} declares {})",
+            class.name_any(),
+            interfaces.len()
+        )));
+    }
+
+    let zone = decision
+        .failure_domain_raw
+        .get(FD_ZONE_KEY)
+        .or_else(|| decision.failure_domain_labels.get(FD_ZONE_KEY))
+        .cloned()
+        .ok_or_else(|| InfraBuildError::MissingZone(decision.failure_domain_name.clone()))?;
+
+    let capabilities = &provider.spec.capabilities;
+    let size = capabilities
+        .instance_size_for(&class.name_any(), &zone)
+        .ok_or_else(|| InfraBuildError::UnmappedInstanceSize {
+            vm_class: class.name_any(),
+            provider: decision.provider_name.clone(),
+            zone: zone.clone(),
+        })?
+        .to_string();
+
+    let image_version_id = azure_image_version_id(image, decision)?;
+
+    let os_disk_sku = capabilities
+        .storage_classes
+        .iter()
+        .find(|c| c.name == os_disk.storage_class)
+        .and_then(|c| c.target_for_zone(&zone))
+        .and_then(|t| t.get(TARGET_KEY_AZURE_SKU))
+        .cloned()
+        .ok_or_else(|| InfraBuildError::MissingTarget {
+            what: "storage",
+            class: os_disk.storage_class.clone(),
+            key: TARGET_KEY_AZURE_SKU,
+            zone: zone.clone(),
+        })?;
+
+    let network_target = capabilities
+        .network_classes
+        .iter()
+        .find(|c| c.name == nic.network_class)
+        .and_then(|c| c.target_for_zone(&zone));
+    let subnet_id = network_target
+        .and_then(|t| t.get(TARGET_KEY_AZURE_SUBNET_ID))
+        .cloned()
+        .ok_or_else(|| InfraBuildError::MissingTarget {
+            what: "network",
+            class: nic.network_class.clone(),
+            key: TARGET_KEY_AZURE_SUBNET_ID,
+            zone: zone.clone(),
+        })?;
+    let accelerated_networking = network_target
+        .and_then(|t| t.get(TARGET_KEY_AZURE_ACCELERATED_NETWORKING))
+        .is_some_and(|v| v == TARGET_VALUE_TRUE);
+
+    let spec = AzureVirtualMachineSpec {
+        provider_id: None,
+        failure_domain: Some(decision.failure_domain_name.clone()),
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
+        zone,
+        size,
+        image_version_id,
+        os_disk_size_gi_b: merge_disk_size_override(os_disk, hardware_override),
+        os_disk_sku,
+        subnet_id,
+        accelerated_networking,
+        trusted_launch: class.spec.tpm_enabled,
+        user_data: rendered_user_data.map(str::to_string),
+        desired_power_state: vm.spec.desired_power_state.clone(),
+    };
+    spec.validate().map_err(InfraBuildError::InvalidSpec)?;
+
+    Ok(AzureVirtualMachine {
+        metadata: infra_meta(vm),
+        spec,
+        status: None,
+    })
+}
+
+/// The Compute Gallery image version an `azure` VM boots (ADR-0162
+/// Decision 4):
+///
+/// - a `Template` source: its `ref`, an image version an admin published;
+/// - a `Url` source: the version banlieue published into the chosen
+///   `Provider`, which is that `Provider`'s ready `status.perProvider` row's
+///   `resolvedRef`. When the build reports a checksum, the row's
+///   `sourceDigest` must match it (Decision 6): a row still naming an
+///   earlier build's version is not booted.
+///
+/// Either way the result must be an ARM resource ID.
+fn azure_image_version_id(image: &VMImage, decision: &Decision) -> Result<String, InfraBuildError> {
+    let source = image
+        .spec
+        .sources
+        .iter()
+        .find(|s| {
+            s.provider_class == PROVIDER_CLASS_AZURE
+                && matches!(s.kind, ImageSourceKind::Template | ImageSourceKind::Url)
+        })
+        .ok_or_else(|| InfraBuildError::MissingImageSource {
+            image: image.name_any(),
+            provider_class: PROVIDER_CLASS_AZURE,
+            kind: "Template or Url",
+        })?;
+    let reference = match source.kind {
+        ImageSourceKind::Url => published_azure_version(image, decision)?,
+        _ => source.reference.clone(),
+    };
+    if !reference.starts_with(ARM_RESOURCE_ID_PREFIX) {
+        return Err(InfraBuildError::InvalidImageReference {
+            image: image.name_any(),
+            reference,
+            expected: "a Compute Gallery image version resource ID (/subscriptions/...)",
+        });
+    }
+    Ok(reference)
+}
+
+/// The version banlieue published for `image` into the decision's
+/// `Provider`: its ready row's `resolvedRef`, for the current build.
+fn published_azure_version(
+    image: &VMImage,
+    decision: &Decision,
+) -> Result<String, InfraBuildError> {
+    let missing = || InfraBuildError::MissingResolvedImageRef {
+        image: image.name_any(),
+        provider: decision.provider_name.clone(),
+        zone: decision.failure_domain_name.clone(),
+    };
+    let status = image.status.as_ref().ok_or_else(missing)?;
+    let row = status
+        .per_provider
+        .iter()
+        .find(|r| {
+            r.provider_name == decision.provider_name
+                && r.provider_namespace == decision.provider_namespace
+        })
+        .filter(|r| r.ready)
+        .ok_or_else(missing)?;
+    let built = status
+        .build_artifact
+        .as_ref()
+        .and_then(|a| a.checksum.as_deref());
+    if let Some(built) = built
+        && !row
+            .source_digest
+            .as_deref()
+            .is_some_and(|d| d.eq_ignore_ascii_case(built))
+    {
+        return Err(missing());
+    }
+    row.resolved_ref.clone().ok_or_else(missing)
 }
 
 /// The storage id the NoCloud seed ISO is uploaded to: the `storage` key of
