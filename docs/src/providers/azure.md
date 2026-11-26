@@ -721,8 +721,36 @@ before AuroraBoot's automatic reset, the reset keeps `COS_OEM`, and the first
 active boot applies your user data from its very first stage; the report
 waits for Kairos's last boot stage.
 
-The image builder needs the helper image's reference, pinned by digest. A
-kustomize install sets it in the ConfigMap:
+The image builder needs the helper image's reference, pinned by digest.
+banlieue publishes the image, `ghcr.io/firestoned/banlieue-azure-guest`
+(linux/amd64, Cosign-signed, with build provenance and an SBOM; ADR-0171,
+*Amendment: the release workflow publishes the helper image*), and every
+release states the digest it pushed: in the release notes and in the
+`azure-guest-image.txt` asset. Take it from there:
+
+```sh
+curl -fsSL https://github.com/firestoned/banlieue/releases/download/v<version>/azure-guest-image.txt
+```
+
+Check the signature before you use it; the image is signed keylessly by the
+release workflow:
+
+```sh
+cosign verify \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp '^https://github\.com/firestoned/banlieue/\.github/workflows/build\.yaml@' \
+  ghcr.io/firestoned/banlieue-azure-guest@sha256:<digest>
+```
+
+For a build from `main` (tags `latest`, `main-<date>`, `sha-<short>`), resolve
+the tag yourself with `crane digest
+ghcr.io/firestoned/banlieue-azure-guest:<tag>`. On a cluster that mirrors
+images, copy it by digest (`crane copy <source>@sha256:<digest>
+<mirror>/banlieue-azure-guest`) and use the mirror's reference; the digest
+does not change. Building your own (`make azure-guest-image`) still works for
+an unreleased change.
+
+A kustomize install sets the reference in the ConfigMap:
 
 ```yaml
 # deploy/imagebuilder/configmap.yaml
@@ -778,7 +806,7 @@ Boot diagnostics are always on, so the serial log is there when a VM fails:
 | --- | --- |
 | `GuestReady=False`, reason `OSProvisioningTimedOut`, after about 20 minutes | The image never reported ready: it has no ready step, it could not reach WireServer (no route, often the VF took the default route on an accelerated-networking size), or first boot took longer than the window. Read the boot log. After this failure Azure refuses every update to the VM; delete and recreate it. |
 | The VM boots but ignores its user data | The image reads `customData` from a metadata address, or applies it on the next boot (after the report). For a banlieue-built image, the boot log (`banlieue-azure-guest:` lines) says why: no provisioning disk, no customData, or customData refused (not a `#cloud-config` document, over 64 KiB). See [What the image must do](#what-the-image-must-do-and-what-banlieue-adds-for-you). |
-| A `VMImage` with an `azure` source fails to build, reason `AzureGuestImageUnset` | The image builder has no `BANLIEUE_AZURE_GUEST_IMAGE`. Set it to the `banlieue-azure-guest` image, pinned by digest (ADR-0171): in the ConfigMap for a kustomize install, with `bootstrap imagebuilder --azure-guest-image` for a bootstrap install. |
+| A `VMImage` with an `azure` source fails to build, reason `AzureGuestImageUnset` | The image builder has no `BANLIEUE_AZURE_GUEST_IMAGE`. Set it to the `banlieue-azure-guest` image, pinned by digest (ADR-0171; the release's `azure-guest-image.txt` asset names it): in the ConfigMap for a kustomize install, with `bootstrap imagebuilder --azure-guest-image` for a bootstrap install. |
 | A zone missing from the `Provider`'s failure domains, or `NotAvailableForSubscription` | The size is offered in that zone but restricted for this subscription. `az vm list-skus --location <region> --size <size>` shows the restrictions. Map another size for that zone with `instanceSizes[].perZone`, or request access. |
 | A `VirtualMachine` stays unscheduled on Azure, reason `insufficient quota: vCPUs ...` | The published quota headroom (`capacity.cpus`) does not fit the VM. Raise the region's or the size family's vCPU quota (`az vm list-usage` shows usage and limit); quota is an action outside banlieue. |
 | `VMCreated=False`, reason `QuotaExceeded` | The scheduler admitted the VM but ARM refused it over quota (see [Failure domains and capacity](#failure-domains-and-capacity)). The create is retried every 5 minutes; raise the quota or delete the `VirtualMachine`. |
