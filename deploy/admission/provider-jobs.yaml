@@ -1,0 +1,143 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# What a provider identity's Jobs may run (defence in depth behind RBAC).
+#
+# The vSphere (ADR-0020), libvirt (ADR-0011) and Azure (ADR-0162 Decision 1)
+# providers create Jobs: per-zone image imports and image publishes. Their Job
+# verbs are a Role in the build namespace only
+# (crates/banlieue-operator/src/workload.rs, build_jobs_role), never their
+# cluster-wide ClusterRole. That namespace enforces Pod Security `privileged`
+# for kairos' build pods (ADR-0016), so Pod Security admission puts no floor
+# under a provider's Jobs there. This policy is that floor, and it does not
+# depend on the RBAC staying narrow: a Job written by a provider identity is
+# admitted only when
+#
+#   - it is in the build namespace;
+#   - its pod runs as `banlieue-import` (the read-only import identity,
+#     ADR-0016 section 4) or `banlieue-azure-publisher` (no RBAC, no API token,
+#     ADR-0159 Decision 3), never the provider's own identity or another one;
+#   - its pod is restricted: runAsNonRoot, no runAsUser 0, no host network,
+#     PID or IPC namespace, no privileged container, no privilege escalation,
+#     no added capability, no Unconfined seccomp;
+#   - its volumes are only a PVC (the build artifacts), an emptyDir, or a
+#     projected ServiceAccount token (the publisher's federated token): no
+#     hostPath, and no Secret or ConfigMap, by volume or by environment. The
+#     build namespace holds the imagebuilder's cloud-config Secrets (ADR-0037),
+#     and a pod reads any Secret of its namespace through a mount whatever its
+#     ServiceAccount may do.
+#
+# Every Job the three providers build meets each rule
+# (crates/banlieue-provider-{vsphere,libvirt}/src/reconciler/vmimage.rs,
+# crates/banlieue-provider-azure/src/reconciler/publish_job.rs).
+#
+# A provider identity is any ServiceAccount named `banlieue-provider-*`: the
+# operator names each Provider's `banlieue-provider-<class>-<provider>`
+# (crates/banlieue-provider-sdk/src/naming.rs), a standalone install's is
+# `banlieue-provider-<backend>`. Matching more than that only restricts more.
+# Edit the namespace in `variables.buildNamespace` if the build namespace is not
+# `banlieue-imagebuild`.
+#
+# Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-jobs
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["batch"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["jobs"]
+  matchConditions:
+    # Only a provider's ServiceAccount; every other writer of Jobs (the
+    # imagebuilder, the Job controller, a platform admin) is left alone.
+    - name: provider-identity
+      expression: "request.userInfo.username.matches('^system:serviceaccount:[^:]+:banlieue-provider-[^:]*$')"
+  variables:
+    - name: buildNamespace
+      expression: "'banlieue-imagebuild'"
+    - name: pod
+      expression: "object.spec.template.spec"
+    - name: containers
+      expression: >-
+        variables.pod.containers
+        + (has(variables.pod.initContainers) ? variables.pod.initContainers : [])
+    - name: volumes
+      expression: "has(variables.pod.volumes) ? variables.pod.volumes : []"
+  validations:
+    - expression: "object.metadata.namespace == variables.buildNamespace"
+      messageExpression: >-
+        'a provider creates Jobs only in the build namespace '
+        + variables.buildNamespace + ', not ' + object.metadata.namespace
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.serviceAccountName)
+        && variables.pod.serviceAccountName in ['banlieue-azure-publisher', 'banlieue-import']
+        && (!has(variables.pod.serviceAccount)
+            || variables.pod.serviceAccount == variables.pod.serviceAccountName)
+      message: "a provider's Job runs as spec.template.spec.serviceAccountName banlieue-import or banlieue-azure-publisher only"
+      reason: Forbidden
+    - expression: >-
+        !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork)
+        && !(has(variables.pod.hostPID) && variables.pod.hostPID)
+        && !(has(variables.pod.hostIPC) && variables.pod.hostIPC)
+      message: "a provider's Job may not use hostNetwork, hostPID or hostIPC"
+      reason: Forbidden
+    - expression: >-
+        has(variables.pod.securityContext)
+        && has(variables.pod.securityContext.runAsNonRoot)
+        && variables.pod.securityContext.runAsNonRoot
+        && !(has(variables.pod.securityContext.runAsUser) && variables.pod.securityContext.runAsUser == 0)
+        && variables.containers.all(c, !has(c.securityContext)
+            || ((!has(c.securityContext.runAsNonRoot) || c.securityContext.runAsNonRoot)
+                && !(has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0)))
+      message: "a provider's Job runs as non-root: spec.template.spec.securityContext.runAsNonRoot true, no runAsUser 0"
+      reason: Forbidden
+    - expression: >-
+        variables.containers.all(c, has(c.securityContext)
+            && !(has(c.securityContext.privileged) && c.securityContext.privileged)
+            && has(c.securityContext.allowPrivilegeEscalation)
+            && !c.securityContext.allowPrivilegeEscalation
+            && !(has(c.securityContext.capabilities) && has(c.securityContext.capabilities.add)
+                 && size(c.securityContext.capabilities.add) > 0))
+      message: "a provider's Job containers are unprivileged: no privileged, allowPrivilegeEscalation false, no added capabilities"
+      reason: Forbidden
+    - expression: >-
+        !(has(variables.pod.securityContext) && has(variables.pod.securityContext.seccompProfile)
+          && variables.pod.securityContext.seccompProfile.type == 'Unconfined')
+        && variables.containers.all(c, !(has(c.securityContext) && has(c.securityContext.seccompProfile)
+          && c.securityContext.seccompProfile.type == 'Unconfined'))
+      message: "a provider's Job may not run with an Unconfined seccomp profile"
+      reason: Forbidden
+    - expression: >-
+        variables.volumes.all(v, has(v.persistentVolumeClaim) || has(v.emptyDir)
+            || (has(v.projected) && v.projected.sources.all(s, has(s.serviceAccountToken))))
+      message: "a provider's Job mounts only a persistentVolumeClaim, an emptyDir or a projected serviceAccountToken: no hostPath, Secret or ConfigMap"
+      reason: Forbidden
+    - expression: >-
+        variables.containers.all(c,
+            !has(c.envFrom)
+            && (!has(c.env) || c.env.all(e, !has(e.valueFrom)
+                || (!has(e.valueFrom.secretKeyRef) && !has(e.valueFrom.configMapKeyRef)))))
+      message: "a provider's Job reads no Secret or ConfigMap through env or envFrom"
+      reason: Forbidden
+    - expression: "!has(variables.pod.ephemeralContainers)"
+      message: "a provider's Job declares no ephemeralContainers"
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-jobs
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-jobs
+  validationActions: ["Deny"]

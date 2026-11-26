@@ -7,7 +7,8 @@
 #
 # Mirrors deploy/provider-vsphere/rbac/clusterrole.yaml, with LibvirtMachine
 # in place of VSphereMachine (ADR-0050), minus IPAM (Pool-based IpamSpec is not
-# wired for libvirt yet), plus the Jobs the image import needs.
+# wired for libvirt yet). The import Jobs' verbs are not here: they are a Role
+# in the build namespace (see below).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -62,19 +63,16 @@ rules:
     verbs: ["update"]
 
   # ---------------------------------------------------------------------------
-  # Import Jobs (ADR-0011)
+  # Import Jobs (ADR-0011): NOT here
   # ---------------------------------------------------------------------------
-  # Bulk image transfer runs in a Job so gigabytes never flow through a
-  # reconcile loop. The reconciler reads a Job by name and server-side-applies
-  # it when absent — `create` because an apply to a nonexistent object creates
-  # it, `patch` because that is the verb apply uses.
-  #
-  # No `delete`: finished Jobs are reaped by ttlSecondsAfterFinished, so the
-  # provider never needs to remove one. No `list`/`watch` either — every read
-  # is by the deterministic name from import_job_name().
-  - apiGroups: ["batch"]
-    resources: ["jobs"]
-    verbs: ["get", "create", "patch"]
+  # The import Jobs run in the build namespace (default `banlieue-imagebuild`),
+  # and the provider's `jobs` `get`/`create`/`patch` live in a Role there,
+  # rendered per Provider by the operator
+  # (crates/banlieue-operator/src/workload.rs, build_jobs_role) and by
+  # `banlieue bootstrap provider libvirt`. This ClusterRole is bound
+  # cluster-wide, so a `jobs` `create` here would be pod create in EVERY
+  # namespace, as any ServiceAccount there. deploy/admission/provider-jobs.yaml
+  # confines what a provider identity's Jobs may run.
 
   # ---------------------------------------------------------------------------
   # Core resources
