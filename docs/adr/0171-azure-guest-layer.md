@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-26
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-11-26 (CI publishes the helper image; see *Amendment:
+  the release workflow publishes the helper image*)
 - **Related:** Implements [ADR-0163](0163-guestready-on-a-cloud.md) Decision 3
   (what an Azure image must carry) for every image banlieue builds. Extends
   [ADR-0037](0037-vmimage-layered-cloud-config.md) (layered cloud-config) and
@@ -208,7 +210,10 @@ The layer works for any Kairos image that does not undo it:
   signed and pinned by digest in the install manifests next to the banlieue
   image. Until the release workflow publishes it, a site sets
   `BANLIEUE_AZURE_GUEST_IMAGE` itself; without it Azure builds refuse to
-  start rather than produce an image that times out.
+  start rather than produce an image that times out. (*Amendment: the
+  release workflow publishes the helper image*: published and signed; the
+  digest is stated by the release, not in the install manifests, which do
+  not install the image builder.)
 - A new helper digest rebuilds every Azure image, and so publishes a new
   gallery version (ADR-0162 names versions by the built disk's digest).
 - customData now persists on `COS_OEM` at rest (0600, root), across reboots
@@ -223,3 +228,53 @@ The layer works for any Kairos image that does not undo it:
   after `cos-setup-network.service` and gets HTTP 200; the VF stays
   unmanaged on an accelerated-networking size; create to `Succeeded` stays
   near the spike's 189 s.
+
+## Amendment: the release workflow publishes the helper image (2026-11-26)
+
+Decision 2 left the helper image to the operator: build
+`Dockerfile.azure-guest`, push it, and pin its digest. banlieue now
+publishes it, the way ADR-0113 (*Amendment: a published pre-lay image*)
+publishes the pre-lay image.
+
+1. **CI publishes `ghcr.io/firestoned/banlieue-azure-guest`.** The
+   `docker-azure-guest` job in `.github/workflows/build.yaml` runs on every
+   event. It compiles the helper with `make azure-guest-binary` (the `guest`
+   profile for `x86_64-unknown-linux-musl`, with the Makefile's
+   `REMAP_RUSTFLAGS`, so the binary names no runner path) and builds
+   `Dockerfile.azure-guest` from it; nothing is compiled inside the image
+   build. It pushes under the banlieue image's rules and tags: `pr-<N>` and
+   `sha-<short>` for a pull request from a branch of this repository (a
+   fork's pull request builds only), `latest` and `main-<date>` on main,
+   `v<version>` and `v<major>.<minor>` on a release. Every pushed image is
+   signed with Cosign, keyless, by digest; on main and on a release it also
+   gets a build-provenance attestation and an SBOM. linux/amd64 only, as
+   Decision 2 and the Azure images it goes into are.
+2. **The release states the digest.** The image builder accepts the helper
+   only as `<repository>@sha256:<hex>`, so a tag is not enough to install
+   it. `upload-release-assets` waits for the job and runs `make
+   azure-guest-release-ref`, which writes the pushed reference to the
+   release asset `azure-guest-image.txt` (covered by `checksums.sha256`) and
+   appends it to the release notes as the `banlieue bootstrap imagebuilder
+   --azure-guest-image` value. The target refuses anything but a
+   `@sha256:<64 hex>` reference, so a release whose push produced no digest
+   publishes no assets. The install manifests are not the place:
+   `install.yaml` installs the operator, not the image builder, and the
+   imagebuilder's bootstrap takes the reference as a flag.
+3. **No default in the image builder.** Unlike `--prelay-image`, which
+   defaults to the pre-lay image's tag, `--azure-guest-image` stays unset
+   by default: Decision 2 requires a digest, and a binary's default cannot
+   name the digest of an image built after it. An Azure build without the
+   flag still fails with `AzureGuestImageUnset`.
+4. **No Grype gate.** The pre-lay image has one because it is a Debian
+   userland with a package database (ADR-0113, *Amendment: a Grype gate for
+   the pre-lay image*). This image is `FROM scratch` with one stripped static
+   binary: no package database, and no dependency list embedded in the
+   binary, so Grype has nothing to match and a gate on it would always pass
+   while appearing to check something. Its dependencies are checked where
+   they are visible, in `Cargo.lock`: `cargo audit` (the `security` job) and
+   `cargo deny` on every pull request and push, with the crate's CycloneDX
+   SBOM among the release's binary SBOMs. What neither sees is the musl C
+   library the Rust toolchain links in statically; that is recorded as an
+   accepted risk in the threat model, to revisit if the binary starts
+   embedding its dependency list (`cargo auditable`) or the toolchain's musl
+   gets an advisory feed.

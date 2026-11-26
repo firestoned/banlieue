@@ -996,18 +996,49 @@ prepare-binaries-linux-arm64: build-linux-arm64 ## Stage $(BINARY) at binaries/a
 
 AZURE_GUEST_TRIPLE ?= x86_64-unknown-linux-musl
 AZURE_GUEST_IMAGE  ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/banlieue-azure-guest:$(IMAGE_TAG)
+# Where cargo puts the helper: CARGO_TARGET_DIR when one is set (a shared build
+# host), the workspace's target/ otherwise.
+AZURE_GUEST_TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),$(CURDIR)/target)
+# The published image by digest, `<repository>@sha256:<64 hex>`: the release
+# workflow passes the `docker-azure-guest` job's push (ADR-0171, amendment
+# 2026-11-26). `azure-guest-release-ref` writes it to AZURE_GUEST_REF_FILE and
+# appends it to the release notes ($(RELEASE_NOTES)), because the imagebuilder
+# accepts the helper only by digest and a tag names no digest.
+AZURE_GUEST_IMAGE_REF ?=
+AZURE_GUEST_REF_FILE  ?= release/azure-guest-image.txt
 
-.PHONY: azure-guest-binary azure-guest-image
+.PHONY: azure-guest-binary azure-guest-image azure-guest-release-ref
 azure-guest-binary: ## Build the static Azure guest helper and stage it at binaries/amd64/banlieue-azure-guest (ADR-0171)
 	@rustup target add $(AZURE_GUEST_TRIPLE) >/dev/null 2>&1 || true
 	RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build -p banlieue-guest-azure --profile guest --target $(AZURE_GUEST_TRIPLE)
 	@mkdir -p binaries/amd64
-	@cp target/$(AZURE_GUEST_TRIPLE)/guest/banlieue-azure-guest binaries/amd64/
+	@cp $(AZURE_GUEST_TARGET_DIR)/$(AZURE_GUEST_TRIPLE)/guest/banlieue-azure-guest binaries/amd64/
 	@ls -l binaries/amd64/banlieue-azure-guest
 
 azure-guest-image: azure-guest-binary ## Build the FROM-scratch bundle image $(AZURE_GUEST_IMAGE) (linux/amd64, loads to local docker)
 	docker buildx build --platform linux/amd64 --load \
 	  -f Dockerfile.azure-guest -t $(AZURE_GUEST_IMAGE) .
+
+azure-guest-release-ref: ## Write AZURE_GUEST_IMAGE_REF (<repo>@sha256:<hex>) to $(AZURE_GUEST_REF_FILE) and the release notes (ADR-0171)
+	@printf '%s\n' "$(AZURE_GUEST_IMAGE_REF)" | grep -Eq '^[^@[:space:]]+@sha256:[0-9a-f]{64}$$' || { \
+	  echo "Set AZURE_GUEST_IMAGE_REF=<registry>/banlieue-azure-guest@sha256:<64 hex>"; exit 1; }
+	@mkdir -p $(dir $(AZURE_GUEST_REF_FILE)) $(dir $(RELEASE_NOTES))
+	@printf '%s\n' "$(AZURE_GUEST_IMAGE_REF)" > $(AZURE_GUEST_REF_FILE)
+	@{ \
+	  echo; \
+	  echo "### Azure guest helper image (ADR-0171)"; \
+	  echo; \
+	  echo "Every image built for an \`azure\` source carries the \`banlieue-azure-guest\` bundle,"; \
+	  echo "and the image builder takes it by digest only. This release's image, signed"; \
+	  echo "with Cosign (keyless) by the release workflow:"; \
+	  echo; \
+	  echo '```sh'; \
+	  echo "banlieue bootstrap imagebuilder --azure-guest-image $(AZURE_GUEST_IMAGE_REF)"; \
+	  echo '```'; \
+	  echo; \
+	  echo "The same reference is the \`$(notdir $(AZURE_GUEST_REF_FILE))\` asset."; \
+	} >> $(RELEASE_NOTES)
+	@echo "✓ $(AZURE_GUEST_IMAGE_REF) -> $(AZURE_GUEST_REF_FILE), $(RELEASE_NOTES)"
 
 # ----- Docker images --------------------------------------------------------
 
