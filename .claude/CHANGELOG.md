@@ -1121,6 +1121,31 @@ The API half of the Firecracker provider class, code-first.
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-11-19 10:00] - The Firecracker and shared-host ADRs are Accepted (0137, 0138, 0140, 0141, 0142, 0143)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0137-*.md`, `0138-*.md`, `0140-*.md`, `0141-*.md`, `0142-*.md`,
+  `0143-*.md`: Status Proposed to Accepted, dated 2026-11-19, with a `Proposed:
+  2026-11-18` bullet. ADR-0138's "Not implemented" consequence now reads
+  "Accepted, not implemented". The two references to mediatore ADR-0049 as
+  Proposed (ADR-0137) and the one in ADR-0143 now say Accepted, matching its
+  acceptance in the mediatore repository.
+- Not changed: ADR-0053, ADR-0082 and ADR-0136 (still Proposed, separate
+  efforts), ADR-0123 (Rejected), and ADR-0144 (accepted in its own change).
+
+### Why
+The decisions are made and implementation starts with them. Accepted records the
+decision, not that it shipped; CALM and the threat-model pass follow as each is
+implemented.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 09:00] - ADR-0144 accepted: sandbox segment and two egress gateway VMs on a Cloud Hypervisor host
 
 **Author:** Erick Bourgeois
