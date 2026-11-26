@@ -15,7 +15,7 @@ categories = ["api-bindings", "virtualization"]
 
 [dependencies]
 # Only the CustomResource derive: a consumer's TLS stack is its own business, and kube's
-# default features would force the client and the `ring` provider into every consumer.
+# default features would force the client and a crypto provider into every consumer.
 kube = { version = "~5.2", default-features = false, features = ["derive"] }
 # No Kubernetes version feature: k8s-openapi requires a library to leave that
 # choice to the final binary, and fails the build when two are enabled (ADR-0100).

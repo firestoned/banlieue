@@ -32,6 +32,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 # reqwest's `rustls-no-provider` panics at client build without a process
-# default provider; the binary installs it, tests do it themselves.
-rustls.workspace = true
+# default provider; the binary installs it (aws-lc-rs, X25519MLKEM768 first,
+# ADR-0170), tests do it themselves.
+banlieue-tls.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }

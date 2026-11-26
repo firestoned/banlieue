@@ -12,14 +12,15 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
-# Pure-Rust X.509 issuance on `ring` (already in the lockfile through rustls
-# and banlieue-oci's tests): the CA, the leaf and the signature. `x509-parser`
+# X.509 issuance on aws-lc-rs (the workspace's one crypto library, ADR-0170):
+# the CA, the leaf and the signature. `x509-parser`
 # lets rcgen read the CA certificate back and take a guest's public key from
 # its SPKI; `pem` is the encoding. ADR-0143 Decision 6.
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem", "x509-parser"] }
 # Reading the CSR with distinct failure reasons (parse, key type, signature)
-# so each outcome has its own counter. `verify` is the CSR's own signature.
-x509-parser = { workspace = true, features = ["verify"] }
+# so each outcome has its own counter. `verify-aws` checks the CSR's own
+# signature on aws-lc-rs (`verify` would pull in `ring`, ADR-0170).
+x509-parser = { workspace = true, features = ["verify-aws"] }
 # rcgen's validity type; already in the lockfile through rcgen.
 time = "0.3"
 # The 128-bit certificate serial, from the OS RNG.

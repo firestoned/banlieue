@@ -178,7 +178,7 @@ impl OpenBao {
         }
         // reqwest's `rustls-no-provider` needs a process-wide provider;
         // installing it twice is harmless.
-        let _ = rustls::crypto::ring::default_provider().install_default();
+        let _ = banlieue_tls::install_default_crypto_provider();
         let client = reqwest::Client::builder()
             .https_only(https_only)
             .user_agent(USER_AGENT)

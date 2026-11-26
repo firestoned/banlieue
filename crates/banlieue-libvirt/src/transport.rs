@@ -534,7 +534,11 @@ pub async fn connect_tls_with_timeout(
         }
     })?;
 
-    let config = rustls::ClientConfig::builder()
+    // banlieue's provider, explicitly: aws-lc-rs, X25519MLKEM768 offered
+    // first (ADR-0170). A libvirtd whose GnuTLS lacks ML-KEM answers X25519.
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(banlieue_tls::provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| TransportError::Tls(e.to_string()))?
         .with_root_certificates(roots)
         .with_client_auth_cert(chain, key)
         .map_err(|e| TransportError::Tls(e.to_string()))?;

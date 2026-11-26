@@ -31,10 +31,11 @@ vim_rs = { workspace = true }
 
 # BYOC HTTP client (ADR-0008/0009): we build the reqwest::Client ourselves (CA
 # bundle + insecure flag) and inject it into vim_rs 0.5 in BYOC mode. Features
-# pinned in [workspace.dependencies]: reqwest 0.13, rustls with the ring provider
-# installed at startup (no OpenSSL, no aws-lc-rs).
+# pinned in [workspace.dependencies]: reqwest 0.13, rustls with `banlieue-tls`'s
+# aws-lc-rs provider installed at startup (X25519MLKEM768 first, ADR-0170; no
+# OpenSSL, no `ring`).
 reqwest = { workspace = true }
-rustls = { workspace = true }
+banlieue-tls.workspace = true
 tokio-util = { workspace = true }
 
 kube.workspace = true

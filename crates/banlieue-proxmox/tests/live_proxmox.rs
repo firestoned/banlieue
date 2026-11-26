@@ -23,7 +23,7 @@ fn var(name: &str, example: &str) -> String {
 }
 
 fn client(secret: Option<&str>) -> Client {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
     let secret = secret.map_or_else(|| var("PROXMOX_TOKEN_SECRET", "<uuid>"), str::to_string);
     let token =
         ApiToken::new(&var("PROXMOX_TOKEN_ID", "'banlieue@pve!provider'"), &secret).unwrap();

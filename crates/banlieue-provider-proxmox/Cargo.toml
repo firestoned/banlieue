@@ -31,12 +31,12 @@ futures.workspace = true
 tracing.workspace = true
 clap.workspace = true
 async-trait.workspace = true
-# Installs the ring crypto provider reqwest's `rustls-no-provider` needs
-# (ADR-0009), before the first TLS handshake.
-rustls.workspace = true
+# Installs the process crypto provider reqwest's `rustls-no-provider` needs
+# (aws-lc-rs, X25519MLKEM768 first, ADR-0170), before the first TLS handshake.
+banlieue-tls.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
 # The live lifecycle tier builds a real client, which needs a process-default
 # rustls provider; the binary installs it, tests do it themselves.
-rustls.workspace = true
+banlieue-tls.workspace = true

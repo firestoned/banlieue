@@ -32,7 +32,7 @@ const GITHUB_JSON: &str = "application/vnd.github+json";
 fn https_client() -> Result<reqwest::Client, String> {
     // reqwest's `rustls-no-provider` needs a process-wide provider;
     // installing it twice is harmless.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
     reqwest::Client::builder()
         .https_only(true)
         .user_agent(USER_AGENT)
