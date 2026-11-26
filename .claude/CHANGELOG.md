@@ -549,6 +549,32 @@ The subscription-level `Microsoft.Compute/skus` and `locations/usages` reads suc
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-11-25 12:00] - ADR-0146 Decision 8: verified against a real OpenBao; the installer sends the path length as a string
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-host/src/openbao.rs`, `openbao_tests.rs`: `max_path_length` is sent as the string `"0"`, not the integer `0`.
+  OpenBao's ACL compares a pinned value together with its JSON type and an integer pin never matches a JSON number, so the
+  policy can only pin the string. Found by running the exact request against a real OpenBao (`bao server -dev`) in the OpenBao
+  repository's new `tests/test_attestation_ca.py`; a request with the integer is refused, which fails closed.
+- `docs/adr/0146-*.md` (Decision 8, layers 2 and 3), `docs/src/guides/cloud-hypervisor-host.md`: the policy example now requires all
+  five parameters (a missing `max_path_length` defaults to unlimited), pins `use_csr_values` as the boolean `false`, and the token has
+  no default policy; mount and role names in the examples follow the OpenBao script (`pki-ch-attestation`, `ch-ca-<ca name>`).
+- `docs/src/security/threat-model.md`: the OpenBao-side row (A-28, TB-22) and the uniqueness row say what was tested and what was
+  not (not run on a live server; no audit alert; a certificate signed by hand with `no_store` is not seen).
+
+### Why
+Decision 8's OpenBao layers were specified, not checked. The OpenBao repository now has `scripts/attestation-ca.sh` (a dedicated
+mount `pki-ch-attestation`, root path length 1, key never exported; `host` writes the pinned policy and the one-use JWT role; `done`
+removes them) and 25 tests on a real server: 24 refused variants, one use, address binding, identity, uniqueness. The tests found three
+wrong details in the ADR; the ADR and the installer now match the server.
+
+### Impact
+- [ ] Requires cluster rollout
+- [x] Installer change: an OpenBao policy that pins `max_path_length` must pin the string `"0"`
+- [ ] Documentation only
+
 ## [2026-11-24 20:30] - Threat model: pass for ADR-0145 and the Firecracker code in the tree; roadmap 20 status corrected
 
 **Author:** Erick Bourgeois
