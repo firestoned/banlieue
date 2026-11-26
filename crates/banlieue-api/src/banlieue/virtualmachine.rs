@@ -404,6 +404,16 @@ pub struct VirtualMachineStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub held_addresses: Vec<HeldAddress>,
 
+    /// Failure domains whose backend refused to create this VM, most recent
+    /// last (ADR-0173). Written by the controller when the infra CR of the
+    /// recorded placement reports `VMCreated=False` with reason
+    /// `ZoneUnavailable`; each entry excludes its failure domain from this
+    /// VM's placement for an exponentially growing, bounded time. Cleared
+    /// once the infrastructure reports provisioned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = MAX_PLACEMENT_FAILURES))]
+    pub placement_failures: Vec<PlacementFailure>,
+
     /// Standard Kubernetes conditions. Required types:
     ///   `Ready`               — overall readiness
     ///   `Scheduled`           — placement decision exists and is current
@@ -422,6 +432,28 @@ pub struct VirtualMachineStatus {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_generation: Option<i64>,
+}
+
+/// The most entries `VirtualMachineStatus.placementFailures` keeps; the
+/// oldest is dropped first (ADR-0173 Decision 3).
+pub const MAX_PLACEMENT_FAILURES: usize = 8;
+
+/// One failure domain whose backend refused to create a VM (ADR-0173).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PlacementFailure {
+    /// The `Provider` the VM was placed on.
+    pub provider_name: String,
+    /// The failure domain that refused it.
+    pub failure_domain: String,
+    /// The infra CR's `VMCreated` reason, such as `ZoneUnavailable`.
+    pub reason: String,
+    /// Consecutive failures in this failure domain; the exclusion doubles
+    /// with each.
+    pub failures: u32,
+    /// The infra CR's `lastTransitionTime` for the latest failure: a
+    /// failure is counted once, when it is later than this.
+    pub last_failure_time: Time,
 }
 
 /// The scheduler's current placement decision for a VirtualMachine, with the

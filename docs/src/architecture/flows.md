@@ -393,3 +393,19 @@ flowchart TD
 
 <sub>Source: flow `flow-attest-with-host-signed-certificate-cloud-hypervisor` in `architecture.json`.</sub>
 
+
+## An Azure allocation failure re-places the machine in another zone (ADR-0173)
+
+IMPLEMENTED (ADR-0173, ADR-0161 Decision 2). The provider reports a zone-specific create failure; the controller, the only placer, re-places a machine that never ran, excluding the failed zone for a bounded, exponential time. Nothing new crosses the CRD-only bus.
+
+```mermaid
+flowchart TD
+    t1["1. The VM create is refused or its operation fails with ZonalAllocationFailed, AllocationFailed, SkuNotAvailable or an Overconstrained code."]
+    t2["2. The provider sets AzureVirtualMachine VMCreated=False reason ZoneUnavailable (lastTransitionTime = the failure) and increments status.createFailures; it never edits spec.zone."]
+    t3["3. The controller reads the failure for the recorded placement, records it on VirtualMachine.status.placementFailures and schedules again with that failure domain excluded."]
+    t4["4. With another placement, the controller writes status.scheduled and deletes the AzureVirtualMachine; the provider's finalizer removes the NIC and leftovers by owner tag, and the next pass applies a fresh machine in the new zone. With none, the machine stays and the provider retries in place after its back-off."]
+    t1 --> t2 --> t3 --> t4
+```
+
+<sub>Source: flow `flow-replace-azure-virtual-machine-after-allocation-failure` in `architecture.json`.</sub>
+

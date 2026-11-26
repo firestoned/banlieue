@@ -226,6 +226,14 @@ mod tests {
                 .await
                 .map(|h| self.handle(h))
         }
+        async fn merge_disk_tags(
+            &self,
+            rg: &str,
+            name: &str,
+            tags: &BTreeMap<String, String>,
+        ) -> banlieue_azure::Result<()> {
+            self.inner.merge_disk_tags(rg, name, tags).await
+        }
         async fn operation_status(
             &self,
             _h: &OperationHandle,
@@ -357,6 +365,49 @@ mod tests {
             None,
             "a new spec retries at once"
         );
+    }
+
+    #[test]
+    fn the_create_backoff_doubles_from_five_minutes_to_an_hour() {
+        // ADR-0173 Decision 5.
+        let minutes = |m: u64| Duration::from_secs(m * 60);
+        assert_eq!(create_backoff(0), minutes(5));
+        assert_eq!(create_backoff(1), minutes(5));
+        assert_eq!(create_backoff(2), minutes(10));
+        assert_eq!(create_backoff(3), minutes(20));
+        assert_eq!(create_backoff(4), minutes(40));
+        assert_eq!(create_backoff(5), minutes(60));
+        assert_eq!(create_backoff(6), minutes(60));
+        assert_eq!(create_backoff(u32::MAX), CREATE_RETRY_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn consecutive_failures_count_up_and_a_new_generation_starts_again() {
+        let mut status = AzureVirtualMachineStatus::default();
+        let t0 = now();
+        record_create_failure(&mut status, reasons::ZONE_UNAVAILABLE, "no capacity", 1, t0);
+        record_create_failure(&mut status, reasons::ZONE_UNAVAILABLE, "no capacity", 1, t0);
+        assert_eq!(status.create_failures, 2);
+        let after_first_window = t0
+            .checked_add(jiff::SignedDuration::from_secs(400))
+            .expect("ts");
+        assert!(
+            create_backoff_remaining(&status, 1, after_first_window).is_some(),
+            "the second failure waits ten minutes, not five"
+        );
+
+        record_create_failure(&mut status, reasons::QUOTA_EXCEEDED, "quota", 2, t0);
+        assert_eq!(
+            status.create_failures, 1,
+            "a new spec starts the count again"
+        );
+    }
+
+    #[test]
+    fn the_vm_created_condition_is_the_shared_allocation_contract() {
+        // The controller reads these by the banlieue-api constants (ADR-0173).
+        assert_eq!(VM_CREATED, "VMCreated");
+        assert_eq!(reasons::ZONE_UNAVAILABLE, "ZoneUnavailable");
     }
 
     // ---- create and adopt ----------------------------------------------
@@ -553,6 +604,7 @@ mod tests {
             reasons::ZONE_UNAVAILABLE
         );
         assert_eq!(first.requeue, CREATE_RETRY_BACKOFF);
+        assert_eq!(first.status.create_failures, 1);
 
         // Within the back-off nothing is sent, not even the NIC listing.
         let before = listed(&fake).await.len();
@@ -560,7 +612,28 @@ mod tests {
         assert!(second.requeue <= CREATE_RETRY_BACKOFF && second.requeue > Duration::ZERO);
         assert_eq!(listed(&fake).await.len(), before);
 
-        // The controller re-places it (a new generation): created at once.
+        // Past the first back-off, the same zone fails again: the next wait
+        // doubles (ADR-0173 Decision 5).
+        let past = now()
+            .checked_add(jiff::SignedDuration::from_secs(301))
+            .expect("ts");
+        let again = converge(
+            &fake,
+            &target(),
+            &machine(),
+            &s,
+            Some(&first.status),
+            1,
+            past,
+        )
+        .await;
+        assert_eq!(again.status.create_failures, 2);
+        assert_eq!(
+            again.requeue,
+            CREATE_RETRY_BACKOFF * CREATE_RETRY_BACKOFF_FACTOR
+        );
+
+        // A new generation: created at once.
         s.zone = "1".into();
         let replaced = converge(
             &fake,
@@ -575,6 +648,10 @@ mod tests {
         assert_eq!(
             reason(&replaced.status, VM_CREATED).0,
             condition_status::TRUE
+        );
+        assert_eq!(
+            replaced.status.create_failures, 0,
+            "reset once the VM exists"
         );
     }
 
@@ -624,6 +701,56 @@ mod tests {
         );
         assert_eq!(p.status.observed_generation, Some(1));
         assert_eq!(p.requeue, STEADY_REQUEUE);
+    }
+
+    /// ADR-0173: ARM takes no tags on the OS disk, so the provider merges
+    /// the machine's onto it once the VM has provisioned, and only once.
+    #[tokio::test]
+    async fn the_os_disk_is_tagged_once_the_vm_has_provisioned() {
+        let fake = world();
+        let first = pass(&fake, &spec(), None).await;
+        assert!(!first.status.os_disk_tagged, "not while the VM is creating");
+        let disk = |resources: &[TaggedResource]| {
+            resources
+                .iter()
+                .find(|r| r.name == os_disk_name(UID))
+                .cloned()
+                .expect("the OS disk, named from the UID")
+        };
+        assert!(disk(&listed(&fake).await).tags.is_empty());
+
+        fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
+        let ready = pass(&fake, &spec(), Some(&first.status)).await;
+        assert!(ready.status.os_disk_tagged);
+        assert_eq!(
+            disk(&listed(&fake).await).tags,
+            target().ownership(UID, MACHINE_NAMESPACE).to_map()
+        );
+
+        // Once tagged, never again: a later pass sends no tag write.
+        fake.delete_disk(RESOURCE_GROUP, &os_disk_name(UID))
+            .await
+            .expect("gone");
+        let later = pass(&fake, &spec(), Some(&ready.status)).await;
+        assert!(later.status.os_disk_tagged, "sticky");
+    }
+
+    /// Tagging is bookkeeping: a disk that cannot be tagged this pass never
+    /// holds the machine back, and is tried again.
+    #[tokio::test]
+    async fn an_untaggable_os_disk_does_not_block_ready_and_is_retried() {
+        let fake = world();
+        let first = pass(&fake, &spec(), None).await;
+        fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
+        fake.delete_disk(RESOURCE_GROUP, &os_disk_name(UID))
+            .await
+            .expect("gone");
+        let p = pass(&fake, &spec(), Some(&first.status)).await;
+        assert!(!p.status.os_disk_tagged);
+        assert_eq!(
+            reason(&p.status, condition_types::READY),
+            (condition_status::TRUE.into(), reasons::VM_READY.into())
+        );
     }
 
     #[tokio::test]
@@ -1080,6 +1207,46 @@ mod tests {
             .expect("nic");
         assert_eq!(
             nic.tags.get(test_support::EXTRA_TAG.0).map(String::as_str),
+            Some(test_support::EXTRA_TAG.1)
+        );
+    }
+
+    /// The OS disk gets the same tags as the VM and NIC, the Provider's extra
+    /// tags included (ADR-0172 with ADR-0173 Decision 7), so a required-tag
+    /// policy covering `Microsoft.Compute/disks` finds them once it is
+    /// tagged; the ownership tags still win.
+    #[tokio::test]
+    async fn a_governed_providers_os_disk_carries_its_extra_tags() {
+        let fake = world();
+        fake.add_disk_encryption_set(test_support::DES_ID, LOCATION);
+        fake.register_encryption_at_host();
+        let target = governed_target();
+        let first = governed_pass(&fake).await;
+        fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
+        let ready = converge(
+            &fake,
+            &target,
+            &machine(),
+            &spec(),
+            Some(&first.status),
+            1,
+            now(),
+        )
+        .await;
+        assert!(ready.status.os_disk_tagged);
+
+        let disk = listed(&fake)
+            .await
+            .into_iter()
+            .find(|r| r.name == os_disk_name(UID))
+            .expect("the OS disk");
+        let expected = target
+            .ownership(UID, MACHINE_NAMESPACE)
+            .merged_with(&target.extra_tags)
+            .expect("valid governance tags");
+        assert_eq!(disk.tags, expected);
+        assert_eq!(
+            disk.tags.get(test_support::EXTRA_TAG.0).map(String::as_str),
             Some(test_support::EXTRA_TAG.1)
         );
     }

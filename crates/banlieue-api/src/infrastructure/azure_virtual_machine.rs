@@ -160,6 +160,10 @@ fn is_false(value: &bool) -> bool {
     !*value
 }
 
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+
 impl AzureVirtualMachineSpec {
     /// Checks what the schema cannot: user data within Azure's `customData`
     /// limit, no `Suspended` power state, an OS disk size within range, and
@@ -268,6 +272,18 @@ pub struct AzureVirtualMachineStatus {
     /// ADR-0043 Decision 5).
     #[serde(default, skip_serializing_if = "is_false")]
     pub guest_installed: bool,
+
+    /// Consecutive failed creates of this generation: the provider waits
+    /// `min(5 min * 2^(n - 1), 1 h)` before creating again (ADR-0173
+    /// Decision 5). Reset when the VM exists.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub create_failures: u32,
+
+    /// Sticky: the OS disk carries this machine's ownership tags. ARM takes
+    /// none in the VM body, so the provider merges them onto the disk once
+    /// the VM exists (ADR-0173).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub os_disk_tagged: bool,
 
     /// The VM's last observed run state (deallocated reads `PoweredOff`).
     #[serde(default, skip_serializing_if = "Option::is_none")]

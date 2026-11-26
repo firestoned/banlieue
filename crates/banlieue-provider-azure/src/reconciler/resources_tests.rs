@@ -57,6 +57,10 @@ mod tests {
 
         assert_eq!(report.deleted, ["home-orphan"]);
         assert_eq!(
+            report.found, 1,
+            "another namespace's resources are not found"
+        );
+        assert_eq!(
             nic_names(&fake).await,
             BTreeSet::from(["tenant-nic".to_string(), "no-namespace-tag".to_string()])
         );
@@ -326,6 +330,11 @@ mod tests {
         .expect("sweep");
         assert_eq!(report.deleted.len(), MAX_SWEEP_DELETES_PER_PASS);
         assert_eq!(report.deferred, 1);
+        assert_eq!(
+            report.found,
+            MAX_SWEEP_DELETES_PER_PASS + 1,
+            "found counts the deferred orphan too (the sweep metric)"
+        );
     }
 
     /// ARM throttles a burst of deletes; the pass stops and resumes later.

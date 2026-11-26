@@ -232,6 +232,13 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              createFailures:
+                description: |-
+                  Consecutive failed creates of this generation: the provider waits
+                  `min(5 min * 2^(n - 1), 1 h)` before creating again (ADR-0173
+                  Decision 5). Reset when the VM exists.
+                minimum: 0.0
+                type: integer
               failureDomain:
                 description: "CAPI contract field (optional): observed failure domain."
                 nullable: true
@@ -266,6 +273,12 @@ spec:
                 - null
                 nullable: true
                 type: string
+              osDiskTagged:
+                description: |-
+                  Sticky: the OS disk carries this machine's ownership tags. ARM takes
+                  none in the VM body, so the provider merges them onto the disk once
+                  the VM exists (ADR-0173).
+                type: boolean
               pendingOperation:
                 description: The ARM operation in flight, if any.
                 nullable: true

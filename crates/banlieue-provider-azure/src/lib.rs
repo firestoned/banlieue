@@ -26,6 +26,7 @@ pub mod client;
 pub mod cloud;
 pub mod context;
 pub mod error;
+pub mod metrics;
 pub mod publish;
 pub mod reconciler;
 pub mod sshkey;

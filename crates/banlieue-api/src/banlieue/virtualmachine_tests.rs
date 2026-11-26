@@ -656,6 +656,7 @@ mod tests {
             }],
             observed_power_state: Some(PowerState::PoweredOn),
             held_addresses: Vec::new(),
+            placement_failures: Vec::new(),
             // ADR-0045: mirrored from the infra CR and on to a bound claim.
             tpm_endorsement_certificates: vec![
                 "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
@@ -733,6 +734,53 @@ mod tests {
         assert!(
             status.get("heldAddresses").is_some(),
             "a status apply naming a field the CRD schema lacks is rejected by the apiserver"
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // status.placementFailures (ADR-0173)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn placement_failures_omitted_when_empty() {
+        let json = serde_json::to_value(VirtualMachineStatus::default()).unwrap();
+        assert!(json.get("placementFailures").is_none(), "{json}");
+    }
+
+    #[test]
+    fn placement_failures_round_trip_in_camel_case() {
+        let s = VirtualMachineStatus {
+            placement_failures: vec![PlacementFailure {
+                provider_name: "azure-eastus2".into(),
+                failure_domain: "zone-1".into(),
+                reason: crate::common::allocation::ZONE_UNAVAILABLE.into(),
+                failures: 2,
+                last_failure_time: Time("2026-11-26T10:00:00Z".parse().unwrap()),
+            }],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json["placementFailures"][0],
+            serde_json::json!({
+                "providerName": "azure-eastus2", "failureDomain": "zone-1",
+                "reason": "ZoneUnavailable", "failures": 2,
+                "lastFailureTime": "2026-11-26T10:00:00Z",
+            })
+        );
+        let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn placement_failures_are_bounded_in_the_crd_status_schema() {
+        let crd = serde_json::to_value(VirtualMachine::crd()).unwrap();
+        let status = &crd["spec"]["versions"][0]["schema"]["openAPIV3Schema"]["properties"]["status"]
+            ["properties"];
+        assert_eq!(
+            status["placementFailures"]["maxItems"],
+            serde_json::json!(MAX_PLACEMENT_FAILURES),
+            "the schema bound and the controller's cap must agree"
         );
     }
 

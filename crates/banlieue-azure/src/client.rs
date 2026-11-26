@@ -33,6 +33,7 @@ use crate::operation::{
     is_trusted_base, parse_operation_status,
 };
 use crate::retry::parse_retry_after;
+use crate::tags::{merge_tags_body, validate_tags};
 use crate::types::{
     InstanceView, ResourceSku, TaggedResource, Usage, parse_instance_view, parse_resource_skus,
     parse_resources, parse_usages, parse_vm_tags, primary_private_ip,
@@ -80,6 +81,8 @@ const HTTP_NOT_FOUND: u16 = 404;
 const HTTP_TOO_MANY_REQUESTS: u16 = 429;
 const HTTP_SERVER_ERROR_MIN: u16 = 500;
 const COMPUTE: &str = "Microsoft.Compute";
+/// The Tags API under any resource ID (ADR-0173).
+const TAGS_SUFFIX: &str = "/providers/Microsoft.Resources/tags/default";
 const NETWORK: &str = "Microsoft.Network";
 
 /// Where and how to reach ARM.
@@ -511,6 +514,26 @@ impl ArmApi for ArmClient {
             DISK_API_VERSION,
         );
         self.delete(&url).await
+    }
+
+    async fn merge_disk_tags(
+        &self,
+        resource_group: &str,
+        name: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        validate_tags(tags)?;
+        let url = Self::api(
+            &format!("{}{TAGS_SUFFIX}", self.disk_url(resource_group, name)?),
+            RESOURCES_API_VERSION,
+        );
+        let reply = self
+            .send(Method::PATCH, &url, Some(&merge_tags_body(tags)))
+            .await?;
+        if !reply.is_success() {
+            return Err(reply.error());
+        }
+        Ok(())
     }
 
     async fn operation_status(&self, handle: &OperationHandle) -> Result<OperationStatus> {

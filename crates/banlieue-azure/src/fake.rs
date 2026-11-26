@@ -148,6 +148,8 @@ struct FakeVm {
 
 struct FakeDisk {
     name: String,
+    /// Empty at creation: ARM copies none of the VM's tags onto its OS disk.
+    tags: BTreeMap<String, String>,
     created: jiff::Timestamp,
 }
 
@@ -804,12 +806,20 @@ impl ArmApi for FakeArm {
             });
         }
 
-        let disk_key = key(resource_group, &format!("{name}{OS_DISK_SUFFIX}"));
+        // ARM names the OS disk as asked, and only when not asked
+        // `{vm}_OsDisk_1_{guid}`.
+        let disk_name = if request.os_disk_name.is_empty() {
+            format!("{name}{OS_DISK_SUFFIX}")
+        } else {
+            request.os_disk_name.clone()
+        };
+        let disk_key = key(resource_group, &disk_name);
         let now = jiff::Timestamp::now();
         s.disks.insert(
             disk_key.clone(),
             FakeDisk {
-                name: format!("{name}{OS_DISK_SUFFIX}"),
+                name: disk_name,
+                tags: BTreeMap::new(),
                 created: now,
             },
         );
@@ -907,6 +917,26 @@ impl ArmApi for FakeArm {
         Ok(None)
     }
 
+    async fn merge_disk_tags(
+        &self,
+        resource_group: &str,
+        name: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<()> {
+        crate::tags::validate_tags(tags)?;
+        let mut s = self.lock();
+        let disk = s
+            .disks
+            .get_mut(&key(resource_group, name))
+            .ok_or_else(|| not_found("ResourceNotFound", "The managed disk"))?;
+        let mut merged = disk.tags.clone();
+        merged.extend(tags.iter().map(|(k, v)| (k.clone(), v.clone())));
+        // ARM counts the tags the resource ends up with, not the request's.
+        crate::tags::validate_tags(&merged)?;
+        disk.tags = merged;
+        Ok(())
+    }
+
     async fn operation_status(&self, _handle: &OperationHandle) -> Result<OperationStatus> {
         // The fake completes every call synchronously.
         Ok(OperationStatus::Succeeded)
@@ -950,7 +980,8 @@ impl ArmApi for FakeArm {
                 tags: v.tags.clone(),
                 created_time: Some(v.created),
             });
-        // ARM does not copy a VM's tags onto the OS disk it creates.
+        // ARM does not copy a VM's tags onto the OS disk it creates; only
+        // `merge_disk_tags` puts any there.
         let disks = s
             .disks
             .iter()
@@ -959,7 +990,7 @@ impl ArmApi for FakeArm {
                 id: id(DISK_TYPE, &d.name),
                 name: d.name.clone(),
                 resource_type: DISK_TYPE.to_string(),
-                tags: BTreeMap::new(),
+                tags: d.tags.clone(),
                 created_time: Some(d.created),
             });
         let upload_disks = s

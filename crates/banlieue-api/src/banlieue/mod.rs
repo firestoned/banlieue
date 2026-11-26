@@ -27,9 +27,9 @@ pub use providerclass::{
 };
 pub use virtualmachine::{
     ANNOTATION_CREATED_BY, AffinityMode, AntiAffinityRule, DEFAULT_USER_DATA_KEY, DiskOverride,
-    HardwareOverride, HeldAddress, MigrationPolicy, NetworkInterfaceOverride, PlacementSpec,
-    ResolvedResource, ScheduledPlacement, UserDataSpec, VirtualMachine, VirtualMachineSpec,
-    VirtualMachineStatus,
+    HardwareOverride, HeldAddress, MAX_PLACEMENT_FAILURES, MigrationPolicy,
+    NetworkInterfaceOverride, PlacementFailure, PlacementSpec, ResolvedResource,
+    ScheduledPlacement, UserDataSpec, VirtualMachine, VirtualMachineSpec, VirtualMachineStatus,
 };
 // The nonce constants are deprecated but still re-exported (ADR-0049, amended).
 #[allow(deprecated)]

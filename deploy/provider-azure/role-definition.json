@@ -1,7 +1,7 @@
 {
   "Name": "banlieue Azure provider",
   "IsCustom": true,
-  "Description": "Least privilege for the banlieue Azure runtime provider (ADR-0159 Decision 3, ADR-0164): create, start, deallocate and delete VMs and their NICs and OS disks in the Provider's resource group, read the image it boots, and read quota and SKUs. No snapshot, image or gallery write: the image publisher is a separate identity (ADR-0162).",
+  "Description": "Least privilege for the banlieue Azure runtime provider (ADR-0159 Decision 3, ADR-0164): create, start, deallocate and delete VMs and their NICs and OS disks in the Provider's resource group, read the image it boots, read quota and SKUs, and merge its ownership tags onto the OS disks its VMs create (ADR-0173). No snapshot, image or gallery write: the image publisher is a separate identity (ADR-0162).",
   "Actions": [
     "Microsoft.Compute/virtualMachines/read",
     "Microsoft.Compute/virtualMachines/write",
@@ -24,7 +24,8 @@
     "Microsoft.Network/locations/operations/read",
     "Microsoft.Network/locations/operationResults/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
-    "Microsoft.Resources/subscriptions/resourcegroups/resources/read"
+    "Microsoft.Resources/subscriptions/resourcegroups/resources/read",
+    "Microsoft.Resources/tags/write"
   ],
   "NotActions": [],
   "DataActions": [],

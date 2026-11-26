@@ -11,6 +11,9 @@
 //!   Kairos first boot has no room to lay out its partitions (ADR-0160).
 //! - `deleteOption: Delete` on the OS disk and NIC: deleting the VM removes
 //!   both (ADR-0158 Decision 6).
+//! - `osDisk.name` from the owner's UID ([`os_disk_name`]): ARM accepts no
+//!   tags on the OS disk in the VM body and copies none of the VM's onto it,
+//!   so the provider tags the disk by name once the VM exists (ADR-0173).
 //! - `diagnosticsProfile.bootDiagnostics.enabled`: always, since a VM that
 //!   times out cannot be changed afterwards (ADR-0163 Decision 4).
 //! - `linuxConfiguration.provisionVMAgent: false`: the image reports ready
@@ -39,9 +42,12 @@ pub const DEFAULT_ADMIN_USERNAME: &str = "banlieue";
 pub const MAX_VM_NAME_LEN: usize = 64;
 /// Azure's limit on a NIC name.
 pub const MAX_NIC_NAME_LEN: usize = 80;
+/// Azure's limit on a managed disk name.
+pub const MAX_DISK_NAME_LEN: usize = 80;
 
 const NAME_PREFIX: &str = "banlieue-";
 const NIC_SUFFIX: &str = "-nic";
+const OS_DISK_SUFFIX: &str = "-osdisk";
 const IP_CONFIG_NAME: &str = "ipconfig1";
 const DELETE_OPTION: &str = "Delete";
 
@@ -72,6 +78,13 @@ fn require(field: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+/// The OS disk name for an object with `uid`. Starts with [`vm_name`], so a
+/// disk left behind still reads as the machine's.
+#[must_use]
+pub fn os_disk_name(uid: &str) -> String {
+    format!("{NAME_PREFIX}{uid}{OS_DISK_SUFFIX}")
+}
+
 /// What a VM create needs.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VmRequest {
@@ -87,6 +100,9 @@ pub struct VmRequest {
     pub os_disk_size_gb: u32,
     /// Disk SKU, such as `StandardSSD_LRS`.
     pub os_disk_sku: String,
+    /// The OS disk's resource name ([`os_disk_name`]), so it can be found
+    /// and tagged without a listing.
+    pub os_disk_name: String,
     /// Resource ID of the NIC, created first.
     pub nic_id: String,
     /// Guest host name.
@@ -122,6 +138,7 @@ impl VmRequest {
             ("size", &self.size),
             ("image_version_id", &self.image_version_id),
             ("os_disk_sku", &self.os_disk_sku),
+            ("os_disk_name", &self.os_disk_name),
             ("nic_id", &self.nic_id),
             ("computer_name", &self.computer_name),
             ("admin_username", &self.admin_username),
@@ -133,6 +150,12 @@ impl VmRequest {
             return Err(invalid(
                 "os_disk_size_gb must be greater than zero".to_string(),
             ));
+        }
+        if self.os_disk_name.len() > MAX_DISK_NAME_LEN {
+            return Err(invalid(format!(
+                "os_disk_name is {} characters; Azure allows {MAX_DISK_NAME_LEN}",
+                self.os_disk_name.len()
+            )));
         }
         if self.custom_data.len() > MAX_CUSTOM_DATA_BYTES {
             return Err(invalid(format!(
@@ -168,6 +191,7 @@ impl VmRequest {
                 "imageReference": {"id": self.image_version_id},
                 "diskControllerType": "NVMe",
                 "osDisk": {
+                    "name": self.os_disk_name,
                     "createOption": "FromImage",
                     "deleteOption": DELETE_OPTION,
                     "diskSizeGB": self.os_disk_size_gb,

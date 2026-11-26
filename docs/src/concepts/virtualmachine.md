@@ -53,6 +53,15 @@ condition vocabulary:
 `status.initialization.provisioned` (a boolean, not a condition) tracks
 whether the backend has ever accepted the spec.
 
+`status.placementFailures` lists the failure domains whose backend refused
+to create this VM (a cloud zone out of capacity for the size, for example).
+The controller re-places a VM that never ran in another failure domain when
+one fits, avoiding each refusing domain for 5 minutes, doubling with every
+further refusal up to an hour, and clears the list once the VM has
+provisioned. A VM that ran is never moved this way, whatever its
+`migrationPolicy`
+([ADR-0173](https://github.com/firestoned/banlieue/blob/main/docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md)).
+
 Status is **mirrored** from the underlying infrastructure CR; the main
 controller never sets `provisioned=true` on its own. See
 [Architecture → Provision a VM](architecture.md#provision-a-vm).

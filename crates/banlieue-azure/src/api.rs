@@ -106,6 +106,22 @@ pub trait ArmApi: Send + Sync {
         name: &str,
     ) -> Result<Option<OperationHandle>>;
 
+    /// Merges `tags` into managed disk `name`'s tags through the Tags API
+    /// (`PATCH .../disks/{name}/providers/Microsoft.Resources/tags/default`,
+    /// `operation: Merge`), which answers synchronously and keeps the disk's
+    /// other tags. ARM takes no tags on the OS disk in the VM body, so the
+    /// provider tags it here once the VM exists (ADR-0173).
+    ///
+    /// # Errors
+    /// [`crate::Error::NotFound`] when the disk does not exist;
+    /// [`crate::Error::InvalidTag`] for a tag Azure refuses, before any call.
+    async fn merge_disk_tags(
+        &self,
+        resource_group: &str,
+        name: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<()>;
+
     /// Polls a stored operation.
     async fn operation_status(&self, handle: &OperationHandle) -> Result<OperationStatus>;
 

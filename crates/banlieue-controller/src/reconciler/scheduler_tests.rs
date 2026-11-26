@@ -352,6 +352,135 @@ mod tests {
         assert_eq!(d.resolved_networks[0].backend_id, "vmnet-prod");
     }
 
+    // --- Exclusions after an allocation failure (ADR-0173) -----------------
+
+    fn az_two_zone_provider() -> Provider {
+        provider(
+            "az1",
+            BTreeMap::new(),
+            vec![
+                fd("az1-zone-1", BTreeMap::new(), &["gold"], &["prod"], &[]),
+                fd("az1-zone-2", BTreeMap::new(), &["gold"], &["prod"], &[]),
+            ],
+            caps_with(
+                &[("gold", "datastore", "ds-1")],
+                &[("prod", "portGroup", "pg-1")],
+            ),
+        )
+    }
+
+    fn excluded(fd: &str) -> Vec<(String, String)> {
+        vec![("az1".to_string(), fd.to_string())]
+    }
+
+    #[test]
+    fn a_vm_refused_in_its_zone_is_placed_in_another() {
+        let v = scheduled_vm(
+            "db-01",
+            "banlieue-system",
+            BTreeMap::new(),
+            "az1",
+            "az1-zone-1",
+        );
+        let (cls, img, providers) = (
+            gold_prod_class(),
+            image_ready_on(&["az1"]),
+            [az_two_zone_provider()],
+        );
+
+        let kept = schedule(&v, &cls, &img, &providers, &[], &[]).expect("schedule");
+        assert_eq!(
+            kept.failure_domain_name, "az1-zone-1",
+            "ADR-0125: kept while it fits"
+        );
+
+        let moved = schedule_avoiding(
+            &v,
+            &cls,
+            &img,
+            &providers,
+            &[],
+            &[],
+            &excluded("az1-zone-1"),
+        )
+        .expect("another zone");
+        assert_eq!(moved.failure_domain_name, "az1-zone-2");
+        let same = schedule_excluding(
+            &v,
+            &cls,
+            &img,
+            &providers,
+            &[],
+            &[],
+            &excluded("az1-zone-1"),
+        )
+        .expect("another zone");
+        assert_eq!(same, moved);
+    }
+
+    #[test]
+    fn an_exclusion_never_makes_a_vm_unschedulable() {
+        let v = scheduled_vm(
+            "db-01",
+            "banlieue-system",
+            BTreeMap::new(),
+            "az1",
+            "az1-zone-1",
+        );
+        let (cls, img) = (gold_prod_class(), image_ready_on(&["az1"]));
+        let both = vec![
+            ("az1".to_string(), "az1-zone-1".to_string()),
+            ("az1".to_string(), "az1-zone-2".to_string()),
+        ];
+        let providers = [az_two_zone_provider()];
+        assert!(
+            schedule_avoiding(&v, &cls, &img, &providers, &[], &[], &both).is_err(),
+            "strict: nothing else fits"
+        );
+        let kept = schedule_excluding(&v, &cls, &img, &providers, &[], &[], &both)
+            .expect("falls back to the unexcluded answer");
+        assert_eq!(kept.failure_domain_name, "az1-zone-1");
+    }
+
+    #[test]
+    fn an_exclusion_names_a_provider_and_a_failure_domain() {
+        let (cls, img) = (gold_prod_class(), image_ready_on(&["az1"]));
+        let other_provider = vec![("az2".to_string(), "az1-zone-1".to_string())];
+        let mut seen = std::collections::BTreeSet::new();
+        for name in ["a", "b", "c", "d", "e", "f"] {
+            let v = vm(name, "banlieue-system", BTreeMap::new());
+            let d = schedule_avoiding(
+                &v,
+                &cls,
+                &img,
+                &[az_two_zone_provider()],
+                &[],
+                &[],
+                &other_provider,
+            )
+            .expect("schedule");
+            seen.insert(d.failure_domain_name);
+        }
+        assert!(
+            seen.contains("az1-zone-1"),
+            "another provider's exclusion leaves this one's zone alone"
+        );
+    }
+
+    #[test]
+    fn no_exclusion_is_plain_schedule() {
+        let v = vm("db-01", "banlieue-system", BTreeMap::new());
+        let (cls, img, providers) = (
+            gold_prod_class(),
+            image_ready_on(&["az1"]),
+            [az_two_zone_provider()],
+        );
+        assert_eq!(
+            schedule_excluding(&v, &cls, &img, &providers, &[], &[], &[]),
+            schedule(&v, &cls, &img, &providers, &[], &[])
+        );
+    }
+
     // --- Filter: providerSelector ------------------------------------------
 
     #[test]

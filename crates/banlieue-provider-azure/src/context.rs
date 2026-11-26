@@ -13,6 +13,7 @@ use kube::Client;
 use kube::runtime::controller::Action;
 
 use crate::client::ArmClientFactory;
+use crate::metrics::SweepMetrics;
 
 /// When each `Provider`'s orphan sweep last ran (ADR-0158 Decision 5).
 ///
@@ -85,6 +86,9 @@ pub struct Context {
     pub provider_name: Option<String>,
     /// The orphan sweep's cadence, per `Provider`.
     pub sweep_clock: Arc<SweepClock>,
+    /// The orphan sweep's counters; registered at startup, unregistered
+    /// (recording into nothing scraped) in tests.
+    pub sweep_metrics: SweepMetrics,
     /// The image publish Jobs' namespace, image and identity.
     pub publish: PublishSettings,
     /// What this provider serves (ADR-0133).
@@ -108,6 +112,7 @@ impl Context {
             arm,
             provider_name,
             sweep_clock: Arc::new(SweepClock::default()),
+            sweep_metrics: SweepMetrics::default(),
             publish: PublishSettings::default(),
             serving: SharedServing::default(),
             scope: None,
@@ -120,6 +125,14 @@ impl Context {
     pub fn with_scope(mut self, scope: ProviderScope, gate: NamespaceGate) -> Self {
         self.scope = Some(scope.clone());
         self.serving = SharedServing::new(scope, gate);
+        self
+    }
+
+    /// Install the orphan sweep's counters, already registered with the
+    /// process's metrics registry.
+    #[must_use]
+    pub fn with_sweep_metrics(mut self, sweep_metrics: SweepMetrics) -> Self {
+        self.sweep_metrics = sweep_metrics;
         self
     }
 

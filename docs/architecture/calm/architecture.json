@@ -3923,7 +3923,7 @@
     },
     {
       "unique-id": "rel-provider-azure-arm",
-      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep. In a policy-governed subscription (ADR-0172) the NIC and VM also carry the Provider's extra tags, the OS disk names the Provider's disk encryption set, and the VM sets securityProfile.encryptionAtHost when the Provider asks.",
+      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep. A zone-specific create failure is reported as VMCreated=False/ZoneUnavailable and never moves the machine; an in-place retry backs off exponentially on status.createFailures (ADR-0173). The OS disk is named from the machine's UID and carries the same ownership tags as the VM and NIC, merged through the Tags API once the VM exists. Each sweep counts found, deleted and failed resources in banlieue_azure_orphan_sweep_resources_total. In a policy-governed subscription (ADR-0172) the NIC and VM also carry the Provider's extra tags, the OS disk names the Provider's disk encryption set, and the VM sets securityProfile.encryptionAtHost when the Provider asks.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -4155,7 +4155,7 @@
     },
     {
       "unique-id": "rel-controller-applies-azure-virtual-machine",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): banlieue-controller schedules a VirtualMachine onto an azure Provider (a mapped instance size usable in the zone, quota headroom) and applies an AzureVirtualMachine naming the zone, size, OS disk size, network class and the gallery image version from the VMImage's perProvider row. installMode Deferred, ISO images and an OS disk below the image's floor are refused at admission.",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): banlieue-controller schedules a VirtualMachine onto an azure Provider (a mapped instance size usable in the zone, quota headroom) and applies an AzureVirtualMachine naming the zone, size, OS disk size, network class and the gallery image version from the VMImage's perProvider row. installMode Deferred, ISO images and an OS disk below the image's floor are refused at admission. When the AzureVirtualMachine of the recorded placement reports VMCreated=False/ZoneUnavailable and was never provisioned, the controller records the failure on VirtualMachine.status.placementFailures, schedules again excluding that failure domain (exponential, 5 min to 1 h), writes the new placement and deletes the infra CR; migrationPolicy does not apply because no VM ran (ADR-0173).",
       "relationship-type": {
         "interacts": {
           "actor": "service-banlieue-controller",
@@ -5377,6 +5377,34 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "flow-replace-azure-virtual-machine-after-allocation-failure",
+      "name": "An Azure allocation failure re-places the machine in another zone (ADR-0173)",
+      "description": "IMPLEMENTED (ADR-0173, ADR-0161 Decision 2). The provider reports a zone-specific create failure; the controller, the only placer, re-places a machine that never ran, excluding the failed zone for a bounded, exponential time. Nothing new crosses the CRD-only bus.",
+      "transitions": [
+        {
+          "relationship-unique-id": "rel-provider-azure-arm",
+          "sequence-number": 1,
+          "description": "The VM create is refused or its operation fails with ZonalAllocationFailed, AllocationFailed, SkuNotAvailable or an Overconstrained code."
+        },
+        {
+          "relationship-unique-id": "rel-provider-azure-kube-api",
+          "sequence-number": 2,
+          "description": "The provider sets AzureVirtualMachine VMCreated=False reason ZoneUnavailable (lastTransitionTime = the failure) and increments status.createFailures; it never edits spec.zone."
+        },
+        {
+          "relationship-unique-id": "rel-controller-applies-azure-virtual-machine",
+          "sequence-number": 3,
+          "direction": "destination-to-source",
+          "description": "The controller reads the failure for the recorded placement, records it on VirtualMachine.status.placementFailures and schedules again with that failure domain excluded."
+        },
+        {
+          "relationship-unique-id": "rel-controller-applies-azure-virtual-machine",
+          "sequence-number": 4,
+          "description": "With another placement, the controller writes status.scheduled and deletes the AzureVirtualMachine; the provider's finalizer removes the NIC and leftovers by owner tag, and the next pass applies a fresh machine in the new zone. With none, the machine stays and the provider retries in place after its back-off."
+        }
+      ]
     }
   ],
   "controls": {
@@ -5913,6 +5941,7 @@
     "docs/adr/0163-guestready-on-a-cloud.md",
     "docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md",
     "docs/adr/0165-trusted-launch-vtpm-identity-on-azure.md",
-    "docs/adr/0172-azure-policy-governed-subscriptions.md"
+    "docs/adr/0172-azure-policy-governed-subscriptions.md",
+    "docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md"
   ]
 }

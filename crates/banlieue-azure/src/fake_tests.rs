@@ -12,7 +12,9 @@ mod tests {
     use crate::error::Error;
     use crate::tags::OwnershipTags;
     use crate::types::{Power, Provisioning};
-    use crate::vm::{DEFAULT_ADMIN_USERNAME, NicRequest, VmRequest, nic_name, vm_name};
+    use crate::vm::{
+        DEFAULT_ADMIN_USERNAME, NicRequest, VmRequest, nic_name, os_disk_name, vm_name,
+    };
 
     const RG: &str = "rg";
     const UID: &str = "0b9c5f0e-7a40-4d27-9e2c-1c3a8f5d2b11";
@@ -49,6 +51,7 @@ mod tests {
             image_version_id: image.to_string(),
             os_disk_size_gb: 32,
             os_disk_sku: "StandardSSD_LRS".to_string(),
+            os_disk_name: os_disk_name(UID),
             nic_id: fake_nic_id(RG, &nic_name(UID)),
             computer_name: vm_name(UID),
             admin_username: DEFAULT_ADMIN_USERNAME.to_string(),
@@ -242,6 +245,92 @@ mod tests {
         assert!(
             f.list_resources(RG).await.expect("list").is_empty(),
             "nothing left behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_os_disk_is_named_as_asked_and_starts_untagged() {
+        // ADR-0173: ARM copies none of the VM's tags onto its OS disk.
+        let f = fake();
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &vm("1", "Standard_D2s_v7", IMAGE_NVME))
+            .await
+            .expect("created");
+        let listed = f.list_resources(RG).await.expect("list");
+        let disk = listed
+            .iter()
+            .find(|r| r.resource_type == "Microsoft.Compute/disks")
+            .expect("the OS disk");
+        assert_eq!(disk.name, os_disk_name(UID));
+        assert!(disk.tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn merged_disk_tags_are_added_to_the_disk_and_keep_the_rest() {
+        let f = fake();
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &vm("1", "Standard_D2s_v7", IMAGE_NVME))
+            .await
+            .expect("created");
+        let mut first = BTreeMap::new();
+        first.insert("cost-centre".to_string(), "x".to_string());
+        f.merge_disk_tags(RG, &os_disk_name(UID), &first)
+            .await
+            .expect("merged");
+        f.merge_disk_tags(RG, &os_disk_name(UID), &tags())
+            .await
+            .expect("merged");
+        let listed = f.list_resources(RG).await.expect("list");
+        let disk = listed
+            .iter()
+            .find(|r| r.name == os_disk_name(UID))
+            .expect("the OS disk");
+        let mut expected = tags();
+        expected.extend(first);
+        assert_eq!(disk.tags, expected);
+    }
+
+    #[tokio::test]
+    async fn tagging_a_missing_disk_is_not_found() {
+        let f = fake();
+        let err = f.merge_disk_tags(RG, "nope", &tags()).await.unwrap_err();
+        assert!(err.is_not_found());
+    }
+
+    #[tokio::test]
+    async fn a_disk_tag_azure_refuses_is_refused() {
+        let f = fake();
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &vm("1", "Standard_D2s_v7", IMAGE_NVME))
+            .await
+            .expect("created");
+        let mut bad = BTreeMap::new();
+        bad.insert("a/b".to_string(), "x".to_string());
+        assert!(
+            f.merge_disk_tags(RG, &os_disk_name(UID), &bad)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_merge_past_azures_tag_limit_is_refused() {
+        // ARM counts the tags the disk ends up with, not the request's.
+        let f = fake();
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &vm("1", "Standard_D2s_v7", IMAGE_NVME))
+            .await
+            .expect("created");
+        let many: BTreeMap<String, String> = (0..crate::tags::MAX_TAGS_PER_RESOURCE)
+            .map(|i| (format!("t{i}"), "v".to_string()))
+            .collect();
+        f.merge_disk_tags(RG, &os_disk_name(UID), &many)
+            .await
+            .expect("exactly the limit");
+        assert!(
+            f.merge_disk_tags(RG, &os_disk_name(UID), &tags())
+                .await
+                .is_err()
         );
     }
 
