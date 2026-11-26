@@ -513,4 +513,18 @@ mod tests {
             ["bar", "baz", "foo"]
         );
     }
+
+    // ---- the apply step waits for a terminating infra CR ----------------------
+
+    /// After a recreate (or an allocation-failure re-placement, ADR-0173)
+    /// deletes the infra CR, the next pass must not apply the new one onto
+    /// the object that is still being finalized under the same name: the
+    /// patch would land on an object that is about to vanish.
+    #[test]
+    fn the_apply_waits_only_for_a_terminating_infra_cr() {
+        assert!(waits_for_infra(InfraState::Terminating));
+        for state in [InfraState::Absent, InfraState::Present, InfraState::Unknown] {
+            assert!(!waits_for_infra(state), "{state:?}");
+        }
+    }
 }

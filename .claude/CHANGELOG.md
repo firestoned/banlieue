@@ -1,5 +1,40 @@
 # Changelog
 
+## [2026-11-27 00:30] - A `migrationPolicy` recreate converges instead of deleting forever
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: the `Recreate` branch (placement drift under
+  `migrationPolicy: Automatic`, or `Manual` with `banlieue.io/migrate: "true"`) now writes the new placement to
+  `status.scheduled` before deleting the infra CR. It used to delete and leave `scheduled` on the old placement,
+  so every later pass saw the same drift and deleted again: the VM was destroyed and never recreated. The apply
+  step now also waits while the VM's infra CR is terminating (`owned_infra_state`, `waits_for_infra`), so neither
+  a recreate nor an ADR-0173 re-placement patches the new placement onto an object about to vanish.
+- `crates/banlieue-controller/src/reconciler/migration.rs`: `recreate_status` (pure), and
+  `REASON_PLACEMENT_INVALID` / `MESSAGE_PLACEMENT_INVALID` shared with `patch_placement_invalid`.
+
+### Added
+- Tests: `recreate_status_records_the_new_placement`, `after_a_recreate_the_next_pass_is_in_place`,
+  `recreate_status_keeps_the_rest_of_the_status` (`migration_tests.rs`);
+  `the_apply_waits_only_for_a_terminating_infra_cr` (`virtualmachine_tests.rs`).
+- `crates/banlieue-controller/tests/live_recreate.rs` and `make recreate-live-test`: the round trip against a
+  real API server (drift, new placement recorded, old infra CR held terminating by a test finalizer, no apply
+  onto it, recreated in the new failure domain once gone, left alone after). Passed on a kind cluster; run
+  against the previous reconciler it fails at "the new placement must be recorded before the old machine goes".
+- `docs/src/concepts/virtualmachine.md`: what a recreate does, in order, and that the guest and disks are lost.
+
+### Why
+Found reading the code while building ADR-0173 (the re-placement path records first and was not affected). The
+default `migrationPolicy` is `Automatic`, so any VM without it set was exposed to a drift (a capability, selector
+or class change) destroying it for good.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-26 23:00] - Azure: re-place a machine its zone refused, exponential back-off, sweep metrics, OS-disk tags (ADR-0173, roadmap 23)
 
 **Author:** Erick Bourgeois
