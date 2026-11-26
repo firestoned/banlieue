@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0140: Firecracker guests are supervised by systemd as the jailer, and start from a config file with no API socket
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Related:** [ADR-0137](0137-firecracker-provider-class.md) (Decision 3 left
   both questions here), [ADR-0063](0063-cloud-hypervisor-host-supervision.md)

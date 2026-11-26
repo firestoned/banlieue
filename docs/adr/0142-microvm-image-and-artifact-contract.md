@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0142: A microvm image is one OCI artifact of kernel, initramfs and root filesystem, pulled by digest and shared read-only
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Related:** [ADR-0137](0137-firecracker-provider-class.md) (Decision 4 left
   this contract here), [ADR-0064](0064-artifact-delivery-to-host-resident-providers.md)

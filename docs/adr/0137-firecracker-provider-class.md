@@ -4,8 +4,9 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0137: A `firecracker` provider class runs ephemeral sandbox microVMs on a KVM host
 
-- **Status:** Proposed
-- **Date:** 2026-11-18
+- **Status:** Accepted
+- **Date:** 2026-11-19
+- **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
 - **Related:** roadmap 20 (the plan this ADR makes decisions for),
   [ADR-0060](0060-cloud-hypervisor-first-class-provider-topology.md),
@@ -110,7 +111,7 @@ at all (vsock is not routed and is not netfilter traffic): the peer of a
 connection is, by construction, that guest.
 
 What travels on 1025 is mediatore's decision (ADR-0097), recorded in mediatore
-ADR-0049 (Proposed): the guest generates its own key, sends a CSR, and the
+ADR-0049 (Accepted): the guest generates its own key, sends a CSR, and the
 provider signs a short-lived certificate for it with the host's own CA, which the
 in-guest SPIRE agent presents to `x509pop` node attestation. The private key never
 leaves the guest, and the provider never logs a request or a certificate body.
@@ -151,7 +152,7 @@ bug until reproduced on a supported one.
   every guest of the image, with writes going to a RAM overlay that dies with
   the guest (ADR-0142 Decision 4).
 - Because there is no vTPM, **node attestation cannot be the TPM path** for
-  this class. mediatore ADR-0049 (Proposed) chooses `x509pop` with a
+  this class. mediatore ADR-0049 (Accepted) chooses `x509pop` with a
   certificate the host signs for the guest's own key, and ADR-0143 designs
   banlieue's side. Until `Provider.spec.attestation.hostCa` and
   `FirecrackerMachineStatus.attestationSubject` exist, a `firecracker` pool
