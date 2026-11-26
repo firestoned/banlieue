@@ -1,5 +1,238 @@
 # Changelog
 
+## [2026-11-26 14:00] - Azure: publish a VMImage Url source into the gallery, kept to the declared state (ADR-0162 D4, D8)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api`: `AzureConnection.imageGallery` (`AzureImageGallery { resourceGroup, name }`, the admin's
+  existing gallery) and `AzureConnection.publisher` (`AzurePublisherIdentity { clientId }`, ADR-0159 D3);
+  `ImagePerProviderStatus.sourceDigest`, `minOsDiskSizeGiB` and `supersededRefs` (cloud-only). `supersededRefs`
+  records versions this `VMImage` published for an earlier digest until they are deleted: the provider reads a
+  version only by name (no list right), so status is where the names live. CRDs and API reference regenerated.
+- `crates/banlieue-provider-azure/src/reconciler/gallery.rs`: the pure decisions (build gate: `cloudImage`,
+  `sha256:` checksum; version classification by owner tag and `banlieue-source-sha256`; the publish table;
+  superseded-version deletion; finalizer rule). `reconciler/publish_job.rs`: the publish/delete Job manifest
+  (`banlieue provider azure image-publish`, `banlieue-azure-publisher`, projected token, artifacts PVC read-only,
+  restricted pod, no API token, 4 h deadline), deterministic names, Job state and termination-message parsing.
+- `reconciler/image.rs`: a `Url` source is published into every azure `Provider` serving the image; a missing
+  or hand-deleted version is republished, a failed Job retried after 600 s, superseded versions deleted by
+  delete-mode Jobs once no `AzureVirtualMachine` references them, finalizer `banlieue.io/vmimage-azure`
+  (rows of a gone `Provider`, or one with no gallery/publisher, do not hold it). `Template` is unchanged.
+- `app.rs`: `--build-namespace`, `--publisher-service-account`; `--import-image` and `--build-toleration` are
+  used, not ignored; the `VMImage` controller watches its Jobs.
+- `crates/banlieue-provider-sdk/src/k8s_name.rs`: `collision_safe_name` moved from the vSphere provider (which
+  re-exports it), shared with the publish Jobs.
+- `crates/banlieue-controller`: `build_azure_virtual_machine` boots the chosen `Provider`'s ready row
+  `resolvedRef` for a `Url` source, refusing a row whose `sourceDigest` is not the current build's.
+- `deploy/provider-azure/publisher-role-definition.json` (action names checked against Microsoft's Compute
+  permissions page), `deploy/imagebuilder/rbac/serviceaccount-azure-publisher.yaml` (also created by
+  `bootstrap imagebuilder`), `deploy/network-policies/azure-publish.yaml`.
+
+### Changed
+- `deploy/provider-azure/rbac/clusterrole.yaml`: Jobs (get/list/watch/create/patch/delete), pods `list`
+  (termination message), `vmimages` update/patch (finalizer). `deploy/operator/rbac/clusterrole.yaml` gains
+  pods `list` so it can delegate it.
+- Least privilege for provider Jobs (threat-model pass): the vSphere, libvirt and Azure provider ClusterRoles no
+  longer grant `jobs` (or Azure's `pods` `list`); bound cluster-wide, that was Job create in every namespace as
+  any ServiceAccount there. `crates/banlieue-operator/src/workload.rs` (`job_rules`, `build_jobs_role`,
+  `build_jobs_role_binding`) renders per `Provider` of those backends a `Role` and `RoleBinding` in the build
+  namespace with exactly the verbs each provider's Job code uses (libvirt jobs get/create/patch; vSphere jobs
+  get/list/watch/create/patch/delete; Azure the same plus pods `list`), bound to the provider's ServiceAccount
+  across namespaces, unowned and removed by the label-based prune and finalizer cleanup
+  (`reconciler/provider.rs`; a missing build namespace is warned and retried). Standalone installs get the same
+  `Role` (`bootstrap.rs::build_provider_jobs_role`, `deploy/provider-vsphere/rbac/role-jobs.yaml`). The libvirt
+  `jobs` rule left `backend_additional_rules` and `examples/11-providerclass-libvirt.yaml`: it granted Job create
+  in the Provider's namespace, beside the operator's ServiceAccount. The operator's ClusterRole keeps the union
+  it delegates (comment says why). New `deploy/admission/provider-jobs.yaml` (fail-closed VAP + Deny binding):
+  a Job written by a `banlieue-provider-*` ServiceAccount is admitted only in `banlieue-imagebuild`, only as
+  `banlieue-import` or `banlieue-azure-publisher`, and only with a restricted pod (non-root, no host
+  namespaces, no privileged/escalation/added capabilities, no `Unconfined` seccomp, PVC/emptyDir/projected token
+  volumes only, no Secret or ConfigMap through env). The vSphere import Job gains the restricted security
+  context it lacked (non-root 65532, `RuntimeDefault`, no escalation, all capabilities dropped). Tests in
+  `workload_tests.rs`, `bootstrap_tests.rs`, `tests/admission_policies.rs`, `vmimage_tests.rs` (vSphere).
+  Threat model: §8's cluster-wide Job grant row becomes a TB-3 control, replaced by the narrower residual (a
+  restricted Job as the shared `banlieue-import`); §2, §4, §5 (TB-3, TB-23 diagram), §7.4 updated; stamp kept.
+  `docs/src/providers/libvirt.md` troubleshooting row and `deploy/admission/README.md` updated.
+- Docs: `docs/src/providers/azure.md` "Publishing images"; `docs/src/security/network-policies.md`;
+  `deploy/provider-azure/README.md`; `examples/31-virtualmachine-azure.yaml` (commented `Url` variant);
+  roadmaps 22 (phases A, D) and 23 (phase D), `ROADMAPS.md`.
+
+### Why
+"kubectl create VMImage" builds the image, or uploads the existing raw disk, to Azure as it does for vSphere;
+banlieue's `VMImage`s are the declared state of the gallery.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRDs, provider and operator ClusterRoles)
+- [ ] Config change only
+- [ ] Documentation only
+- Unit tested only; not run against Azure. No threat-model pass yet.
+
+## [2026-11-26 12:30] - Docs: vSphere listed before libvirt; Azure added where providers are listed
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/mkdocs.yml`: the Providers nav lists vSphere before libvirt.
+- `docs/src/providers/index.md`: provider-class table rows and "Choosing a class" bullets put vSphere before libvirt.
+- `docs/src/index.md`: Azure (alpha) added to the backend list, the "swap or mix providers" bullet, the
+  "How it works" diagram, and the comparison sentence.
+- `docs/src/concepts/providers.md`: Azure added to the backend examples, the `spec.backend` value list, and
+  the first-party clients (`banlieue-azure`, ADR-0164).
+- `docs/src/guides/index.md`: Providers pointer lists vSphere before libvirt.
+
+### Why
+Match the order the Provider Comparison already uses (Cloud Hypervisor, vSphere, libvirt, Proxmox, Azure),
+and stop the overview pages describing banlieue's backends without the Azure provider.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-26 12:00] - `make docs-serve` no longer aborts on warnings
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Makefile`: `docs-serve` runs `mkdocs serve --livereload --no-strict`. `make docs` (`mkdocs build`) keeps
+  `strict: true` from `docs/mkdocs.yml` and stays the gate.
+
+### Why
+Pages not yet committed (the new `docs/src/providers/` section) have no git history, so
+`git-revision-date-localized` falls back to the build time for both the creation and last-revision dates,
+taken in two calls at one-second resolution. When the second call lands in a later second the plugin emits an
+unconditional "First revision timestamp is older" warning, and strict mode aborted the preview. A live preview
+should show warnings, not refuse to start.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-26 10:00] - Post-quantum TLS: aws-lc-rs everywhere, X25519MLKEM768 first, `ring` banned (ADR-0170)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0170-post-quantum-tls-with-aws-lc-rs.md` (Accepted): one process-wide rustls provider, aws-lc-rs,
+  X25519MLKEM768 first; `ring` banned; supersedes ADR-0009's provider choice only (ADR-0009 gains a
+  `Superseded in part by` bullet).
+- `crates/banlieue-tls` (new internal crate): `provider()` (aws-lc-rs, kx order X25519MLKEM768, X25519,
+  secp256r1, secp384r1) and `install_default_crypto_provider()`. Six unit tests (first group is the hybrid, so
+  never `ring`; idempotent install; rustls' own aws-lc-rs default agrees). `tests/live_pq_probe.rs`: an
+  `#[ignore]` probe that prints the negotiated group for `PQ_PROBE_HOST` (fails without it), `PQ_PROBE_EXPECT`
+  to assert.
+- `deny.toml`: `[bans] deny = [{ crate = "ring" }]` (checked: enabling rcgen's `ring` feature fails
+  `cargo deny check bans`). The `getrandom@0.2` and `windows-sys@0.52` skips are gone with `ring`.
+
+### Changed
+- `Cargo.toml`: kube `default-features = false` + `rustls-tls`, `aws-lc-rs`; rustls `aws_lc_rs`,
+  `prefer-post-quantum`, `std`, `tls12` (no `ring`); `banlieue-tls` workspace dep; comments updated.
+- rcgen `aws_lc_rs` (banlieue-oci dev, banlieue-provider-firecracker), tokio-rustls `aws_lc_rs` (banlieue-libvirt,
+  banlieue-oci dev), x509-parser `verify-aws` (banlieue-provider-firecracker).
+- Every `rustls::crypto::ring::default_provider().install_default()` replaced by
+  `banlieue_tls::install_default_crypto_provider()`; the vSphere, Proxmox and Azure providers' functions of that
+  name are now re-exports, `banlieue_oci::install_crypto_provider` a wrapper. `banlieue-libvirt`'s mutual TLS
+  builds on `banlieue_tls::provider()` explicitly.
+- `crates/banlieue-provider-azure/src/sshkey.rs`: Ed25519 via `aws_lc_rs::signature::Ed25519KeyPair::generate`;
+  the direct `ring` dependency is replaced by `aws-lc-rs`.
+- CALM: the vSphere BYOC and libvirt mutual-TLS control descriptions name aws-lc-rs (validate clean, diagrams
+  unchanged). Docs: `docs/src/providers/azure.md`, `guides/observability.md`, `developer/local-development.md`,
+  Makefile cross-build hint, `banlieue-azure` crate docs. Roadmap 22's TLS-provider question answered (detail
+  doc and `ROADMAPS.md`).
+- Threat model full pass, stamp 2026-11-26 through ADR-0170: §2 `banlieue-tls` row, TB-4 and TB-6 rows, §7.20,
+  and the §8 "every connection is classical" risk narrowed to peers that do not accept ML-KEM.
+
+### Why
+Erick's rule (2026-11-25): no library anywhere in banlieue that cannot do post-quantum cryptography. `ring` has
+no ML-KEM.
+
+### Measured (build host, 2026-11-26, `live_pq_probe`)
+- Azure Resource Manager and the Entra ID token endpoint: TLS 1.3, `secp384r1` (classical; they do not accept
+  the hybrid).
+- Cloudflare's post-quantum research endpoint and Google's public web endpoint: TLS 1.3, `X25519MLKEM768`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new binary)
+- [ ] Config change only
+- [ ] Documentation only
+
+Build: `aws-lc-sys` compiles AWS-LC with the C compiler (`cc` builder; no cmake or NASM for Linux x86_64 or
+aarch64).
+
+## [2026-11-25 23:30] - Azure provider: AzureVirtualMachine, `banlieue provider azure`, controller dispatch, Providers docs section
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/infrastructure/azure_virtual_machine.rs` (+ `_tests.rs`): `AzureVirtualMachine` and
+  `AzureVirtualMachineTemplate` (`infrastructure.banlieue.io/v1alpha1`, short names `azvm`, `azvmt`), CAPI
+  v1beta2 InfraMachine shape, `providerID` `azure:///subscriptions/.../virtualMachines/<name>`, `validate()`
+  (64 KiB `customData`, no `Suspended`, ARM resource IDs), `status.pendingOperation` for ARM long-running
+  operations (ADR-0164). Registered in `crdgen_support.rs` and `capi.rs`.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `ProviderConnection.azure` (`AzureConnection`: tenant, client,
+  subscription, `location`, resource group, authority host; ADR-0158 Decision 1, ADR-0159),
+  `ProviderCapabilities.instanceSizes` with per-zone overrides (ADR-0160), `ScopedTarget.zone` and
+  `target_for_zone` (ADR-0158 Decision 3).
+- `crates/banlieue-provider-azure` (new crate, `banlieue provider azure`): failure domains per usable zone with
+  quota headroom as capacity, the `VMImage` `Template` row for a hand-published gallery image version, the
+  `AzureVirtualMachine` lifecycle (NIC `PUT` then VM `PUT`, operation recorded on status and observed on the next
+  reconcile, adopt by name and owner tag, `GuestReady` from provisioning state, deallocate for `PoweredOff`,
+  delete with cleanup by owner tag) and the orphan sweep. A throwaway Ed25519 SSH key per create (`aws-lc-rs`
+  since ADR-0170, already in the graph through rustls; no new package). 86 unit tests against `FakeArm`.
+- `crates/banlieue-azure`: `TAG_OWNER_NAMESPACE` and `OwnershipTags::with_owner_namespace`;
+  `OperationKind::as_str`/`from_name`; `error::operation_failure`; `ArmApi` and `PowerAction` re-exported.
+- `crates/banlieue/`: `azure` feature (default), `ProviderBackend::Azure`, `COMPILED_BACKENDS`.
+- `crates/banlieue-provider-sdk`: `azure` in `SHARED_PROVIDER_BACKENDS`, `FIELD_MANAGER_PROVIDER_AZURE`.
+- `crates/banlieue-controller`: `InfraKind::Azure`, `build_azure_virtual_machine` (zone from the failure
+  domain, size from `instanceSizes`, disk SKU and subnet from the zone's class targets; one NIC, no data disks,
+  no per-VM CPU/memory override), status mirror, `.owns(...)`; scheduler refuses an unmapped `VMClass`
+  (`InstanceSizeUnmapped`) and judges a cloud Provider's `capacity.cpus` as quota headroom (ADR-0161): never
+  overcommitted, provisioned VMs not subtracted, in-flight VMs in every zone subtracted (`quota_shortfall`).
+- `crates/banlieue-operator`: `azure` backend; a projected ServiceAccount token (audience
+  `api://AzureADTokenExchange`, 1 h) at `/var/run/secrets/azure/tokens` and `AZURE_FEDERATED_TOKEN_FILE` for
+  azure workloads only (other backends' pod specs unchanged, tested).
+- `deploy/provider-azure/` (ClusterRole, `role-definition.json` least-privilege Azure custom role, README),
+  `deploy/network-policies/provider-azure.yaml`, `deploy/admission/vmimage-cloud-install-mode.yaml`;
+  `provider-connection.yaml` (azure requires `connection.azure`, refuses `credentialsRef`, https only) and
+  `machine-provider-ref.yaml` cover azure; controller, operator and CAPI ClusterRoles gain
+  `azurevirtualmachines`.
+- `examples/31-virtualmachine-azure.yaml` and its round-trip test in `crates/banlieue-api/tests/examples.rs`.
+- `deploy/crds/` and `docs/src/reference/api.md` regenerated.
+
+### Changed
+- Docs: a top-level **Providers** section before Guides (`docs/src/providers/`): overview, comparison (Azure
+  column), lifecycle, Cloud Hypervisor (install, new automation page, host internals, sandbox segment),
+  libvirt, vSphere, Proxmox, Firecracker (status), Azure (new, alpha). Ten pages moved from `guides/` and
+  `reference/provider-comparison.md`, with `redirects` entries; links and comment paths fixed (Makefile,
+  scripts, README, CALM evidence).
+- `docs/adr/0158-shape-of-a-cloud-provider-class.md`: amended. Decision 4 adds the
+  `banlieue-owner-namespace` tag; Decision 5 limits a home-only provider's sweep to its home namespace, so a
+  Provider switched from serving tenant namespaces back to home-only cannot delete live tenant VMs.
+- Roadmap 23 phases B to E and `ROADMAPS.md`.
+- Test literals across the workspace gain the new `ProviderConnection.azure`, `instance_sizes` and
+  `ScopedTarget.zone` fields.
+
+### Why
+Roadmap 23: a `VirtualMachine` on core scheduled onto an Azure `Provider` whose location the admin sets,
+created from a hand-published gallery image (the vSphere-template pattern) in two ARM writes, with the
+region's zones as failure domains.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new CRDs `azurevirtualmachines`, `azurevirtualmachinetemplates`, changed
+  `providers` schema, ClusterRoles and admission policies; the controller now looks up `AzureVirtualMachine`
+  on every VM deletion, so its ClusterRole must ship with it)
+- [ ] Config change only
+- [ ] Documentation only
+- Not yet run against a real subscription: the cluster's ServiceAccount issuer must be published for Entra ID
+  (ADR-0159 Decision 2).
+
 ## [2026-11-25 19:40] - Cloud Hypervisor: every guest has an SMBIOS system UUID, its machine's uid
 
 **Author:** Erick Bourgeois

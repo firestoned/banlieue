@@ -382,7 +382,7 @@ buildArtifact:
 ## 4. Check per-provider / per-zone status
 
 If a `vsphere` `Provider` is registered (see the
-[vSphere Provider guide](vsphere-provider.md)), `banlieue-provider-vsphere`
+[vSphere Provider guide](../providers/vsphere.md)), `banlieue-provider-vsphere`
 picks up the `Url` source once the ISO is ready and starts one import Job
 per failure domain:
 
@@ -461,7 +461,7 @@ kubectl get vmimage kairos-ubuntu-2404-ch -o jsonpath='{.status.buildArtifact.oc
 With no repository configured, a `cloud-hypervisor` `Url` source reports
 `ociArtifact.phase: Failed` saying so; installs without one need no
 registry. The host side is in the
-[Cloud Hypervisor host guide](cloud-hypervisor-host.md#images-from-a-registry-url-sources).
+[Cloud Hypervisor host guide](../providers/cloud-hypervisor.md#images-from-a-registry-url-sources).
 
 ## First-boot sealing layer (ADR-0088)
 

@@ -13,7 +13,7 @@ not to be needed has been removed (see
 
 The files live in the repository as templates, compiled into the `banlieue`
 binary and rendered and installed by `banlieue host cloud-hypervisor install` (ADR-0067;
-[bootstrap guide](cloud-hypervisor-host.md)). A placeholder left unfilled
+[bootstrap guide](cloud-hypervisor.md)). A placeholder left unfilled
 is an error, never an installed unit:
 
 | File in `deploy/provider-cloud-hypervisor/host/` | Installed as | What it is |
@@ -137,7 +137,7 @@ shows every VM on the host, and a budget across guests and nodes together is
 set on the parent with `systemctl set-property`. How to size the two budgets
 together, and the per-VM CPU split (`banlieue host cloud-hypervisor
 overhead`), are in the
-[CH host guide](cloud-hypervisor-host.md#vm-resource-limits-banlieueslice).
+[CH host guide](cloud-hypervisor.md#vm-resource-limits-banlieueslice).
 
 ## The vTPM units
 

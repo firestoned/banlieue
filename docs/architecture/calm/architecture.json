@@ -1169,7 +1169,7 @@
       "unique-id": "service-azure-image-publisher",
       "node-type": "service",
       "name": "Azure image publish Job",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162). A Job in the imagebuild namespace with its own federated identity, separate from the provider's: verifies the VMImage's source digest, writes a fixed VHD (raw disk plus a 512-byte footer, no qemu-img), uploads it to a managed disk opened for upload through a one-hour write SAS with Put Page (all-zero chunks skipped, parallel streams), snapshots it with diskControllerTypes SCSI,NVMe, registers a Compute Gallery image version (TrustedLaunch when the image needs a vTPM, explicit end-of-life, deletion not blocked), deletes the upload disk and snapshot, and records the version ID, source digest and minimum OS disk size on the VMImage's per-Provider status."
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162). A Job in the imagebuild namespace with its own federated identity, separate from the provider's: verifies the VMImage's source digest, writes a fixed VHD (raw disk plus a 512-byte footer, no qemu-img), uploads it to a managed disk opened for upload through a one-hour write SAS with Put Page (all-zero chunks skipped, parallel streams), snapshots it with diskControllerTypes SCSI,NVMe, registers a Compute Gallery image version (TrustedLaunch when the image needs a vTPM, explicit end-of-life, deletion not blocked), deletes the upload disk and snapshot, and records the version ID, source digest and minimum OS disk size on the VMImage's per-Provider status. Amended 2026-11-26 (ADR-0162 Decisions 4 and 8): started by the Azure provider for every azure Provider serving a VMImage whose azure source is kind Url, as vSphere imports are; the gallery is reconciled to the declared VMImages (a missing version is re-published, an owned version for a superseded digest or a deleted VMImage is removed once no machine references it); restarted Jobs adopt the step in flight by its deterministic name."
     },
     {
       "unique-id": "network-azure-arm",
@@ -1230,6 +1230,22 @@
       "node-type": "system",
       "name": "Azure Trusted Launch guest",
       "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163, ADR-0165). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. The image reads customData from the local provisioning disk, never configures the accelerated-networking VF, and reports Ready to the host-local WireServer only from active mode after user data is applied. No public IP; the subnet has no default outbound access."
+    },
+    {
+      "unique-id": "network-azure-disk-upload",
+      "node-type": "network",
+      "name": "Azure managed-disk upload endpoint (external)",
+      "description": "The blob endpoint a managed disk opened for upload exposes through a write SAS returned by ARM's beginGetAccess (ADR-0162 Decision 2). The SAS is the credential: no Entra token is sent there. Valid one hour, revoked when the upload ends. External to banlieue.",
+      "interfaces": [
+        {
+          "unique-id": "azure-disk-upload-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -1533,7 +1549,7 @@
       "protocol": "HTTPS",
       "controls": {
         "tls-trust-byoc": {
-          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end \u2014 honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls ring provider shared with kube, installed once as the process default (ADR-0009). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
+          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end \u2014 honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls aws-lc-rs provider shared with kube, X25519MLKEM768 offered first, installed once as the process default by banlieue-tls (ADR-0009, provider choice superseded by ADR-0170). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1654,7 +1670,7 @@
       "protocol": "TLS",
       "controls": {
         "libvirt-mutual-tls": {
-          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism \u2014 no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the ring provider, no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
+          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism \u2014 no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the aws-lc-rs provider offering X25519MLKEM768 first, ADR-0170; no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -3777,7 +3793,7 @@
     },
     {
       "unique-id": "rel-provider-azure-kube-api",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): watches its Provider, AzureVirtualMachines and VMImages; server-side-applies Provider status (failure domains, quota headroom, throttling), machine status and its perProvider VMImage row. Same CRD-only contract as every provider.",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): watches its Provider, AzureVirtualMachines and VMImages; server-side-applies Provider status (failure domains, quota headroom, throttling), machine status and its perProvider VMImage row. Same CRD-only contract as every provider. Also creates the Azure image publish Job in the imagebuild namespace for each VMImage with an azure Url source (ADR-0162 Decision 4, amended 2026-11-26), as the vSphere provider creates its import Jobs.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3901,7 +3917,7 @@
     },
     {
       "unique-id": "rel-provider-azure-arm",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
+      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3918,7 +3934,7 @@
       "protocol": "HTTPS",
       "controls": {
         "azure-ownership-tags": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0158 Decision 4-5): every resource carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider; the provider deletes only what carries its owner's UID, adopts instead of duplicating, and sweeps tagged orphans after a grace period. Tag names avoid '/', which Azure rejects.",
+          "description": "IMPLEMENTED (ADR-0158 Decision 4-5): every resource carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider; the provider deletes only what carries its owner's UID, adopts instead of duplicating, and sweeps tagged orphans after a grace period. Tag names avoid '/', which Azure rejects.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -3934,7 +3950,7 @@
           ]
         },
         "azure-rg-scoped-role": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159 Decision 3): the provider's identity holds a custom role scoped to the Provider's resource group with only the actions ADR-0164 lists; it cannot create or delete images (the publisher's identity can).",
+          "description": "IMPLEMENTED (ADR-0159 Decision 3): the provider's identity holds a custom role scoped to the Provider's resource group with only the actions ADR-0164 lists; it cannot create or delete images (the publisher's identity can).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -4062,6 +4078,24 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-azure-image-publisher-disk-upload",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 2): the fixed VHD is written with Put Page in 4 MiB ranges, all-zero ranges skipped, to the write SAS URL ARM returned; the SAS is held in memory only and revoked when the upload ends.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-azure-image-publisher"
+          },
+          "destination": {
+            "node": "network-azure-disk-upload",
+            "interfaces": [
+              "azure-disk-upload-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
     }
   ],
   "flows": [
@@ -4603,7 +4637,7 @@
                   "CM-3",
                   "CM-4"
                 ],
-                "evidence": "docs/adr/0012-providerclass-crd-and-operator-role.md, docs/src/guides/provider-lifecycle.md"
+                "evidence": "docs/adr/0012-providerclass-crd-and-operator-role.md, docs/src/providers/lifecycle.md"
               }
             }
           ]

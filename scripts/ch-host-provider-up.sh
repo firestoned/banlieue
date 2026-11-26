@@ -5,7 +5,7 @@
 # Bring a Cloud Hypervisor host up as a banlieue Provider in one root step:
 # bootstrap the host, install the provider's kubeconfig, seed the image cache,
 # and start the provider. Used for the live end-to-end run against a
-# throwaway kind cluster (docs/src/guides/cloud-hypervisor-host.md).
+# throwaway kind cluster (docs/src/providers/cloud-hypervisor.md).
 #
 # Everything host-specific comes from the environment; nothing is baked in:
 #

@@ -298,5 +298,5 @@ The seed volume is owned by its machine:
 
 - [ADR-0054 — NoCloud seed ISOs are built in-process, with Joliet](https://github.com/firestoned/banlieue/blob/main/docs/adr/0054-nocloud-seed-iso-first-party.md)
 - [ADR-0050 — `LibvirtMachine`: the InfraMachine contract on libvirt](https://github.com/firestoned/banlieue/blob/main/docs/adr/0050-libvirtmachine-domain-lifecycle.md)
-- [libvirt Provider guide](libvirt-provider.md)
+- [libvirt Provider guide](libvirt.md)
 - [cloud-init NoCloud datasource](https://docs.cloud-init.io/en/latest/reference/datasources/nocloud.html)

@@ -5,12 +5,15 @@ SPDX-License-Identifier: Apache-2.0
 # Provider comparison
 
 > **Living document.** One column per provider, Cloud Hypervisor (the
-> reference backend) first. It is complete when all four are measured:
-> Cloud Hypervisor ✅ · vSphere ⏳ · libvirt ✅ · Proxmox ⏳ (implemented; its
-> column is roadmap 06's last item). Last updated **2026-10-24**.
-> The open columns are tracked as tasks in roadmaps 05 (vSphere) and 06
-> (Proxmox).
+> reference backend) first. The performance table is complete when every
+> implemented class is measured: Cloud Hypervisor ✅ · vSphere ⏳ ·
+> libvirt ✅ · Proxmox ⏳ (implemented; its column is roadmap 06's last
+> item) · Azure ⏳ (alpha, roadmap 23). Last updated **2026-11-25**.
+> The open columns are tracked as tasks in roadmaps 05 (vSphere), 06
+> (Proxmox) and 23 (Azure).
 > To add or refresh a column, see [Adding a column](#adding-a-column).
+> Firecracker (roadmap 20) has no column yet: nothing runs a guest there
+> today ([Firecracker](firecracker.md)).
 
 banlieue runs the same `VirtualMachine` on any backend. This page answers
 two questions for someone choosing one: *what does each backend support*,
@@ -20,24 +23,26 @@ user waits for: scheduling, the provider, the hypervisor and the guest.
 
 ## Capabilities
 
-| | Cloud Hypervisor | vSphere | libvirt | Proxmox |
-| --- | --- | --- | --- | --- |
-| Status | Implemented (roadmap 09) | Implemented (roadmap 05) | Implemented (roadmap 07) | Implemented; cluster end-to-end test and this column pending (roadmap 06) |
-| Where the provider runs | **On the KVM host**, as a systemd service; `External` ProviderClass (ADR-0060) | In the cluster, one Deployment per Provider | In the cluster, one Deployment per Provider (ADR-0012) | — |
-| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | vCenter VI JSON API via `vim_rs` (ADR-0008, ADR-0009) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | Proxmox VE REST API with an API token (ADR-0074) |
-| Credential it holds | A bound ServiceAccount token on the host, self-renewing; **no hypervisor credential and no Secret reads** | vCenter username/password (Secret) | mTLS client key (Secret) | — |
-| Hypervisor | Cloud Hypervisor v53 (Rust, KVM) | ESXi | QEMU/KVM (C) via libvirt | Proxmox VE (QEMU/KVM) |
-| One VM is | A systemd unit (`banlieue-ch@<uid>`) running one VMM process | A vSphere VM | A libvirt domain | — |
-| Guest isolation on the host | **Own uid and private group per guest**, systemd sandbox, seccomp and Landlock in the VMM (ADR-0063) | ESXi | Host-configured: `libvirt-qemu` user, per-domain AppArmor/SELinux (sVirt) | — |
-| Image delivery | Admin-placed file in the host cache, or **OCI registry pull by digest** (ADR-0064) | Per-zone ISO import, templates (ADR-0020) | Admin-placed pool volume, or import Job into each pool (ADR-0011) | — |
-| `Immediate` install (clone) | Reflink, or sparse copy (ADR-0064 D4) | Template clone | Backing-volume overlay (ADR-0050) | — |
-| `Deferred` install | Installer as a read-only virtio disk, hot-unplugged when installed (ADR-0065) | Installer CD-ROM (ADR-0040) | Installer CD-ROM, ejected when installed (ADR-0044) | — |
-| vTPM | swtpm per guest (ADR-0065) | vTPM, needs a KMS (ADR-0039) | swtpm via libvirt (ADR-0050) | — |
-| EK certificate source | **Read on the host**, where it was minted | Read from vCenter | Reported by the guest (ADR-0045) | — |
-| `GuestReady` signal | vsock report (ADR-0065 D5) | `guestinfo` (ADR-0043) | `qemu-guest-agent` file read (ADR-0043) | — |
-| UEFI Secure Boot | **No**: no persistent UEFI variables (ADR-0065 D7) | Yes | Yes (OVMF secboot, SMM) | — |
-| Live migration | No: a move between hosts of one zone has its API, no controller yet (ADR-0127, roadmap 14) | No | No | No |
-| Snapshots | No (roadmap 10 not started) | No | No | — |
+| | Cloud Hypervisor | vSphere | libvirt | Proxmox | Azure (alpha) |
+| --- | --- | --- | --- | --- | --- |
+| Status | Implemented (roadmap 09) | Implemented (roadmap 05) | Implemented (roadmap 07) | Implemented; cluster end-to-end test and this column pending (roadmap 06) | **Alpha**, in progress (roadmap 23): ARM client, API, provider and controller builder in the tree; ARM client verified live, VM lifecycle not yet |
+| Where the provider runs | **On the KVM host**, as a systemd service; `External` ProviderClass (ADR-0060) | In the cluster, one Deployment per Provider | In the cluster, one Deployment per Provider (ADR-0012) | In the cluster, one Deployment per Provider | In the cluster, one Deployment per Provider (ADR-0158) |
+| Talks to | The local VMM's REST API on a Unix socket (ADR-0061) | vCenter VI JSON API via `vim_rs` (ADR-0008, ADR-0009) | Remote `libvirtd`, native RPC over mutual TLS (ADR-0011) | Proxmox VE REST API with an API token (ADR-0074) | Azure Resource Manager REST, first-party client `banlieue-azure` (ADR-0164) |
+| Credential it holds | A bound ServiceAccount token on the host, self-renewing; **no hypervisor credential and no Secret reads** | vCenter username/password (Secret) | mTLS client key (Secret) | API token (Secret) | A projected ServiceAccount token, exchanged at Entra ID by **workload identity federation**; **no Secret** (ADR-0159) |
+| Hypervisor | Cloud Hypervisor v53 (Rust, KVM) | ESXi | QEMU/KVM (C) via libvirt | Proxmox VE (QEMU/KVM) | Azure (Hyper-V) |
+| One VM is | A systemd unit (`banlieue-ch@<uid>`) running one VMM process | A vSphere VM | A libvirt domain | A Proxmox VM, a full clone of a template (ADR-0075) | An Azure VM with its NIC and OS disk, deleted with it (ADR-0164) |
+| Failure domain | The host | A `(datacenter, cluster)` pair | The host | The node | An availability zone the subscription can use for the mapped sizes (ADR-0158) |
+| Guest isolation on the host | **Own uid and private group per guest**, systemd sandbox, seccomp and Landlock in the VMM (ADR-0063) | ESXi | Host-configured: `libvirt-qemu` user, per-domain AppArmor/SELinux (sVirt) | Not recorded yet | Azure's |
+| Image delivery | Admin-placed file in the host cache, or **OCI registry pull by digest** (ADR-0064) | Per-zone ISO import, templates (ADR-0020) | Admin-placed pool volume, or import Job into each pool (ADR-0011) | Template VM (`Template` source) | Hand-published Compute Gallery image version, by resource ID (`Template`); publishing by banlieue not yet (ADR-0162) |
+| `Immediate` install (clone) | Reflink, or sparse copy (ADR-0064 D4) | Template clone | Backing-volume overlay (ADR-0050) | Full clone | VM created from the gallery image version |
+| `Deferred` install | Installer as a read-only virtio disk, hot-unplugged when installed (ADR-0065) | Installer CD-ROM (ADR-0040) | Installer CD-ROM, ejected when installed (ADR-0044) | Not recorded yet | Not supported: no install media in a cloud (ADR-0162) |
+| vTPM | swtpm per guest (ADR-0065) | vTPM, needs a KMS (ADR-0039) | swtpm via libvirt (ADR-0050) | Not recorded yet | Trusted Launch vTPM (ADR-0165) |
+| EK certificate source | **Read on the host**, where it was minted | Read from vCenter | Reported by the guest (ADR-0045) | Not recorded yet | **None**: an Azure AK certificate instead, chaining to Microsoft's vTPM root (ADR-0165) |
+| `GuestReady` signal | vsock report (ADR-0065 D5) | `guestinfo` (ADR-0043) | `qemu-guest-agent` file read (ADR-0043) | Not recorded yet | The VM's provisioning state, which the image itself reports ready (ADR-0163) |
+| UEFI Secure Boot | **No**: no persistent UEFI variables (ADR-0065 D7) | Yes | Yes (OVMF secboot, SMM) | Not recorded yet | Yes, with Trusted Launch |
+| Live migration | No: a move between hosts of one zone has its API, no controller yet (ADR-0127, roadmap 14) | No | No | No | No |
+| Snapshots | No (roadmap 10 not started) | No | No | Not recorded yet | No |
+| Warm pools | Yes | Yes | Yes | Not yet (roadmap 17 phase E) | Not yet (roadmap 23 phase F) |
 
 ## Performance through banlieue
 
@@ -117,7 +122,7 @@ table below is the fair comparison of the hypervisors.
 **Sandbox pools.** Stage-by-stage timings for a `tpmEnabled`, `Deferred`
 `VirtualMachinePool` on Cloud Hypervisor, from pool creation through claim,
 refill and release, are in
-[Cloud Hypervisor pool timings](cloud-hypervisor-pool-timings.md).
+[Cloud Hypervisor pool timings](../reference/cloud-hypervisor-pool-timings.md).
 
 ## The hypervisors alone, same host
 

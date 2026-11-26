@@ -1,11 +1,11 @@
 # Guide: vSphere Provider
 
 This guide takes you from a cluster that already runs the
-[core controller](core-controller.md) to a **scheduled `VirtualMachine` on
+[core controller](../guides/core-controller.md) to a **scheduled `VirtualMachine` on
 vCenter** — installing the vSphere provider, registering a vCenter, and applying
 every `VMClass`, `VMImage`, and `VirtualMachine` along the way. Everything uses
 a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION` (see
-[Conventions](index.md#conventions-used-in-these-guides)); nothing is built
+[Conventions](../guides/index.md#conventions-used-in-these-guides)); nothing is built
 locally and there is no simulator. (For `vcsim`/local development, see
 [Developer → Local Development](../developer/local-development.md).)
 
@@ -21,7 +21,7 @@ flowchart LR
 
 ## Prerequisites
 
-- The **[core controller](core-controller.md) installed** (CRDs + controller
+- The **[core controller](../guides/core-controller.md) installed** (CRDs + controller
   running in `banlieue-system`).
 - A reachable **vCenter** and credentials with read access to inventory
   (datacenters, clusters, datastores, networks, and the VM templates you'll
@@ -54,7 +54,7 @@ kubectl -n banlieue-system set image deployment/banlieue-provider-vsphere \
 !!! note "Operator-managed installs are the norm"
     Applying a `Provider` against a cluster installed with
     `banlieue bootstrap operator` spawns a dedicated provider workload
-    automatically — see [Provider lifecycle](provider-lifecycle.md). This
+    automatically: see [Provider lifecycle](lifecycle.md). This
     static install is the standalone shape: it serves every `Provider` **in
     `banlieue-system`** (its watch and its credential reads are scoped to the
     install namespace, security review 2026-07-31).
@@ -494,7 +494,7 @@ cluster can still take, and the scheduler places a new VM only where it fits
 These are cluster totals. DRS picks the host, so a VM larger than any one
 host can still be placed and then fail in vCenter. Read the figures, the
 refusal messages and the full vSphere test plan in
-[Capacity-Aware Scheduling](capacity-scheduling.md).
+[Capacity-Aware Scheduling](../guides/capacity-scheduling.md).
 
 ## Rotating credentials
 
@@ -593,7 +593,7 @@ vCenter role (`VirtualMachine.Interact.PowerOn`).
 - `reason=ProviderNotAlive`: every `Provider` the VM could use has a
   `Stale` heartbeat, so its provider is not running (ADR-0102). Check
   `kubectl get providers.banlieue.io` and the provider pod; see
-  [Provider liveness](observability.md#provider-liveness).
+  [Provider liveness](../guides/observability.md#provider-liveness).
 - `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
   none advertises the requested storage/network class or feature. Check the
   `Provider.spec.capabilities` against the `VMClass`.

@@ -27,10 +27,10 @@ Bring up a management cluster and install banlieue.
     Install the CRDs, the `banlieue-controller`, RBAC, and the optional
     ValidatingAdmissionPolicies — the foundation every provider builds on.
 
-- :material-cog-sync: **[Provider Lifecycle & Install](provider-lifecycle.md)**
+- :material-cog-sync: **[Providers](../providers/index.md)**
 
-    `banlieue bootstrap operator`, `ProviderClass`, and how applying a
-    `Provider` brings a backend's workload up, one per `Provider`.
+    Then set up a backend: what a `Provider` is, how to choose a class, and
+    one page per class, from the Cloud Hypervisor host installer to Azure.
 
 - :material-update: **[Upgrading from 0.5.x to 0.6.0](upgrading-to-0.6.md)**
 
@@ -42,47 +42,10 @@ Bring up a management cluster and install banlieue.
 
 ## Providers
 
-One guide per backend, in the order we recommend them: Cloud Hypervisor first.
-
-<div class="grid cards" markdown>
-
-- :material-star-circle: **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)**
-
-    **The reference backend.** A bare-metal Linux host (Debian, Kairos, any
-    systemd distribution) to VMs banlieue schedules: the VMM and firmware from
-    GitHub or your mirror, a guest per systemd unit under its own uid, a
-    budgeted guests' slice the scheduler places against, OCI images by
-    digest, a vTPM per guest, and measuring what the VMs cost the host.
-
-- :material-shield-lock: **[Cloud Hypervisor: Host Internals](cloud-hypervisor-host-systemd.md)**
-
-    Every unit setting, slice, polkit rule, tmpfiles entry and guest identity
-    the Cloud Hypervisor host needs, why each is there, and what breaks
-    without it.
-
-- :material-server-network: **[vSphere Provider](vsphere-provider.md)**
-
-    From an empty cluster to a scheduled `VirtualMachine` on vCenter: the
-    provider Deployment, credentials, `Provider`, `VMClass`, `VMImage`, and a
-    `VirtualMachine` — every file and `kubectl apply`.
-
-- :material-server: **[libvirt Provider](libvirt-provider.md)**
-
-    Register a libvirt/KVM host over mutual TLS and run VMs on it: image
-    import, the `LibvirtMachine` lifecycle, cloud-init and vTPM, through a
-    first-party RPC client, with no `libvirt-dev` and no `virsh`.
-
-- :material-cloud-check: **[cloud-init on libvirt](cloud-init-on-libvirt.md)**
-
-    How `spec.userData` reaches a guest as a NoCloud seed, why the image is
-    Joliet, and how to tell from outside whether cloud-init consumed it.
-
-- :material-server: **[Proxmox VE Provider](proxmox-provider.md)**
-
-    Register a Proxmox node with a least-privilege API token and run VMs as
-    full clones of a template, with cloud-init delivered as a NoCloud ISO.
-
-</div>
+Setting up a backend (Cloud Hypervisor, vSphere, libvirt, Proxmox, Azure)
+has its own section: **[Providers](../providers/index.md)**, with one page
+per provider class, the operator's provider lifecycle, and the comparison
+that helps you choose.
 
 ## Workloads
 
@@ -161,7 +124,7 @@ Building the disk images VMs boot from.
 
     Build the OCI image the imagebuilder consumes when stock Hadron needs
     extra payloads baked in. For Alpine on vSphere, see
-    [Building an Alpine VM Template](alpine-vsphere-template.md).
+    [Building an Alpine VM Template](../providers/alpine-vsphere-template.md).
 
 </div>
 

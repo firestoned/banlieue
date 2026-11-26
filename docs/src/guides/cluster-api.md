@@ -19,7 +19,7 @@ object. The decision is ADR-0096 (`docs/adr/` in the repository).
   `banlieue`, of type `InfrastructureProvider`. It is not one provider per
   backend: every backend is compiled into the same binary, and a `Provider`
   resource picks the backend at run time (see
-  [Provider Lifecycle](provider-lifecycle.md)).
+  [Provider Lifecycle](../providers/lifecycle.md)).
 - **Bootstrap and control plane come from upstream.** banlieue ships no
   bootstrap or control-plane provider. Use the ones you already use, for
   example kubeadm (the `clusterctl init` default) or k0smotron.
@@ -73,8 +73,8 @@ clusterctl init \
 `clusterctl` reads the target namespace, `banlieue-system`, from the
 components file. Then register a backend exactly as without Cluster API:
 apply a `Provider` (and its credentials Secret) as described in the
-[Cloud Hypervisor](cloud-hypervisor-host.md), [vSphere](vsphere-provider.md),
-[libvirt](libvirt-provider.md) or [Proxmox](proxmox-provider.md) guides.
+[Cloud Hypervisor](../providers/cloud-hypervisor.md), [vSphere](../providers/vsphere.md),
+[libvirt](../providers/libvirt.md) or [Proxmox](../providers/proxmox.md) guides.
 
 > **Two `Provider` kinds.** clusterctl keeps its inventory in a `Provider`
 > kind of its own, `providers.clusterctl.cluster.x-k8s.io`, which has the

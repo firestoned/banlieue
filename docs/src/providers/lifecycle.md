@@ -105,7 +105,7 @@ this Provider and its credentials, for the provider's import Jobs (ADR-0016).
 
 To let this one `Provider` serve VMs in tenant namespaces while its
 credentials stay in `banlieue-system`, set `spec.namespaceSelector` on it
-(ADR-0133); see [Multi-tenancy](multi-tenancy.md) and
+(ADR-0133); see [Multi-tenancy](../guides/multi-tenancy.md) and
 `examples/28-provider-vsphere-shared.yaml`.
 
 Watch it come up:
@@ -119,7 +119,7 @@ kubectl get providers.banlieue.io prod-vc -o jsonpath='{.status.workload}' | jq
 judged from the Lease it renews (ADR-0102): `Alive`, `Stale` (it stopped,
 and no new VM is scheduled onto it) or `Absent` (no Lease yet). It covers
 External providers too, which have no Deployment for `readyReplicas` to
-describe. See [Provider liveness](observability.md#provider-liveness).
+describe. See [Provider liveness](../guides/observability.md#provider-liveness).
 
 ## Why one Deployment per Provider
 

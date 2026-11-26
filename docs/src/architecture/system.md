@@ -103,6 +103,7 @@ flowchart LR
     network-sa-issuer-publication["Published ServiceAccount issuer (operator-provided)"]
     data-asset-azure-virtual-machine-cr["AzureVirtualMachine Custom Resource"]
     system-azure-guest["Azure Trusted Launch guest"]
+    network-azure-disk-upload["Azure managed-disk upload endpoint (external)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -301,6 +302,7 @@ flowchart LR
     system-azure-guest -->|HTTP| network-azure-arm
     service-banlieue-controller --> data-asset-azure-virtual-machine-cr
     service-banlieue-controller --> data-asset-provider-cr
+    service-azure-image-publisher -->|HTTPS| network-azure-disk-upload
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

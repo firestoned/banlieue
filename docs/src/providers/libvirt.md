@@ -27,10 +27,10 @@ Two consequences shape everything below:
 - A libvirt host reachable from the cluster, running libvirtd with TLS enabled
   on port 16514.
 - The core controller and the operator installed — see
-  [Core Controller](core-controller.md) and
-  [Provider Lifecycle & Install](provider-lifecycle.md).
+  [Core Controller](../guides/core-controller.md) and
+  [Provider Lifecycle & Install](lifecycle.md).
 - For image import: `banlieue-imagebuilder` and the Kairos operator, per
-  [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md).
+  [Using banlieue-imagebuilder](../guides/using-banlieue-imagebuilder.md).
 
 ## 1. Enable TLS on the libvirt host
 
@@ -439,7 +439,7 @@ available space (`virStoragePoolGetInfo`, after a refresh). Each VM counts
 it fits, less `spec.scheduling.storageReservePercent` of each pool
 ([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
 Compare with `virsh nodememstats` and `virsh pool-info <pool>`; see
-[Capacity-Aware Scheduling](capacity-scheduling.md) for the refusal messages
+[Capacity-Aware Scheduling](../guides/capacity-scheduling.md) for the refusal messages
 and how to test it.
 
 ## Rotating credentials
@@ -470,7 +470,7 @@ everywhere at once.
 | `Ready=False`, reason `ConnectFailed` | TLS or reachability. Check 16514, then reproduce with `virsh -c qemu+tls://…`. |
 | `Ready=False`, reason `CredentialsUnavailable` | The Secret or CA ConfigMap is missing a key. `tls.crt` / `tls.key` / `ca.crt`. |
 | Zone stuck at `BuildPending` | `status.buildArtifact` is not `Ready` yet — the problem is upstream, in `banlieue-imagebuilder`. |
-| Import Job `403` on `jobs` | An operator-managed provider gets Job access only from its `ProviderClass`'s `additionalRules`, which `banlieue bootstrap operator` seeds; a hand-written class without them is refused. See `examples/11-providerclass-libvirt.yaml`. (The static install in `deploy/provider-libvirt/` grants it in its ClusterRole instead.) |
+| Import Job `403` on `jobs` | Job access is a `Role` in the build namespace (`banlieue-imagebuild`), which the operator renders per `Provider` (`banlieue-provider-<class>-<namespace>-<provider>-jobs`) and `banlieue bootstrap provider libvirt` installs as `banlieue-provider-libvirt-jobs`; no ClusterRole and no `additionalRules` grants `jobs`. Check that the build namespace exists (install the imagebuilder first) and that the `Role` and `RoleBinding` are there. A Job refused by admission instead names `deploy/admission/provider-jobs.yaml`'s rule. |
 | Import Job `Pending`, ServiceAccount not found | The Job's namespace and the provider's differ. The provider falls back to that namespace's `default` SA, which needs the grant. |
 | `VirtualMachine` stuck `Scheduled=False`, reason `ImageNotReady` | The `VMImage` has no ready `libvirt` source. For a `BackingFile`, the volume must already be in every pool the Provider targets: its row then says `VolumeNotFound` and names the pools that lack it, or `HostUnreachable` if the host could not be asked. |
 | `LibvirtMachine` `Ready=False`: *volume … is not in pool* | The image has not finished importing, or a `BackingFile` names a volume that is not there. `virsh vol-list <pool>`. |
@@ -484,7 +484,7 @@ everywhere at once.
 ## Next: keep VMs standing by
 
 Once a single `VirtualMachine` works here, a
-[`VirtualMachinePool`](virtualmachine-pools.md) keeps a set of them
+[`VirtualMachinePool`](../guides/virtualmachine-pools.md) keeps a set of them
 already-provisioned so a consumer does not wait out provisioning. Members
 are ordinary `VirtualMachine`s on this same Provider — nothing in this guide
 changes.

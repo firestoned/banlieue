@@ -248,7 +248,7 @@ addressing:
 writes it into `guestinfo.network.*`; libvirt, Cloud Hypervisor and Proxmox
 write a cloud-init `network-config` into the seed, and a Kairos guest takes
 it from the `${IP}`/`${PREFIX}` placeholders in its user-data instead
-([cloud-init on libvirt](cloud-init-on-libvirt.md#static-addresses),
+([cloud-init on libvirt](../providers/cloud-init-on-libvirt.md#static-addresses),
 [ADR-0114](https://github.com/firestoned/banlieue/blob/main/docs/adr/0114-static-addressing-in-the-nocloud-seed.md)).
 Before v0.4.12 libvirt and Cloud Hypervisor ignored the address and members
 came up on DHCP. An agentless member reports its drawn address with
@@ -364,12 +364,12 @@ with it. See [VirtualMachine Claims](virtualmachine-claims.md).
 | `Warm=False`, reason `ReadinessSignalAbsent` | `spec.readiness` names a condition nothing publishes. Almost always `GuestReady` before ADR-0043. Switch to `InfrastructureReady` if the image is `Immediate`. |
 | `available` stays 0, members exist and are Ready | The members' `Ready` is not the condition `spec.readiness` selects. Check `kubectl get virtualmachine <member> -o jsonpath='{.status.conditions}'`. |
 | No members created at all | The pool's template does not schedule. Check a member's `Scheduled` condition; if there are no members, check the pool's own events and that the `VMClass` and `VMImage` it names exist. |
-| Members exist but stay `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity` | The hosts the pool may use are full for its class (ADR-0107), or short of measured free memory or disk (ADR-0128): the pool's `Capacity` condition is about its own `maxReplicas` and address range, not about hosts. Raise the hosts' budget, add a host, or lower `warmReplicas`. On Cloud Hypervisor, see [VM resource limits](cloud-hypervisor-host.md#vm-resource-limits-banlieueslice). |
+| Members exist but stay `Scheduled=False`, `NoFailureDomainMatched`, with `insufficient capacity` | The hosts the pool may use are full for its class (ADR-0107), or short of measured free memory or disk (ADR-0128): the pool's `Capacity` condition is about its own `maxReplicas` and address range, not about hosts. Raise the hosts' budget, add a host, or lower `warmReplicas`. On Cloud Hypervisor, see [VM resource limits](../providers/cloud-hypervisor.md#vm-resource-limits-banlieueslice). |
 | `Capacity=False`, `MaxReplicasReached` | `maxReplicas` is below what `warmReplicas` plus churn needs. |
 | `Capacity=False`, `AddressRangeExhausted` | The address range has no spares above `maxReplicas`. |
 | Members churn: created, then deleted, repeatedly | `provisioningTimeoutSeconds` is shorter than the image takes to install. |
 | libvirt, Deferred: a member stays `GuestNotAnnounced` and its guest is back in the live installer after installing | A provider at v0.4.1 or earlier boots the installer before the disk. Upgrade; see *What `GuestReady` needs, per backend*. |
-| vSphere, Deferred: members stay `GuestReady=False`, reason `InstallMediaAttached` | The provider cannot eject the install ISO: a guest holding the tray locked, or a vCenter role without `VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection`. See the [vSphere guide](vsphere-provider.md#troubleshooting). |
+| vSphere, Deferred: members stay `GuestReady=False`, reason `InstallMediaAttached` | The provider cannot eject the install ISO: a guest holding the tray locked, or a vCenter role without `VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection`. See the [vSphere guide](../providers/vsphere.md#troubleshooting). |
 | Cloud Hypervisor, `tpmEnabled`: about 1 install in 7 fails with `tpm_recv: error -5` | Stock Cloud Hypervisor's 100 ms TPM receive timeout. See [the timings page](../reference/cloud-hypervisor-pool-timings.md). |
 | Pool keeps creating members up to `maxReplicas` | The readiness signal is never satisfied, so `available` never rises and the pool keeps trying. The `ReadinessSignalAbsent` condition above names the cause. |
 

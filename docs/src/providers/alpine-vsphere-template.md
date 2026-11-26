@@ -3,7 +3,7 @@
 This guide builds a **cloud-init-ready Alpine Linux template** on vSphere 8
 (vCenter + ESXi 8) using **[govc](https://github.com/vmware/govmomi/tree/main/govc)**
 for every vCenter operation — no Web Client. The result is a template the
-banlieue [vSphere provider](vsphere-provider.md) can clone.
+banlieue [vSphere provider](vsphere.md) can clone.
 
 The provider defaults to `guestAgent: cloud-init` and delivers
 `VirtualMachine.spec.userData` into the guest through VMware's **guestinfo**
@@ -36,7 +36,7 @@ no network config), and the provider never sees a guest IP.
 ### Configure govc
 
 banlieue already standardises on `GOVC_*` env vars (see the
-[vSphere Provider guide](vsphere-provider.md) and
+[vSphere Provider guide](vsphere.md) and
 `deploy/provider-vsphere/README.md`). Set them once:
 
 This guide targets a **standalone ESXi 8 host** (no vCenter — the common lab
@@ -363,10 +363,10 @@ banlieue looks for the template once per failure domain, in the folder
 `<rootFolder>/<failure-domain>` (for example `templates/<failure-domain>`), not
 anywhere in the datacenter. Put a copy of the template in each failure domain's
 folder; a zone without one reports `TemplateNotFound` and receives no VMs. See
-[Register a `VMImage`](vsphere-provider.md#5-register-a-vmimage).
+[Register a `VMImage`](vsphere.md#5-register-a-vmimage).
 
 Apply it, then reference it from a `VirtualMachine` (see the
-[vSphere Provider guide](vsphere-provider.md) for the full `Provider` +
+[vSphere Provider guide](vsphere.md) for the full `Provider` +
 `VMClass` + `VirtualMachine` flow). banlieue clones the template, injects
 `spec.userData` via guestinfo, and cloud-init applies it on first boot.
 

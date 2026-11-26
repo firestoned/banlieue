@@ -31,8 +31,10 @@
 > first-party ARM client, since the official Rust crates are at 0.0.1
 > (ADR-0164); a gallery image published by direct upload with NVMe declared
 > on both the definition and the snapshot (ADR-0162); `GuestReady` from
-> Azure's own ready handshake (ADR-0163). Still open: everything AWS (SDK and
-> TLS provider, the EC2/STS/EBS post-quantum measurements), and the
+> Azure's own ready handshake (ADR-0163). Still open: everything AWS (the SDK
+> and the EC2/STS/EBS post-quantum measurements; the TLS provider was decided
+> for the whole workspace by ADR-0170 on 2026-11-26: aws-lc-rs, X25519MLKEM768
+> offered first, `ring` banned), and the
 > live-test cost guard as a harness rather than a habit. Roadmap 23 phase A
 > has started the Azure client (`crates/banlieue-azure`); nothing of this
 > roadmap's own phases A to F is in the tree yet.
@@ -199,7 +201,10 @@ candidate transports, for the ADR to choose between with measurements:
 
 ## Questions for phase 0 (no code until answered)
 
-- **SDK and TLS stack.** The workspace's rustls runs on `ring`. The AWS SDK
+- **SDK and TLS stack.** *TLS half answered 2026-11-26 by ADR-0170: the
+  workspace's rustls runs on `aws-lc-rs` with X25519MLKEM768 first, and
+  `ring` is banned by `deny.toml`. The SDK half (AWS SDK or a first-party
+  SigV4 client) is still open.* Originally: the workspace's rustls ran on `ring`. The AWS SDK
   for Rust defaults to `aws-lc-rs`, a native dependency, and post-quantum
   key exchange (X25519MLKEM768) needs `aws-lc-rs` anyway. Decide once for
   the workspace: move the process provider to `aws-lc-rs` (and accept its C
@@ -222,10 +227,10 @@ candidate transports, for the ADR to choose between with measurements:
 | Phase | What | Status |
 | --- | --- | --- |
 | 0 | The phase 0 questions above, answered in ADR-0158 and ADR-0159 | 🔶 Azure half answered by roadmap 23's spike; ADR-0158 to ADR-0163 Accepted (2026-11-24); AWS half open |
-| A | API: cloud `Provider` connection (account or subscription, region, identity), instance-size mapping, zone failure domains, quota on status; `VMImage` publish targets and per-Provider publication status; `regen-crds`, examples | ⛔ |
+| A | API: cloud `Provider` connection (account or subscription, region, identity), instance-size mapping, zone failure domains, quota on status; `VMImage` publish targets and per-Provider publication status; `regen-crds`, examples | 🔶 Azure half (2026-11-26): `Provider.spec.connection.azure` (subscription, region, identity), `instanceSizes`, zone failure domains, quota as capacity; `imageGallery` and `publisher` for publishing, and `ImagePerProviderStatus` `sourceDigest`, `minOsDiskSizeGiB`, `supersededRefs`, CRDs regenerated. Publish targets are the `VMImage`'s cloud `Url` source entry (ADR-0162 Decision 4, amended), not a separate list. EC2 open |
 | B | Operator renders the projected token with the cloud audience; federation guide; least-privilege policy documents in `deploy/` for each provider and for the publisher | ⛔ |
 | C | Shared cloud crate (name decided in ADR-0158): ownership tags, adopt-or-create, orphan sweep, quota-to-capacity, zone retry on capacity errors | ⛔ |
-| D | Image publish Job: EC2 (EBS direct, AMI), Azure (VHD writer, direct upload, gallery version), digest recorded, deletion lifecycle; Lambda MicroVM publish lands in roadmap 25 | ⛔ |
+| D | Image publish Job: EC2 (EBS direct, AMI), Azure (VHD writer, direct upload, gallery version), digest recorded, deletion lifecycle; Lambda MicroVM publish lands in roadmap 25 | 🔶 Azure orchestration written and unit tested, **not run live** (2026-11-26): the Azure provider's `VMImage` reconciler reads the version for the build's digest by name and keeps the gallery to the declared state (publish Job when missing or deleted by hand, retry after failure, delete-mode Jobs for superseded versions and on `VMImage` deletion once no machine references them, finalizer `banlieue.io/vmimage-azure`); the controller boots the published version. Publish Jobs run as `banlieue-azure-publisher` with the publisher's own role (`deploy/provider-azure/publisher-role-definition.json`). The publisher itself (VHD writer, direct upload, gallery version) is the `image-publish` command. EC2 open |
 | E | `GuestReady` transport chosen and implemented (ADR-0163), used by roadmaps 23 and 24 | ⛔ |
 | F | Docs: provider comparison gains cloud columns; threat-model full pass for ADR-0158 to ADR-0163 | ⛔ |
 

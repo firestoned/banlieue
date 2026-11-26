@@ -23,8 +23,8 @@ started.
 - A Proxmox VE 9 node (single node or cluster) reachable from the cluster on
   port 8006.
 - The core controller and the operator installed — see
-  [Core Controller](core-controller.md) and
-  [Provider Lifecycle & Install](provider-lifecycle.md).
+  [Core Controller](../guides/core-controller.md) and
+  [Provider Lifecycle & Install](lifecycle.md).
 
 ## 1. Prepare the node
 
@@ -169,7 +169,7 @@ A storage Proxmox marks `shared` (Ceph, NFS) is published `shared: true`,
 and in-flight disks on every node count against it. Each VM counts 256 MiB
 of QEMU overhead
 ([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)).
-See [Capacity-Aware Scheduling](capacity-scheduling.md).
+See [Capacity-Aware Scheduling](../guides/capacity-scheduling.md).
 
 ## Rotating credentials
 

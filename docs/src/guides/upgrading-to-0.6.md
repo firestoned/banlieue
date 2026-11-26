@@ -92,7 +92,7 @@ sudo banlieue host cloud-hypervisor install --only provider \
 ```
 
 What that gives up is described in
-[Host internals](cloud-hypervisor-host-systemd.md#directives-an-old-systemd-cannot-enforce).
+[Host internals](../providers/cloud-hypervisor-host-systemd.md#directives-an-old-systemd-cannot-enforce).
 
 ### `--guest-cpus` is refused where it would not be enforced
 
@@ -106,7 +106,7 @@ with `--guest-cpus`. On that host the limit never applied.
 **What to do.** Use the new `--guest-cpu-quota` instead, a share of CPU time
 that works on cgroup v1 and v2 (for example `--guest-cpu-quota 4800%` for 48
 CPUs' worth). See
-[VM resource limits](cloud-hypervisor-host.md#vm-resource-limits-banlieueslice).
+[VM resource limits](../providers/cloud-hypervisor.md#vm-resource-limits-banlieueslice).
 
 ### Rust: the `banlieue-api` crate
 
@@ -307,7 +307,7 @@ kubectl patch providerclass vsphere --type=merge \
 A class pinned by digest pulls the digest, not the tag, so set both. A
 provider installed without the operator is upgraded with
 `banlieue bootstrap provider <backend> --version "$BANLIEUE_VERSION"`. Both
-paths: [Provider lifecycle](provider-lifecycle.md#upgrading).
+paths: [Provider lifecycle](../providers/lifecycle.md#upgrading).
 
 **Verify:** `kubectl get providers.banlieue.io -A` and each Provider's
 `status.workload.heartbeat` is `Alive`.
@@ -331,7 +331,7 @@ sudo banlieue host cloud-hypervisor install --only provider \
 `--only provider` leaves the VMM alone; a full `install` also relinks the VMM
 release it is given, which matters on a host running a VMM build of its own.
 The full procedure, and choosing a VMM release, are in the
-[Cloud Hypervisor guide](cloud-hypervisor-host.md#choosing-the-vmm-version-and-where-it-comes-from).
+[Cloud Hypervisor guide](../providers/cloud-hypervisor.md#choosing-the-vmm-version-and-where-it-comes-from).
 
 **Verify:** `systemctl status banlieue-provider-cloud-hypervisor` on the
 host shows the provider active, and its `Provider` reports
@@ -360,8 +360,8 @@ the v0.6.0 installer wrote before you start the old provider.
 | --- | --- | --- |
 | One provider serves tenant namespaces and keeps its credentials (vSphere, libvirt, Proxmox, Cloud Hypervisor). Already in v0.5.10 | `Provider.spec.namespaceSelector`; the controller's `BANLIEUE_PROVIDER_NAMESPACE`; the two admission policies above | [Multi-tenancy](multi-tenancy.md#one-shared-provider-for-every-team), [ADR-0133](https://github.com/firestoned/banlieue/blob/main/docs/adr/0133-shared-provider-serves-tenant-namespaces.md), `examples/28-provider-vsphere-shared.yaml` |
 | A claim's selection strategy (`LongestReady`, the default, `MostAvailable`, `Spread`). Already in v0.5.10 | `VirtualMachineClaim.spec.selection.strategy` | [Claims](virtualmachine-claims.md#choosing-a-strategy-specselectionstrategy), `examples/29-virtualmachineclaim-spread.yaml` |
-| Cloud Hypervisor guests attest with `x509pop` and a certificate their host signs, with an optional upstream PKI or OpenBao signing the host CA | `install --attestation` or `--attestation-ca-name`; then `Provider.spec.attestation.hostCa` | [Attesting with x509pop](cloud-hypervisor-host.md#attesting-with-x509pop-adr-0146), [ADR-0146](https://github.com/firestoned/banlieue/blob/main/docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md) |
-| Cloud Hypervisor hosts without systemd userdb or cgroup v2 (RHEL 8 class) | `--guest-accounts files`, `--guest-cpu-quota`, `--accept-reduced-hardening` | [Step 2: settings](cloud-hypervisor-host.md#step-2-settings), [ADR-0139](https://github.com/firestoned/banlieue/blob/main/docs/adr/0139-hosts-without-systemd-userdb-or-cgroup-v2.md) |
+| Cloud Hypervisor guests attest with `x509pop` and a certificate their host signs, with an optional upstream PKI or OpenBao signing the host CA | `install --attestation` or `--attestation-ca-name`; then `Provider.spec.attestation.hostCa` | [Attesting with x509pop](../providers/cloud-hypervisor.md#attesting-with-x509pop-adr-0146), [ADR-0146](https://github.com/firestoned/banlieue/blob/main/docs/adr/0146-cloud-hypervisor-guests-may-attest-with-x509pop-and-a-certificate-their-host-signs.md) |
+| Cloud Hypervisor hosts without systemd userdb or cgroup v2 (RHEL 8 class) | `--guest-accounts files`, `--guest-cpu-quota`, `--accept-reduced-hardening` | [Step 2: settings](../providers/cloud-hypervisor.md#step-2-settings), [ADR-0139](https://github.com/firestoned/banlieue/blob/main/docs/adr/0139-hosts-without-systemd-userdb-or-cgroup-v2.md) |
 | Naming a Provider's credentials without reading them | grant the `reference` verb on that Secret, by exact `resourceNames` | `deploy/admission/README.md`, [ADR-0157](https://github.com/firestoned/banlieue/blob/main/docs/adr/0157-referencing-provider-credentials-is-its-own-permission.md) |
 
 !!! warning "An opted-in host holds until the CA is asserted"

@@ -37,8 +37,8 @@ spec:
 That single CR is then **scheduled** onto whichever `Provider` matches
 `placement.providerSelector` and knows how to talk to a real backend:
 **Cloud Hypervisor** on your own KVM hosts (the reference backend),
-**vSphere**, **libvirt** or **Proxmox VE**, or any other backend a third
-party writes, without changing the user's manifest.
+**vSphere**, **libvirt**, **Proxmox VE** or **Azure** (alpha), or any other
+backend a third party writes, without changing the user's manifest.
 
 ## Why does banlieue exist?
 
@@ -52,7 +52,7 @@ you want to understand the design before the code.
 The short version:
 
 - **One declarative API** for VMs, regardless of backend.
-- **Swap or mix providers** without rewriting workloads: Cloud Hypervisor on bare-metal KVM hosts, vSphere in the data centre, libvirt or Proxmox at the edge, all in the same cluster.
+- **Swap or mix providers** without rewriting workloads: Cloud Hypervisor on bare-metal KVM hosts, vSphere in the data centre, libvirt or Proxmox at the edge, Azure in the public cloud, all in the same cluster.
 - **Zero new transports**: the contract between the controller and providers is the Kubernetes API itself. No gRPC, no REST, no custom auth.
 - **Reuses an existing, battle-tested status model**: provider CRDs satisfy the [Cluster API v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
 
@@ -76,10 +76,12 @@ flowchart LR
     api --> p1[Provider: vSphere]
     api --> p2[Provider: libvirt]
     api --> p3[Provider: Proxmox VE]
+    api --> p4[Provider: Azure]
     p0 -.->|status| api
     p1 -.->|status| api
     p2 -.->|status| api
     p3 -.->|status| api
+    p4 -.->|status| api
     api -.->|status reflected| ctrl
     ctrl -.->|status mirrored| user
 ```
@@ -97,9 +99,9 @@ credential and no Secret; each guest is a systemd unit with its own uid;
 all guests share a budget the scheduler places VMs against; images arrive
 from an OCI registry by digest; and a warm pool refills a claimed
 `GuestReady` VM in about 100 to 120 s. Start with the
-[Cloud Hypervisor Provider guide](guides/cloud-hypervisor-host.md), and see
-the [Provider Comparison](reference/provider-comparison.md) for how it
-lines up against vSphere, libvirt and Proxmox.
+[Cloud Hypervisor Provider guide](providers/cloud-hypervisor.md), and see
+the [Provider Comparison](providers/comparison.md) for how it
+lines up against vSphere, libvirt, Proxmox and Azure.
 
 ## Project status
 
@@ -114,6 +116,8 @@ are in place, and so is each provider:
 | vSphere | Complete: validated end to end against real vCenter and ESXi |
 | libvirt | Complete: VM lifecycle, NoCloud cloud-init, vTPM, pools |
 | Proxmox VE | Implemented end to end and tested against a real node; the cluster end-to-end test is the last item |
+| Azure | New and alpha: Azure VMs through workload identity federation, no Secret ([Azure](providers/azure.md)) |
+| Firecracker | In progress: API only, nothing runs a guest yet |
 
 Snapshots are not started. Moving a Cloud Hypervisor VM between hosts has its
 API (`VirtualMachineMove`, ADR-0127) but no controller acting on it yet. Phase
@@ -127,8 +131,9 @@ workloads against it yet.
 
 - [Overview — what banlieue does, fundamentally](overview.md) ← start here
 - [Why banlieue? — the case for this project](reasoning/index.md)
-- [Cloud Hypervisor Provider: a bare-metal host to running VMs](guides/cloud-hypervisor-host.md)
-- [Guides: install banlieue and every backend](guides/index.md)
+- [Cloud Hypervisor Provider: a bare-metal host to running VMs](providers/cloud-hypervisor.md)
+- [Providers: set up each backend, and choose between them](providers/index.md)
+- [Guides: install and operate banlieue](guides/index.md)
 - [Architecture](concepts/architecture.md)
 - [Developer — build from source & local dev](developer/local-development.md)
 - [License](reference/license.md)

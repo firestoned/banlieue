@@ -26,7 +26,13 @@ This guide takes a bare-metal Linux machine running systemd to a host
 banlieue schedules VMs onto: prepare the host (Steps 1 to 3), then
 [connect it to a cluster](#connect-it-to-a-cluster). How it compares with
 vSphere, libvirt and Proxmox, row by row, is the
-[Provider Comparison](../reference/provider-comparison.md).
+[Provider Comparison](comparison.md).
+
+!!! tip "Many hosts, unattended"
+    Every flag below has an environment variable and `install` is
+    idempotent, so the same run works from cloud-init, a systemd unit or
+    configuration management. [Automating the Install](cloud-hypervisor-automation.md)
+    covers that, plus connecting a host, upgrades and decommissioning.
 
 !!! info "The provider starts once the host is connected"
     `install` prepares everything (VMM, firmware, vTPM tooling, the `banlieue`
@@ -36,7 +42,7 @@ vSphere, libvirt and Proxmox, row by row, is the
     [smoke-boot a guest by hand](#smoke-boot-a-guest-by-hand) to prove the
     host works.
 
-A Cloud Hypervisor host differs from a [libvirt host](host-bootstrap.md) in
+A Cloud Hypervisor host differs from a [libvirt host](../guides/host-bootstrap.md) in
 three ways that shape everything below:
 
 | | libvirt | Cloud Hypervisor |
@@ -167,7 +173,7 @@ provider is not root, and the credential can read no Secrets.
     provider, and removes the copy whether the step succeeded or not.
 
 **Never commit an env file.** It names real hosts. Keep it under
-`~/.config/banlieue/hosts/`, as the [host bootstrap](host-bootstrap.md#configuration-lives-outside-this-repository)
+`~/.config/banlieue/hosts/`, as the [host bootstrap](../guides/host-bootstrap.md#configuration-lives-outside-this-repository)
 guide explains.
 
 ---
@@ -233,7 +239,7 @@ Pick one:
 === "Reuse libvirt's NAT bridge"
 
     If the host already runs libvirt (for example after
-    [`bootstrap-libvirt-host.sh`](host-bootstrap.md)), its `virbr0` bridge
+    [`bootstrap-libvirt-host.sh`](../guides/host-bootstrap.md)), its `virbr0` bridge
     works as it is: guests get a NAT address from libvirt's `dnsmasq`. With
     no `--network-class`, `banlieue host cloud-hypervisor` uses `virbr0` as the `default`
     class automatically.
@@ -361,8 +367,11 @@ command. The backend is part of the command (ADR-0084 Decision 7) because
 
 Every stage also runs on its own (`--only <stage>`, which refuses if a stage
 it builds on has not run), and a second `install` changes nothing.
-`--dry-run` prints what would change and changes nothing. Re-running is the
-intended way to change a setting.
+`--dry-run` prints what would change and changes nothing. Re-running is how
+the guests' slice budget and the release change; a setting the host config
+records (name, namespace, classes, uid range, registry) is kept, and a flag
+that contradicts it is refused. Running this unattended, on many hosts:
+[Automating the Install](cloud-hypervisor-automation.md).
 
 | Stage | Does |
 | --- | --- |
@@ -472,7 +481,7 @@ cannot be starved by a burst of guests.
 | Slice | Holds | Created by |
 | --- | --- | --- |
 | `banlieue-guests.slice` | each guest's VMM (`banlieue-ch@<uid>`) and vTPM (`banlieue-swtpm@<uid>`) | `install` (`provider` stage), named in the root-owned templates |
-| `banlieue-nodes.slice` | management-cluster nodes on Cloud Hypervisor (`k0s-vm-<name>`, `-swtpm`), if this host runs any | `scripts/bootstrap-k0s-cluster.sh` ([Nodes on Cloud Hypervisor](end-to-end-setup.md#nodes-on-cloud-hypervisor-adr-0099)) |
+| `banlieue-nodes.slice` | management-cluster nodes on Cloud Hypervisor (`k0s-vm-<name>`, `-swtpm`), if this host runs any | `scripts/bootstrap-k0s-cluster.sh` ([Nodes on Cloud Hypervisor](../guides/end-to-end-setup.md#nodes-on-cloud-hypervisor-adr-0099)) |
 | `banlieue.slice` | both of the above | systemd, implicitly: a parent slice exists as soon as a child does; there is no unit file for it |
 
 The one-shot helpers (`banlieue-swtpm-setup@`, `banlieue-ch-import@`) are
@@ -568,7 +577,7 @@ kubectl get providers.banlieue.io <name> -n banlieue-system \
 ```
 
 The refusal messages, the settings and a test plan are in
-[Capacity-Aware Scheduling](capacity-scheduling.md).
+[Capacity-Aware Scheduling](../guides/capacity-scheduling.md).
 
 Two limits remain. Memory used by anything that is not a banlieue guest (the
 host's own services, management nodes in `banlieue-nodes.slice`) is caught
@@ -782,7 +791,7 @@ process runs here. Three steps, in order.
     the matching namespaces, no Secrets or ConfigMaps) to the host's
     ServiceAccount. The host reads the selector once, at startup: restart
     `banlieue-provider-cloud-hypervisor` after changing it. See
-    [Multi-tenancy](multi-tenancy.md).
+    [Multi-tenancy](../guides/multi-tenancy.md).
 
 2. **Issue the host its first credential**, as a cluster admin, anywhere
    your kubeconfig works:
@@ -867,7 +876,7 @@ registry, since the host cannot mount the cluster's artifacts volume
     `BANLIEUE_REGISTRY_CA_BUNDLE_CONFIG_MAP` (or `…_SECRET`) to a bundle in
     that namespace, and on a cluster that mirrors images set
     `BANLIEUE_PUSH_IMAGE` to the mirrored banlieue image; see
-    [using the imagebuilder](using-banlieue-imagebuilder.md#cloud-hypervisor-hosts-pushed-to-a-registry).
+    [using the imagebuilder](../guides/using-banlieue-imagebuilder.md#cloud-hypervisor-hosts-pushed-to-a-registry).
 
     The Secret is `kubernetes.io/basic-auth`, in the build namespace
     (`banlieue-imagebuild`). Once a `VMImage` with a `cloud-hypervisor`

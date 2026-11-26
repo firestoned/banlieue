@@ -27,7 +27,7 @@ Two independent ways to consume the result:
    build, air-gapped environments, or debugging the pipeline itself.
 2. **banlieue-native** — push the OCI image, point a `VMImage` with
    `sources: [{kind: Url, ...}]` at it, and let `banlieue-imagebuilder` + the
-   [vSphere provider](vsphere-provider.md) do the ISO build, upload, VM
+   [vSphere provider](../providers/vsphere.md) do the ISO build, upload, VM
    creation, install-wait, and templating per the
    [ADR-0021](https://github.com/firestoned/banlieue/blob/main/docs/adr/0021-vsphere-template-install-and-generalize.md)
    contract. The cloud-config contract in that ADR (an `admin`-group `users`
@@ -64,7 +64,7 @@ Dockerfile's shape:
   `docker run`, no separate install needed) to turn the built OCI image into
   a bootable ISO.
 - If targeting vSphere: `govc` and a datacenter/cluster/datastore to upload
-  to — see the [Alpine template guide](alpine-vsphere-template.md)'s `govc`
+  to; see the [Alpine template guide](../providers/alpine-vsphere-template.md)'s `govc`
   setup section, which applies unchanged here.
 
 ---
@@ -500,7 +500,7 @@ govc vm.markastemplate hadron-kairos-build
 If you'd rather have this driven for you across every failure domain — with
 retries, status conditions, and a `VMImage` CR as the source of truth instead
 of a one-off shell session — that's exactly what `banlieue-imagebuilder` and
-the [vSphere provider](vsphere-provider.md) do once you push the OCI image
+the [vSphere provider](../providers/vsphere.md) do once you push the OCI image
 and point a `VMImage` at it; see
 [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md).
 
