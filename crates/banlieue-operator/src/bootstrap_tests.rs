@@ -21,6 +21,7 @@ mod tests {
             build_toleration: Vec::new(),
             image_digest: None,
             prelay_image_digest: None,
+            azure_guest_image: None,
             watch_namespace_selector: None,
         }
     }
@@ -1447,6 +1448,7 @@ mod tests {
         let BootstrapTarget::Imagebuilder {
             common,
             prelay_image_digest,
+            ..
         } = parsed.target
         else {
             panic!("expected the imagebuilder target");
@@ -1470,6 +1472,107 @@ mod tests {
                 VALID_DIGEST
             ])
             .is_err(),
+            "only the imagebuilder install takes it"
+        );
+    }
+
+    // ---------- push image and Azure guest image (ADR-0171) ---------------
+
+    /// A digest-pinned Azure guest helper bundle reference.
+    const PINNED_GUEST: &str = "ghcr.io/firestoned/banlieue-azure-guest@sha256:0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788";
+
+    /// The imagebuilder's measure, push and publish Jobs run the banlieue
+    /// image. Left to the binary's default they run the release tag the
+    /// binary was cut from, which on a pre-release install predates the Job
+    /// subcommands the running imagebuilder asks for (found live: `banlieue
+    /// imagebuilder digest` refused as an unrecognized subcommand).
+    #[test]
+    fn the_imagebuilder_jobs_run_the_installed_image() {
+        let opts = InstallOptions {
+            registry: Some("registry.internal:5000".to_string()),
+            image_digest: Some(VALID_DIGEST.to_string()),
+            ..opts()
+        };
+        let args = InstallRole::Imagebuilder.args_with(&opts);
+        assert_eq!(
+            flag_value(&args, "--push-image"),
+            Some(install_image(&opts).as_str())
+        );
+    }
+
+    /// Only the imagebuilder declares `--push-image` and
+    /// `--azure-guest-image`; any other role given them would refuse to start.
+    #[test]
+    fn only_the_imagebuilder_gets_the_job_and_guest_images() {
+        let opts = opts().with_azure_guest_image(Some(PINNED_GUEST.to_string()));
+        for role in [
+            InstallRole::Controller,
+            InstallRole::Operator,
+            InstallRole::Provider("azure".to_string()),
+        ] {
+            let args = role.args_with(&opts);
+            assert_eq!(flag_value(&args, "--push-image"), None, "{role:?}");
+            assert_eq!(flag_value(&args, "--azure-guest-image"), None, "{role:?}");
+        }
+    }
+
+    /// Without `--azure-guest-image` the flag is omitted entirely: the
+    /// imagebuilder then refuses Azure builds with `AzureGuestImageUnset`
+    /// rather than building an image that cannot report ready.
+    #[test]
+    fn no_azure_guest_image_means_no_flag() {
+        let args = InstallRole::Imagebuilder.args_with(&opts());
+        assert_eq!(flag_value(&args, "--azure-guest-image"), None);
+    }
+
+    /// A set Azure guest image reaches the imagebuilder verbatim.
+    #[test]
+    fn the_azure_guest_image_reaches_the_imagebuilder() {
+        let opts = opts().with_azure_guest_image(Some(PINNED_GUEST.to_string()));
+        let args = InstallRole::Imagebuilder.args_with(&opts);
+        assert_eq!(flag_value(&args, "--azure-guest-image"), Some(PINNED_GUEST));
+    }
+
+    /// `bootstrap imagebuilder --azure-guest-image` takes only a
+    /// digest-pinned reference (the bundle is unpacked into every Azure
+    /// image's root filesystem), and only on the imagebuilder target.
+    #[test]
+    fn the_azure_guest_image_flag_is_parsed_and_validated() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Wrapper {
+            #[command(subcommand)]
+            target: BootstrapTarget,
+        }
+        let parsed = Wrapper::try_parse_from([
+            "bootstrap",
+            "imagebuilder",
+            "--azure-guest-image",
+            PINNED_GUEST,
+        ])
+        .expect("a digest-pinned reference parses");
+        let BootstrapTarget::Imagebuilder {
+            azure_guest_image, ..
+        } = parsed.target
+        else {
+            panic!("expected the imagebuilder target");
+        };
+        assert_eq!(azure_guest_image.as_deref(), Some(PINNED_GUEST));
+
+        for bad in [
+            "ghcr.io/firestoned/banlieue-azure-guest:v0.6.0",
+            "ghcr.io/firestoned/banlieue-azure-guest@sha256:abc",
+            "@sha256:0f756fa0c0ffee00112233445566778899aabbccddeeff001122334455667788",
+        ] {
+            assert!(
+                Wrapper::try_parse_from(["bootstrap", "imagebuilder", "--azure-guest-image", bad])
+                    .is_err(),
+                "{bad} must be refused"
+            );
+        }
+        assert!(
+            Wrapper::try_parse_from(["bootstrap", "operator", "--azure-guest-image", PINNED_GUEST])
+                .is_err(),
             "only the imagebuilder install takes it"
         );
     }

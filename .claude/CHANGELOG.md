@@ -1,5 +1,34 @@
 # Changelog
 
+## [2026-11-26 21:30] - `bootstrap imagebuilder` passes `--push-image` and `--azure-guest-image`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-operator/src/bootstrap.rs`: `InstallRole::args_with` gives the imagebuilder
+  `--push-image` set to `install_image` (the banlieue image being installed, digest included), and
+  `--azure-guest-image` when set. New `bootstrap imagebuilder --azure-guest-image` flag, parsed by
+  `parse_pinned_image` (a registry-qualified reference with a sha256 digest, via
+  `banlieue_oci::reference::Reference`); `InstallOptions::azure_guest_image` and
+  `with_azure_guest_image`.
+- `crates/banlieue-operator/src/bootstrap_tests.rs`: five tests (the Jobs run the installed image; only the
+  imagebuilder gets either flag; no flag when unset; the reference reaches the imagebuilder; the flag is
+  validated and imagebuilder-only).
+- `docs/src/providers/azure.md`, `docs/adr/0171-azure-guest-layer.md`, `docs/adr/0110-registry-push-job-ca-bundle.md`:
+  how a bootstrap install sets the helper image; ADR-0110's `--push-image` follow-up marked done for bootstrap.
+
+### Why
+Found rolling out the gateway image on the management cluster. The bootstrap-rendered Deployment does not
+read `banlieue-imagebuilder-config`, so `BANLIEUE_AZURE_GUEST_IMAGE` never reached it and every Azure build
+failed `AzureGuestImageUnset`. With that set by hand, the digest Job ran the binary's release-tag default
+for `--push-image`, which predates `banlieue imagebuilder digest`, and failed `DigestFailed`.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-run `bootstrap imagebuilder`, or set both flags on an existing Deployment)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-26 16:30] - Azure guest layer and the `banlieue-azure-guest` helper (ADR-0171)
 
 **Author:** Erick Bourgeois

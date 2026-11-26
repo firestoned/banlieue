@@ -88,7 +88,10 @@ recovery image and in every active and passive image installed from it.
   (`BANLIEUE_AZURE_GUEST_IMAGE`) and must be `<repository>@sha256:<64 hex>`;
   the image builder refuses to start with a tag. Unset (the default), a
   `VMImage` with an `azure` source fails its build before any `OSArtifact`
-  exists, `buildArtifact.reason: AzureGuestImageUnset`.
+  exists, `buildArtifact.reason: AzureGuestImageUnset`. A `banlieue
+  bootstrap imagebuilder` install takes it as `--azure-guest-image` (same
+  digest-pinned form, checked at parse time) and passes it through; the
+  ConfigMap variable only reaches a kustomize install.
 - `bundles` is part of the build's identity: a live `OSArtifact` whose
   bundles differ from the desired ones (an `azure` source added or removed, a
   new helper digest) is deleted and rebuilt, like a changed source image.
