@@ -4065,7 +4065,7 @@
           ]
         },
         "azure-guest-helper-local-only": {
-          "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0171): the helper is baked into the image at build time from a digest-pinned bundle (crates/banlieue-imagebuilder/src/azure_guest.rs validate_helper_image; a tag refuses to start), fetches nothing at boot, reads customData only from the local provisioning disk, and its WireServer address is a compile-time constant with no flag or environment override (crates/banlieue-guest-azure/src/cli.rs).",
+          "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0171): the helper is baked into the image at build time from a digest-pinned bundle (crates/banlieue-imagebuilder/src/azure_guest.rs validate_helper_image; a tag refuses to start), fetches nothing at boot, reads customData only from the local provisioning disk, and its WireServer address is a compile-time constant with no flag or environment override (crates/banlieue-guest-azure/src/cli.rs). Amendment 2026-11-26: CI publishes the bundle image, ghcr.io/firestoned/banlieue-azure-guest (the docker-azure-guest job in .github/workflows/build.yaml, built with make azure-guest-binary and REMAP_RUSTFLAGS), Cosign-signed by digest with provenance and an SBOM on main and releases; each release states the pushed digest in its notes and the azure-guest-image.txt asset (make azure-guest-release-ref). No Grype gate: a FROM-scratch image of one stripped static binary has nothing to catalogue; its crates are gated by cargo audit and cargo deny.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",

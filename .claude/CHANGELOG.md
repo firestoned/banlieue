@@ -1,5 +1,44 @@
 # Changelog
 
+## [2026-11-26 22:30] - CI publishes the `banlieue-azure-guest` image and each release names its digest
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/workflows/build.yaml`: new `docker-azure-guest` job, mirroring `docker-prelay`. It builds the
+  helper with `make azure-guest-binary` (musl target via the toolchain step, `REMAP_RUSTFLAGS`), then
+  `Dockerfile.azure-guest` for linux/amd64, and pushes `ghcr.io/firestoned/banlieue-azure-guest` under the
+  same rules and tags (fork PRs build only; PR tags never `latest` or a version). Cosign keyless signing by
+  digest on every push; provenance attestation and an image SBOM (artifact `azure-guest-image-sbom`, outside
+  the `docker-sbom-*` artifact pattern `build-vex` merges) on main and releases. `upload-release-assets`
+  needs it and runs `make azure-guest-release-ref`; `release/azure-guest-image.txt` is a release asset.
+- `Makefile`: `azure-guest-release-ref` (validates `AZURE_GUEST_IMAGE_REF` as `<repo>@sha256:<64 hex>`,
+  writes `AZURE_GUEST_REF_FILE`, appends a section to `RELEASE_NOTES`); `azure-guest-binary` copies from
+  `AZURE_GUEST_TARGET_DIR` (`CARGO_TARGET_DIR` when set, else `target/`).
+- `docs/adr/0171-azure-guest-layer.md`: *Amendment: the release workflow publishes the helper image*
+  (publishing, where the digest is surfaced, no imagebuilder default, no Grype gate and why).
+- `docs/src/security/threat-model.md`: A-5 names the image; TB-6 *Scanning* and *Azure guest helper bundle*
+  rows cite the job and target; §7.36 (l) points at the release asset and `cosign verify`; the §8
+  WireServer row drops "not yet published"; new §8 row: no image scan gate, musl unscanned. Targeted
+  update, not a full pass: the header stamp is unchanged.
+- `docs/src/providers/azure.md`, `docs/src/guides/using-banlieue-imagebuilder.md`: take the digest from the
+  release, verify the signature, resolve a `main` tag with `crane digest`, mirror by digest.
+- `docs/architecture/calm/architecture.json`: the `azure-guest-helper-local-only` control records the
+  publishing.
+- `.github/community/23-azure-provider.md`, `ROADMAPS.md`: phase D's "release workflow publishing the helper
+  image" is done.
+
+### Why
+The image builder takes the helper only by digest, and until now every site built and pushed it by hand.
+No Grype gate: a `FROM scratch` image with one stripped static binary gives Grype nothing to match, so a
+gate would always pass; the crates are gated on `Cargo.lock` by `cargo audit` and `cargo deny`.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only (CI; operators can now take the published digest)
+- [ ] Documentation only
+
 ## [2026-11-26 21:30] - `bootstrap imagebuilder` passes `--push-image` and `--azure-guest-image`
 
 **Author:** Erick Bourgeois

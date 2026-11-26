@@ -527,7 +527,11 @@ two things to the shared build, after the sealing layer:
   filesystem from the OCI image `--azure-guest-image`
   (`BANLIEUE_AZURE_GUEST_IMAGE`) names, through the `OSArtifact`'s
   `spec.artifacts.bundles`. The reference must be pinned by digest
-  (`<repository>@sha256:<hex>`) or the builder refuses to start;
+  (`<repository>@sha256:<hex>`) or the builder refuses to start. banlieue
+  publishes the image, `ghcr.io/firestoned/banlieue-azure-guest`
+  (Cosign-signed), and each release names its digest in the release notes
+  and the `azure-guest-image.txt` asset; there is no default, so pass it
+  (`banlieue bootstrap imagebuilder --azure-guest-image`);
 - a cloud-config layer that leaves the accelerated-networking VF unmanaged,
   masks the QEMU guest agent, copies `customData` from the provisioning disk
   into `/oem` and reports ready to Azure. Every step is gated on Azure's DMI
