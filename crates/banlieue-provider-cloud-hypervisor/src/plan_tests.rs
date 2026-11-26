@@ -89,6 +89,27 @@ mod tests {
         assert_eq!(tap, "bch0f3c9a1e5b0");
     }
 
+    /// ADR-0144 Decision 3: a class declared with `isolate_ports` makes its
+    /// NIC's tap isolated; a plain class does not. Resolved on the host.
+    #[test]
+    fn a_nic_on_an_isolating_class_is_planned_isolated_and_others_are_not() {
+        assert!(!plan().nics[0].isolate, "lan is a plain bridge");
+        let mut c = config();
+        c.network_classes.insert(
+            "sandbox".into(),
+            crate::host_config::NetworkClass::Table(crate::host_config::NetworkClassTable {
+                bridge: "br1".into(),
+                isolate_ports: true,
+            }),
+        );
+        let mut s = spec();
+        s.nics[0].network_class = "sandbox".into();
+        let p = plan_machine(UID, MACHINE_NAME, "ch-a", &s, &c, HOST_UID).expect("plan");
+        assert!(p.nics[0].isolate);
+        assert_eq!(p.nics[0].bridge, "br1");
+        assert_eq!(p.nics[0].network_class, "sandbox");
+    }
+
     #[test]
     fn the_nic_resolves_its_bridge_from_the_host_config() {
         assert_eq!(plan().nics[0].bridge, "br0");

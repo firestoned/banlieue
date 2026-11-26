@@ -63,8 +63,9 @@ pub struct HostConfig {
     pub registry: Option<RegistrySection>,
     /// Storage class name to directory.
     pub storage_classes: BTreeMap<String, PathBuf>,
-    /// Network class name to bridge.
-    pub network_classes: BTreeMap<String, String>,
+    /// Network class name to its bridge, and whether guest ports on it are
+    /// isolated (ADR-0144 Decision 3).
+    pub network_classes: BTreeMap<String, NetworkClass>,
     /// Guest-sandbox directives this host cannot enforce and whose absence
     /// the operator accepted at install time (ADR-0139 Decision 4). Absent
     /// means none.
@@ -95,6 +96,60 @@ impl AttestationSection {
     #[must_use]
     pub fn certificate_ttl(&self) -> std::time::Duration {
         std::time::Duration::from_secs(self.certificate_ttl_secs)
+    }
+}
+
+/// A network class (ADR-0144): the bridge it names, and whether the taps of
+/// guests on it are put in kernel port isolation.
+///
+/// Written as a bridge string, which is every config from before ADR-0144 and
+/// does not isolate (`default = "br0"`), or as a table that says so
+/// explicitly (`sandbox = { bridge = "br1", isolate_ports = true }`). Explicit
+/// over implicit: nothing infers isolation from a class name.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum NetworkClass {
+    /// `name = "br0"`: a bridge, no port isolation.
+    Bridge(String),
+    /// `name = { bridge = "br0", isolate_ports = true }`.
+    Table(NetworkClassTable),
+}
+
+/// The table form of a [`NetworkClass`].
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NetworkClassTable {
+    /// The bridge the class means on this host.
+    pub bridge: String,
+    /// Put each guest's tap on this bridge in kernel port isolation, so it
+    /// reaches only non-isolated ports. Absent means false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub isolate_ports: bool,
+}
+
+impl NetworkClass {
+    /// The bridge this class names.
+    #[must_use]
+    pub fn bridge(&self) -> &str {
+        match self {
+            Self::Bridge(bridge) => bridge,
+            Self::Table(table) => &table.bridge,
+        }
+    }
+
+    /// Whether the taps of guests on this class are isolated.
+    #[must_use]
+    pub fn isolates_ports(&self) -> bool {
+        match self {
+            Self::Bridge(_) => false,
+            Self::Table(table) => table.isolate_ports,
+        }
+    }
+}
+
+impl From<&str> for NetworkClass {
+    fn from(bridge: &str) -> Self {
+        Self::Bridge(bridge.to_string())
     }
 }
 
@@ -266,7 +321,17 @@ impl HostConfig {
     /// Bridge behind a network class, if this host declares it.
     #[must_use]
     pub fn bridge(&self, class: &str) -> Option<&str> {
-        self.network_classes.get(class).map(String::as_str)
+        self.network_classes.get(class).map(NetworkClass::bridge)
+    }
+
+    /// Whether the taps of guests on this network class are isolated
+    /// (ADR-0144). False for a class this host does not declare: the caller
+    /// refuses the machine on the bridge lookup, never here.
+    #[must_use]
+    pub fn isolate_ports(&self, class: &str) -> bool {
+        self.network_classes
+            .get(class)
+            .is_some_and(NetworkClass::isolates_ports)
     }
 
     /// Storage class names, for the failure domain. Names only.
@@ -347,9 +412,9 @@ impl HostConfig {
             require_class_name(name)?;
             require_absolute(&format!("storage_classes.{name}"), path)?;
         }
-        for (name, bridge) in &self.network_classes {
+        for (name, class) in &self.network_classes {
             require_class_name(name)?;
-            require_interface_name(&format!("network_classes.{name}"), bridge)?;
+            require_interface_name(&format!("network_classes.{name}"), class.bridge())?;
         }
         for name in self.accepted_reduced_hardening() {
             if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric()) {

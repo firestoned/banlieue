@@ -1272,6 +1272,82 @@ lan = "br0"
         }
     }
 
+    // ------------------------------------- port isolation (ADR-0144)
+
+    /// The kept config with `lan` declared isolated.
+    fn kept_isolated_host() -> FakeHost {
+        let h = kept_host();
+        let text = KEPT.replace(
+            "lan = \"br0\"",
+            "lan = { bridge = \"br0\", isolate_ports = true }",
+        );
+        h.put_file(crate::paths::HOST_CONFIG, text.as_bytes(), Kind::File);
+        h
+    }
+
+    #[test]
+    fn isolation_is_off_unless_the_operator_declares_it() {
+        let h = FakeHost::debian();
+        let s = resolve(&args(&["--network-class", "lan=br0"]), &h).unwrap();
+        assert!(s.isolate_ports.is_empty());
+    }
+
+    #[test]
+    fn isolate_ports_marks_a_declared_class() {
+        let h = FakeHost::debian();
+        let s = resolve(
+            &args(&[
+                "--network-class",
+                "default=virbr0,sandbox=br1",
+                "--isolate-ports",
+                "sandbox",
+            ]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.isolate_ports, vec!["sandbox".to_string()]);
+        assert_eq!(s.network.len(), 2);
+    }
+
+    #[test]
+    fn isolate_ports_takes_a_comma_list() {
+        let h = FakeHost::debian();
+        let s = resolve(
+            &args(&["--network-class", "a=br1,b=br2", "--isolate-ports", "b,a"]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.isolate_ports, vec!["a".to_string(), "b".to_string()]);
+    }
+
+    #[test]
+    fn isolate_ports_refuses_an_undeclared_class() {
+        let h = FakeHost::debian();
+        let Err(Error::Setting { name, why }) = resolve(
+            &args(&["--network-class", "lan=br0", "--isolate-ports", "ghost"]),
+            &h,
+        ) else {
+            panic!("accepted");
+        };
+        assert_eq!(name, "--isolate-ports");
+        assert!(why.contains("ghost"), "{why}");
+    }
+
+    #[test]
+    fn isolate_ports_refuses_a_malformed_or_repeated_name() {
+        let h = FakeHost::debian();
+        for bad in ["Upper", "a=b", "x,x"] {
+            let r = resolve(
+                &args(&["--network-class", "x=br0", "--isolate-ports", bad]),
+                &h,
+            );
+            assert!(
+                matches!(&r, Err(Error::Setting { name, .. }) if *name == "--isolate-ports"),
+                "{bad}: {r:?}"
+            );
+        }
+    }
+
     #[test]
     fn a_ttl_without_an_opt_in_is_refused() {
         let h = FakeHost::debian();
@@ -1373,5 +1449,49 @@ lan = "br0"
         let plan = resolve_fresh(&args(&[]), &h).unwrap().attestation.unwrap();
         assert!(!plan.rotate);
         assert_eq!(plan.new_ca_name, None);
+    }
+
+    #[test]
+    fn a_kept_isolated_class_stays_isolated_without_the_flag() {
+        let h = kept_isolated_host();
+        let s = resolve(&args(&[]), &h).unwrap();
+        assert_eq!(s.isolate_ports, vec!["lan".to_string()]);
+    }
+
+    #[test]
+    fn the_flag_agreeing_with_the_kept_isolation_is_accepted() {
+        let h = kept_isolated_host();
+        let s = resolve(&args(&["--isolate-ports", "lan"]), &h).unwrap();
+        assert_eq!(s, resolve(&args(&[]), &h).unwrap());
+    }
+
+    #[test]
+    fn the_flag_contradicting_the_kept_isolation_is_refused() {
+        for (h, flag) in [
+            (kept_host(), "lan"),
+            (kept_isolated_host(), "default"),
+            (kept_isolated_host(), "default,lan"),
+        ] {
+            let Err(Error::Setting { name, why }) = resolve(&args(&["--isolate-ports", flag]), &h)
+            else {
+                panic!("{flag}: accepted");
+            };
+            assert_eq!(name, "--isolate-ports");
+            assert!(why.contains(crate::paths::HOST_CONFIG), "{why}");
+            assert!(why.contains("--force"), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_fresh_resolve_ignores_the_kept_isolation() {
+        let h = kept_isolated_host();
+        let s = resolve_fresh(
+            &args(&["--network-class", "lan=br0", "--isolate-ports", "lan"]),
+            &h,
+        )
+        .unwrap();
+        assert_eq!(s.isolate_ports, vec!["lan".to_string()]);
+        let none = resolve_fresh(&args(&["--network-class", "lan=br0"]), &h).unwrap();
+        assert!(none.isolate_ports.is_empty());
     }
 }

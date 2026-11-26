@@ -393,7 +393,7 @@ pub fn gather_facts(config: &HostConfig) -> HostFacts {
         bridges_present: config
             .network_classes
             .iter()
-            .filter(|(_, b)| sys::interface_exists(b))
+            .filter(|(_, class)| sys::interface_exists(class.bridge()))
             .map(|(n, _)| n.clone())
             .collect(),
         vtpm: config.tpm.as_ref().is_some_and(|t| {

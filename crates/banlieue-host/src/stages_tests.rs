@@ -133,6 +133,189 @@ mod tests {
         resolve(&host_args(), h).unwrap()
     }
 
+    // ------------------------------- isolation preflight (ADR-0144)
+
+    /// A host with bridge `br1` carrying one member port; `isolated` says
+    /// whether the kernel exposes `brport/isolated` on it.
+    fn host_with_port(isolated: bool) -> FakeHost {
+        let h = FakeHost::debian();
+        h.put_dir("/sys/class/net/br1/bridge");
+        h.put_file("/sys/class/net/br1/brif/dummy0", b"", Kind::Other);
+        if isolated {
+            h.put_file("/sys/class/net/dummy0/brport/isolated", b"0\n", Kind::File);
+        }
+        h
+    }
+
+    /// `iptables -S` output of a filter table carrying the recipe.
+    const GOOD_FILTER: &str = "-P INPUT ACCEPT\n-P FORWARD DROP\n-P OUTPUT ACCEPT\n\
+        -N BANLIEUE_SBX_FORWARD\n-N BANLIEUE_SBX_INPUT\n\
+        -A INPUT -j BANLIEUE_SBX_INPUT\n-A INPUT -i lo -j ACCEPT\n\
+        -A FORWARD -j BANLIEUE_SBX_FORWARD\n-A FORWARD -j DOCKER-USER\n\
+        -A BANLIEUE_SBX_INPUT -i br-sbx -j DROP\n";
+    /// `iptables -t nat -S` output of a nat table carrying the recipe.
+    const GOOD_NAT: &str = "-P PREROUTING ACCEPT\n-P POSTROUTING ACCEPT\n\
+        -N BANLIEUE_SBX_NAT\n-A POSTROUTING -j BANLIEUE_SBX_NAT\n\
+        -A POSTROUTING -s 192.0.2.0/24 -j MASQUERADE\n";
+
+    /// [`host_with_port`] plus the recipe's rules in place.
+    fn host_with_rules() -> FakeHost {
+        let h = host_with_port(true);
+        h.put_iptables("filter", GOOD_FILTER);
+        h.put_iptables("nat", GOOD_NAT);
+        h
+    }
+
+    fn isolating_settings(h: &FakeHost) -> Settings {
+        let mut s = settings(h);
+        s.network = vec![("sandbox".into(), "br1".into())];
+        s.isolate_ports = vec!["sandbox".into()];
+        s
+    }
+
+    fn preflight_problems(h: &FakeHost, s: &Settings) -> String {
+        match preflight(h, s) {
+            Ok(()) => String::new(),
+            Err(Error::Preflight(p)) => p.join("\n"),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    #[test]
+    fn preflight_passes_an_isolated_class_when_the_kernel_can_isolate() {
+        let h = host_with_rules();
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        assert!(!p.contains("sandbox"), "{p}");
+    }
+
+    #[test]
+    fn preflight_refuses_an_isolated_class_on_a_kernel_without_port_isolation() {
+        let h = host_with_port(false);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        for expected in ["sandbox", "br1", "brport/isolated", "dummy0"] {
+            assert!(p.contains(expected), "missing {expected:?} in:\n{p}");
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_an_isolated_class_whose_bridge_has_no_port_to_probe() {
+        let h = FakeHost::debian();
+        h.put_dir("/sys/class/net/br1/bridge");
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        for expected in ["sandbox", "br1", "no member port", "anchor"] {
+            assert!(p.contains(expected), "missing {expected:?} in:\n{p}");
+        }
+    }
+
+    #[test]
+    fn preflight_does_not_probe_a_class_that_is_not_isolated() {
+        let h = host_with_port(false);
+        let mut s = isolating_settings(&h);
+        s.isolate_ports.clear();
+        let p = preflight_problems(&h, &s);
+        assert!(!p.contains("brport"), "{p}");
+        assert!(!p.contains("BANLIEUE_SBX"), "{p}");
+        assert!(!p.contains("iptables"), "{p}");
+    }
+
+    #[test]
+    fn preflight_refuses_an_isolated_class_when_the_firewall_cannot_be_read() {
+        let h = host_with_port(true);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        for expected in ["sandbox", "iptables", "cannot be read", "filter", "nat"] {
+            assert!(p.contains(expected), "missing {expected:?} in:\n{p}");
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_when_one_table_cannot_be_read() {
+        let h = host_with_port(true);
+        h.put_iptables("filter", GOOD_FILTER);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        assert!(p.contains("nat table cannot be read"), "{p}");
+        assert!(!p.contains("filter table"), "{p}");
+    }
+
+    #[test]
+    fn preflight_refuses_each_absent_chain_by_name() {
+        for (chain, table) in [
+            ("BANLIEUE_SBX_INPUT", "filter"),
+            ("BANLIEUE_SBX_FORWARD", "filter"),
+            ("BANLIEUE_SBX_NAT", "nat"),
+        ] {
+            let h = host_with_rules();
+            let strip = |text: &str| {
+                text.lines()
+                    .filter(|l| !l.contains(chain))
+                    .map(|l| format!("{l}\n"))
+                    .collect::<String>()
+            };
+            let (filter, nat) = (strip(GOOD_FILTER), strip(GOOD_NAT));
+            h.put_iptables("filter", &filter);
+            h.put_iptables("nat", &nat);
+            let p = preflight_problems(&h, &isolating_settings(&h));
+            for expected in ["sandbox", chain, "absent", table] {
+                assert!(
+                    p.contains(expected),
+                    "{chain}: missing {expected:?} in:\n{p}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_a_chain_that_nothing_jumps_to() {
+        let h = host_with_rules();
+        let filter = GOOD_FILTER.replace("-A FORWARD -j BANLIEUE_SBX_FORWARD\n", "");
+        h.put_iptables("filter", &filter);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        for expected in ["sandbox", "no jump", "BANLIEUE_SBX_FORWARD", "FORWARD"] {
+            assert!(p.contains(expected), "missing {expected:?} in:\n{p}");
+        }
+        assert!(!p.contains("BANLIEUE_SBX_INPUT"), "{p}");
+    }
+
+    #[test]
+    fn preflight_refuses_a_jump_that_is_not_first_in_its_hook() {
+        let h = host_with_rules();
+        let nat = GOOD_NAT.replace(
+            "-A POSTROUTING -j BANLIEUE_SBX_NAT\n",
+            "-A POSTROUTING -j KUBE-POSTROUTING\n-A POSTROUTING -j BANLIEUE_SBX_NAT\n",
+        );
+        h.put_iptables("nat", &nat);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        for expected in ["sandbox", "not first", "POSTROUTING", "BANLIEUE_SBX_NAT"] {
+            assert!(p.contains(expected), "missing {expected:?} in:\n{p}");
+        }
+    }
+
+    #[test]
+    fn preflight_refuses_a_jump_when_its_hook_has_other_rules_first_even_if_a_later_one_matches() {
+        let h = host_with_rules();
+        let filter = GOOD_FILTER.replace(
+            "-A INPUT -j BANLIEUE_SBX_INPUT\n-A INPUT -i lo -j ACCEPT\n",
+            "-A INPUT -i lo -j ACCEPT\n-A INPUT -j BANLIEUE_SBX_INPUT\n",
+        );
+        h.put_iptables("filter", &filter);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        assert!(
+            p.contains("not first") && p.contains("BANLIEUE_SBX_INPUT"),
+            "{p}"
+        );
+    }
+
+    #[test]
+    fn preflight_does_not_mistake_a_longer_chain_name_for_ours() {
+        let h = host_with_rules();
+        let filter = GOOD_FILTER.replace("-N BANLIEUE_SBX_INPUT\n", "-N BANLIEUE_SBX_INPUT2\n");
+        h.put_iptables("filter", &filter);
+        let p = preflight_problems(&h, &isolating_settings(&h));
+        assert!(
+            p.contains("BANLIEUE_SBX_INPUT") && p.contains("absent"),
+            "{p}"
+        );
+    }
+
     fn opts() -> Options {
         Options::default()
     }

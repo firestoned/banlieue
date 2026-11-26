@@ -22,8 +22,8 @@ use crate::pins::Release;
 use crate::settings::Settings;
 use banlieue_provider_cloud_hypervisor::host_config::AttestationSection;
 use banlieue_provider_cloud_hypervisor::host_config::{
-    GuestsSection, HardeningSection, HostConfig, PathsSection, ProviderSection, RegistrySection,
-    TpmSection, VmmSection,
+    GuestsSection, HardeningSection, HostConfig, NetworkClass, NetworkClassTable, PathsSection,
+    ProviderSection, RegistrySection, TpmSection, VmmSection,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -278,7 +278,11 @@ pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result
             keep_unreferenced: r.keep_unreferenced,
         }),
         storage_classes: s.storage.iter().cloned().collect(),
-        network_classes: s.network.iter().cloned().collect(),
+        network_classes: s
+            .network
+            .iter()
+            .map(|(name, bridge)| (name.clone(), network_class(s, name, bridge)))
+            .collect(),
         hardening: hardening_section(&s.accepted_reduced),
         // Only the self-signed route: a request or an import writes the section
         // itself, once there is a CA for the provider to load (ADR-0146
@@ -290,6 +294,18 @@ pub fn host_config(s: &Settings, probe: &dyn Probe, release: &Release) -> Result
             .map(|a| attestation::section(a.ttl)),
     };
     serialize(&config)
+}
+
+/// A network class as the host config records it: the table form when the
+/// operator declared it isolated (ADR-0144), the plain bridge string otherwise.
+fn network_class(s: &Settings, name: &str, bridge: &str) -> NetworkClass {
+    if !s.isolate_ports.iter().any(|n| n == name) {
+        return NetworkClass::from(bridge);
+    }
+    NetworkClass::Table(NetworkClassTable {
+        bridge: bridge.to_string(),
+        isolate_ports: true,
+    })
 }
 
 /// The swtpm and swtpm_localca configuration: `(path, text)`.

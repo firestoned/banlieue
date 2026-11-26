@@ -17,6 +17,8 @@
 //!   are HTTP 500 (captured from v53.0);
 //! - `vm.boot` on a VM that is not created fails;
 //! - a tap cannot join a bridge the host does not have;
+//! - a tap that is not on a bridge cannot be isolated (`EINVAL`), and a
+//!   kernel without port isolation answers `EOPNOTSUPP`;
 //! - the OS disk needs the image in the cache.
 
 use crate::error::{Error, Result};
@@ -53,6 +55,10 @@ pub struct State {
     pub seeds: BTreeMap<std::path::PathBuf, Vec<u8>>,
     /// Taps and the bridge each joined.
     pub taps: BTreeMap<String, String>,
+    /// Taps in kernel port isolation.
+    pub isolated: BTreeSet<String>,
+    /// Make every isolation request fail, as a kernel without the feature.
+    pub isolate_fails: bool,
     /// Units and their state.
     pub units: BTreeMap<String, UnitState>,
     /// Why each failed unit failed.
@@ -211,6 +217,30 @@ impl FakeHost {
         Err(Error::Vmm(banlieue_cloud_hypervisor::Error::Io(
             std::io::Error::new(std::io::ErrorKind::NotFound, "api.sock: no such file"),
         )))
+    }
+}
+
+/// What the kernel says to isolating an interface that is not on a bridge.
+fn not_a_bridge_port(tap: &str) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        format!("{tap:?} is not a bridge port"),
+    )
+}
+
+impl FakeHost {
+    /// Isolate `tap` the way a request for an interface that is not on a
+    /// bridge goes: the real kernel refuses it, so this does too.
+    ///
+    /// # Errors
+    /// `InvalidInput` unless `tap` has joined a bridge.
+    pub fn isolate_unenslaved(&self, tap: &str) -> std::io::Result<()> {
+        let mut s = self.lock();
+        if !s.taps.contains_key(tap) {
+            return Err(not_a_bridge_port(tap));
+        }
+        s.isolated.insert(tap.to_string());
+        Ok(())
     }
 }
 
@@ -457,6 +487,15 @@ impl HostOps for FakeHost {
                 ));
             }
             s.taps.insert(nic.tap.clone(), nic.bridge.clone());
+            if !nic.isolate {
+                continue;
+            }
+            // As the real order: enslaved first, then isolated.
+            if s.isolate_fails {
+                let e = std::io::Error::from_raw_os_error(libc::EOPNOTSUPP);
+                return Err(Error::Io(crate::host::tap_error(nic, &e)));
+            }
+            s.isolated.insert(nic.tap.clone());
         }
         Ok(())
     }
@@ -466,6 +505,7 @@ impl HostOps for FakeHost {
         s.calls.push("remove_taps".into());
         for nic in &plan.nics {
             s.taps.remove(&nic.tap);
+            s.isolated.remove(&nic.tap);
         }
         Ok(())
     }

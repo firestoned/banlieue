@@ -140,6 +140,11 @@ pub struct NicPlan {
     pub tap: String,
     /// Bridge the tap joins, resolved from the host config.
     pub bridge: String,
+    /// The network class the NIC asked for, kept so a failure names it.
+    pub network_class: String,
+    /// Put the tap in kernel port isolation (ADR-0144 Decision 3): the
+    /// class says `isolate_ports` in this host's config, never the cluster.
+    pub isolate: bool,
     /// Guest MAC.
     pub mac: String,
 }
@@ -324,6 +329,8 @@ pub fn plan_machine(
             name: nic.name.clone(),
             tap: format!("{TAP_PREFIX}{}{index:x}", &hex[..TAP_UID_DIGITS]),
             bridge: bridge.to_string(),
+            network_class: nic.network_class.clone(),
+            isolate: config.isolate_ports(&nic.network_class),
             mac,
         });
     }

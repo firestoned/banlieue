@@ -29,6 +29,10 @@ use std::path::Path;
 const TUN_DEVICE: &str = "/dev/net/tun";
 /// `SIOCBRADDIF` from `<linux/sockios.h>`; `libc` does not export it.
 const SIOCBRADDIF: libc::c_ulong = 0x89a2;
+/// Sequence number of the one request each netlink socket carries.
+const NETLINK_SEQUENCE: u32 = 1;
+/// Room for the kernel's acknowledgement (an `NLMSG_ERROR` is 36 bytes).
+const NETLINK_REPLY_BYTES: usize = 256;
 /// Where the kernel lists network interfaces.
 const SYS_CLASS_NET: &str = "/sys/class/net";
 /// Bytes of `struct ifreq` after the name: the size of its union.
@@ -203,11 +207,76 @@ pub fn create_persistent_tap(name: &str, owner_uid: Option<u32>) -> io::Result<(
 /// # Errors
 /// The OS error from creating, enslaving or bringing it up.
 pub fn ensure_tap(name: &str, owner_uid: Option<u32>, bridge: &str) -> io::Result<()> {
+    ensure_tap_isolated(name, owner_uid, bridge, false)
+}
+
+/// [`ensure_tap`], and when `isolate` the port is also put in kernel port
+/// isolation (ADR-0144 Decision 3), every pass: a tap that exists without it
+/// is fixed. Isolation is set after the tap is on the bridge (the kernel
+/// refuses it on anything else) and before it is brought up, so the port
+/// never forwards a frame un-isolated. Not isolating leaves the port alone.
+///
+/// # Errors
+/// As [`ensure_tap`], or the error from [`isolate_port`].
+pub fn ensure_tap_isolated(
+    name: &str,
+    owner_uid: Option<u32>,
+    bridge: &str,
+    isolate: bool,
+) -> io::Result<()> {
     if !interface_exists(name) {
         create_persistent_tap(name, owner_uid)?;
     }
     add_to_bridge(bridge, name)?;
+    if isolate {
+        isolate_port(name)?;
+    }
     set_link_up(name)
+}
+
+/// Put the bridge port `name` in kernel port isolation: an isolated port
+/// exchanges frames only with non-isolated ports. An `RTM_SETLINK` request
+/// with `IFLA_BRPORT_ISOLATED`, so it works with `/sys` read-only and needs
+/// only `CAP_NET_ADMIN`. Already isolated is success.
+///
+/// # Errors
+/// `InvalidInput` for an invalid name, `NotFound` if the interface does not
+/// exist, `InvalidInput` if it is not on a bridge (as the kernel would
+/// refuse), or the OS error from the kernel (`EOPNOTSUPP` on a kernel
+/// without the feature).
+pub fn isolate_port(name: &str) -> io::Result<()> {
+    if !valid_ifname(name) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name:?} is not a valid interface name"),
+        ));
+    }
+    if master_of(name).is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{name:?} is not a bridge port"),
+        ));
+    }
+    let probe = control_socket()?;
+    let index = rustix::net::netdevice::name_to_index(&probe, name).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("interface {name:?} not found: {e}"),
+        )
+    })?;
+    let index = i32::try_from(index)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "interface index overflow"))?;
+    let sock = rustix::net::socket_with(
+        AddressFamily::NETLINK,
+        SocketType::RAW,
+        SocketFlags::CLOEXEC,
+        None, // NETLINK_ROUTE
+    )?;
+    let request = crate::netlink::set_port_isolated(NETLINK_SEQUENCE, index, true);
+    rustix::net::send(&sock, &request, rustix::net::SendFlags::empty())?;
+    let mut reply = [0u8; NETLINK_REPLY_BYTES];
+    let (read, _) = rustix::net::recv(&sock, &mut reply, rustix::net::RecvFlags::empty())?;
+    crate::netlink::parse_ack(&reply[..read.min(NETLINK_REPLY_BYTES)])
 }
 
 /// Delete the persistent tap called `name`. Absent is success.

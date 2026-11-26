@@ -61,6 +61,39 @@ const BYTES_PER_GIB: u64 = 1 << 30;
 /// after each use; never the shared `/tmp`.
 const SCRATCH_DIR: &str = ".host-scratch";
 
+/// Under a bridge in sysfs: its member ports.
+const BRIDGE_PORTS_DIR: &str = "brif";
+/// Under a bridge port in sysfs: present when the kernel can isolate it.
+const BRPORT_ISOLATED: &str = "brport/isolated";
+
+/// The host rules of ADR-0144 Decision 6. The recipe in the
+/// `cloud-hypervisor-sandbox-segment` guide is the contract: these names and
+/// positions must match it, and the other way round.
+///
+/// The program that lists the ruleset, and the flag that lists it.
+const IPTABLES: &str = "iptables";
+/// `iptables`' flag selecting a table, and its flag listing rules.
+const IPTABLES_TABLE_FLAG: &str = "-t";
+/// The list flag.
+const IPTABLES_LIST_FLAG: &str = "-S";
+/// The filter table, `iptables`' default.
+const TABLE_FILTER: &str = "filter";
+/// The nat table.
+const TABLE_NAT: &str = "nat";
+/// The sandbox segment's INPUT chain (filter).
+const CHAIN_SBX_INPUT: &str = "BANLIEUE_SBX_INPUT";
+/// The sandbox segment's FORWARD chain (filter).
+const CHAIN_SBX_FORWARD: &str = "BANLIEUE_SBX_FORWARD";
+/// The sandbox segment's NAT chain (nat).
+const CHAIN_SBX_NAT: &str = "BANLIEUE_SBX_NAT";
+/// Each owned chain, with its table and the built-in chain that must jump to
+/// it from position 1.
+const SBX_CONTRACT: [(&str, &str, &str); 3] = [
+    (TABLE_FILTER, "INPUT", CHAIN_SBX_INPUT),
+    (TABLE_FILTER, "FORWARD", CHAIN_SBX_FORWARD),
+    (TABLE_NAT, "POSTROUTING", CHAIN_SBX_NAT),
+];
+
 /// The device the provider opens to create taps; the tmpfiles.d entry
 /// creates it, and the provider unit's `DeviceAllow=` names it.
 const TUN_DEVICE: &str = "/dev/net/tun";
@@ -264,6 +297,8 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
             ));
         }
     }
+    bad.extend(isolation_problems(probe, s));
+    bad.extend(firewall_problems(probe, s));
     let (base, end) = (s.uid_base, s.uid_end());
     for line in probe.getent_all("passwd") {
         let (Some(name), Some(uid)) = (
@@ -346,6 +381,131 @@ pub fn preflight(probe: &dyn Probe, s: &Settings) -> Result<(), Error> {
     }
     note("preflight ok");
     Ok(())
+}
+
+/// Whether the kernel can isolate bridge ports, for each class declared
+/// `isolate_ports` (ADR-0144 Decision 3): isolation that is configured and not
+/// enforced is a refusal, never a silent pass.
+///
+/// A kernel that supports it exposes `<port>/brport/isolated` on every bridge
+/// port, so one member port of the class's bridge is the probe. A bridge with
+/// no member port has nothing to probe and is refused too.
+fn isolation_problems(probe: &dyn Probe, s: &Settings) -> Vec<String> {
+    let mut bad = Vec::new();
+    for (name, bridge) in s
+        .network
+        .iter()
+        .filter(|(name, _)| s.isolate_ports.contains(name))
+    {
+        let net = Path::new(SYS_CLASS_NET);
+        let ports = probe.list(&net.join(bridge).join(BRIDGE_PORTS_DIR));
+        let Some(port) = ports.first() else {
+            bad.push(format!(
+                "network class {name} -> {bridge}: isolate_ports is set but the bridge has no member port,                  so the kernel's port isolation cannot be probed: attach a port first (the installed hosts keep                  a dummy anchor port on their bridges)"
+            ));
+            continue;
+        };
+        if probe.exists(&net.join(port).join(BRPORT_ISOLATED)) {
+            note(format!(
+                "network class {name}: kernel port isolation available"
+            ));
+            continue;
+        }
+        bad.push(format!(
+            "network class {name} -> {bridge}: isolate_ports is set but this kernel has no \
+             {BRPORT_ISOLATED} on bridge port {port}: drop isolate_ports for the class or run a kernel \
+             with bridge port isolation (Linux 4.18 or later with CONFIG_BRIDGE)"
+        ));
+    }
+    bad
+}
+
+/// Whether the host carries the rules of ADR-0144 Decision 6, for each class
+/// declared `isolate_ports`: port isolation stops a sandbox reaching another
+/// sandbox, and these rules stop it reaching the host and the uplink.
+///
+/// Read-only (`iptables -S`, through [`Probe::query`]). A ruleset that cannot
+/// be read fails closed. A class that is not isolated is never probed.
+fn firewall_problems(probe: &dyn Probe, s: &Settings) -> Vec<String> {
+    let classes: Vec<&String> = s
+        .network
+        .iter()
+        .map(|(name, _)| name)
+        .filter(|name| s.isolate_ports.contains(name))
+        .collect();
+    if classes.is_empty() {
+        return Vec::new();
+    }
+    let issues = ruleset_issues(probe);
+    let mut bad = Vec::new();
+    for name in classes {
+        if issues.is_empty() {
+            note(format!(
+                "network class {name}: sandbox segment host rules present"
+            ));
+        }
+        bad.extend(issues.iter().map(|issue| {
+            format!(
+                "network class {name}: isolate_ports is set but {issue}; install the host rules \
+                 of the cloud-hypervisor-sandbox-segment guide first (ADR-0144 Decision 6)"
+            )
+        }));
+    }
+    bad
+}
+
+/// What is wrong with the host ruleset against [`SBX_CONTRACT`], independent
+/// of any class.
+fn ruleset_issues(probe: &dyn Probe) -> Vec<String> {
+    let mut issues = Vec::new();
+    for table in [TABLE_FILTER, TABLE_NAT] {
+        let args: Vec<&str> = if table == TABLE_FILTER {
+            vec![IPTABLES_LIST_FLAG]
+        } else {
+            vec![IPTABLES_TABLE_FLAG, table, IPTABLES_LIST_FLAG]
+        };
+        let Some(text) = probe.query(&Cmd::new(IPTABLES, &args)) else {
+            issues.push(format!(
+                "the {table} table cannot be read ({IPTABLES} {} failed or {IPTABLES} is not installed), \
+                 so the rules cannot be verified",
+                args.join(" ")
+            ));
+            continue;
+        };
+        for (_, hook, chain) in SBX_CONTRACT.iter().filter(|(t, ..)| *t == table) {
+            issues.extend(chain_issue(&text, table, hook, chain));
+        }
+    }
+    issues
+}
+
+/// The problem with one owned chain in one table's `iptables -S` output:
+/// absent, not jumped to, or jumped to from somewhere other than position 1
+/// of its built-in chain.
+fn chain_issue(text: &str, table: &str, hook: &str, chain: &str) -> Option<String> {
+    let declared = format!("-N {chain}");
+    if !text.lines().any(|l| l.trim() == declared) {
+        return Some(format!("chain {chain} is absent from the {table} table"));
+    }
+    let jump = ["-A", hook, "-j", chain];
+    let mut hook_rules = text
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>())
+        .filter(|w| w.first() == Some(&"-A") && w.get(1) == Some(&hook));
+    if hook_rules.next().is_some_and(|w| w == jump) {
+        return None;
+    }
+    let jumped = text
+        .lines()
+        .any(|l| l.split_whitespace().collect::<Vec<_>>() == jump);
+    if jumped {
+        return Some(format!(
+            "the jump to {chain} is not first in {hook} ({table} table)"
+        ));
+    }
+    Some(format!(
+        "there is no jump to {chain} from {hook} ({table} table)"
+    ))
 }
 
 /// What the host's systemd cannot enforce, against what the operator
