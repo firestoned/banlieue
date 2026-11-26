@@ -42,6 +42,15 @@
 //! nor gets destroyed. A NIC of ours that such a VM holds is left with it
 //! (ARM refuses to delete a NIC in use).
 //!
+//! # A policy-governed subscription (ADR-0172)
+//!
+//! The `Provider`'s extra tags go on the NIC and VM beside the ownership
+//! tags (which always win), its disk encryption set on the OS disk, and its
+//! `encryptionAtHost` on the VM. They are read from the `Provider` at create
+//! time, like the subscription and resource group, never from the
+//! `AzureVirtualMachine`, so whoever writes the infra object cannot drop
+//! them.
+//!
 //! # Conditions
 //!
 //! - `Ready`: the VM exists, provisioning succeeded and it is at its desired
@@ -82,7 +91,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use kube::{ResourceExt, api::Api, runtime::controller::Action};
 use tracing::{debug, info, warn};
 
-use crate::client::azure_connection;
+use crate::client::{azure_connection, check_governance};
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::reconciler::resources::{OWNER_KIND, OwnedKind, delete_owned, owned_by};
@@ -172,21 +181,32 @@ pub struct Target {
     pub provider_namespace: String,
     /// The `Provider`'s name.
     pub provider_name: String,
+    /// Extra tags on every resource, beside the ownership tags (ADR-0172).
+    pub extra_tags: BTreeMap<String, String>,
+    /// The disk encryption set for every OS disk (ADR-0172).
+    pub disk_encryption_set_id: Option<String>,
+    /// `securityProfile.encryptionAtHost` on every VM (ADR-0172).
+    pub encryption_at_host: bool,
 }
 
 impl Target {
     /// The target `provider` declares.
     ///
     /// # Errors
-    /// [`Error::Invalid`] without `spec.connection.azure`.
+    /// [`Error::Invalid`] without `spec.connection.azure`, or when its
+    /// governance settings are invalid ([`check_governance`]).
     pub fn from_provider(provider: &Provider) -> Result<Self> {
         let azure = azure_connection(&provider.spec.connection)?;
+        check_governance(azure)?;
         Ok(Self {
             subscription_id: azure.subscription_id.clone(),
             resource_group: azure.resource_group.clone(),
             location: azure.location.clone(),
             provider_namespace: provider.namespace().unwrap_or_default(),
             provider_name: provider.name_any(),
+            extra_tags: azure.tags.clone(),
+            disk_encryption_set_id: azure.disk_encryption_set_id.clone(),
+            encryption_at_host: azure.encryption_at_host,
         })
     }
 
@@ -540,6 +560,17 @@ async fn create(
     let owner = target.ownership(m.uid, m.namespace);
     let nic = nic_name(m.uid);
     let vm = vm_name(m.uid);
+    // The ownership tags win; `from_provider` already refused a set that
+    // could not merge, so this fails only on a hand-built `Target`.
+    let tags = match owner.merged_with(&target.extra_tags) {
+        Ok(tags) => tags,
+        Err(e) => {
+            return Created::Refused {
+                reason: reasons::CREATE_REFUSED,
+                message: e.to_string(),
+            };
+        }
+    };
     let resources = match api.list_resources(&target.resource_group).await {
         Ok(r) => r,
         Err(e) => return Created::Error(e),
@@ -562,7 +593,7 @@ async fn create(
                 location: target.location.clone(),
                 subnet_id: spec.subnet_id.clone(),
                 accelerated_networking: spec.accelerated_networking,
-                tags: owner.to_map(),
+                tags: tags.clone(),
             };
             info!(%nic, "creating NIC");
             match api.put_nic(&target.resource_group, &nic, &request).await {
@@ -598,7 +629,9 @@ async fn create(
         ssh_public_key,
         custom_data: spec.user_data.clone().unwrap_or_default().into_bytes(),
         trusted_launch: spec.trusted_launch,
-        tags: owner.to_map(),
+        tags,
+        disk_encryption_set_id: target.disk_encryption_set_id.clone(),
+        encryption_at_host: target.encryption_at_host,
     };
     info!(%vm, zone = %spec.zone, size = %spec.size, "creating VM");
     match api.put_vm(&target.resource_group, &vm, &request).await {

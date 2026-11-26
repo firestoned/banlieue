@@ -9,6 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 | `rbac/clusterrole.yaml` | The provider's shared ClusterRole. `banlieue bootstrap operator` installs it; the operator binds it to each azure `Provider`'s ServiceAccount. It grants **no** Secret or ConfigMap access ([ADR-0159](../../docs/adr/0159-cloud-credentials-by-workload-identity-federation.md) Decision 1). |
 | `role-definition.json` | An Azure custom role with exactly the actions the runtime provider calls ([ADR-0159](../../docs/adr/0159-cloud-credentials-by-workload-identity-federation.md) Decision 3, [ADR-0164](../../docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md)). |
 | `publisher-role-definition.json` | The image publisher's own Azure custom role, for the publish Job ([ADR-0162](../../docs/adr/0162-publishing-a-vmimage-into-a-cloud.md) Decision 1). Assigned to a **separate** identity at the gallery's resource group. |
+| `disk-encryption-set-reader-role-definition.json` | Only when the `Provider` names a disk encryption set (customer-managed keys, [ADR-0172](../../docs/adr/0172-azure-policy-governed-subscriptions.md) Decision 6): `Microsoft.Compute/diskEncryptionSets/read`, assigned **on the set** to both identities. |
 
 ## Credential
 
@@ -107,9 +108,49 @@ deleted once the version exists. The runtime provider keeps only
 what was published. `Microsoft.Compute/locations/capsOperations/read` is the
 status read of a gallery's long-running operations.
 
+## A policy-governed subscription (ADR-0172)
+
+**Customer-managed keys.** When `spec.connection.azure.diskEncryptionSetId`
+names a disk encryption set, every OS disk, upload disk, snapshot and image
+version banlieue creates names it, and ARM checks that the caller may read
+the set (a linked access check). The set is often in the security team's
+resource group, so neither main role is widened to it: a third, single-action
+role is assigned on the set itself, to both identities.
+
+```sh
+az role definition create --role-definition deploy/provider-azure/disk-encryption-set-reader-role-definition.json
+for id in <clientId> <publisher clientId>; do
+  az role assignment create --assignee "$id" \
+    --role "banlieue Azure disk encryption set reader" \
+    --scope <diskEncryptionSetId>
+done
+```
+
+Edit `AssignableScopes` to the set's resource group first. The set must be in
+the `Provider`'s subscription and region (Azure's restriction; admission and
+the provider refuse another subscription). Granting the set's own managed
+identity access to the key in Key Vault is the key owner's step; banlieue
+never touches the key.
+
+**Encryption at host.** `spec.connection.azure.encryptionAtHost: true` needs
+no extra action: it is part of `virtualMachines/write`. It needs the
+subscription feature, registered once by a subscription owner (banlieue does
+not do it):
+
+```sh
+az feature register --namespace Microsoft.Compute --name EncryptionAtHost
+az feature show --namespace Microsoft.Compute --name EncryptionAtHost --query properties.state
+az provider register --namespace Microsoft.Compute
+```
+
+**Required tags.** `spec.connection.azure.tags` need no extra action: tags
+are part of each resource's own `write`.
+
 ## What this role does not hold
 
 No snapshot, disk import, image or gallery write: publishing a `VMImage` into
 Azure is the image publisher's job, under a **separate** identity and role
 ([ADR-0162](../../docs/adr/0162-publishing-a-vmimage-into-a-cloud.md)). No
-resource-group create or delete, no role assignment, no Key Vault access.
+resource-group create or delete, no role assignment, no Key Vault access,
+and no access to a disk encryption set beyond reading it (the separate
+reader role above).

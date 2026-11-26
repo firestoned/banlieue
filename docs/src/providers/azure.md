@@ -293,6 +293,81 @@ A `VMClass` with no `instanceSizes` entry is **not schedulable** on this
 one zone; network `perZone` entries are keyed by `zone` (`"1"`, `"2"`) on a
 cloud `Provider`, not by `datacenter` and `cluster`.
 
+### In a subscription governed by Azure Policy
+
+Enterprise subscriptions often carry Azure Policy assignments with effect
+`deny` that refuse a resource banlieue would otherwise create. Three are
+handled by the `Provider` itself
+([ADR-0172](https://github.com/firestoned/banlieue/blob/main/docs/adr/0172-azure-policy-governed-subscriptions.md)); all three
+live under `connection.azure` and apply to every resource the `Provider`
+creates, including the [publish Job](#publishing-images)'s:
+
+```yaml
+spec:
+  connection:
+    azure:
+      # ... tenantId, clientId, subscriptionId, location, resourceGroup ...
+      tags:                                       # required-tag policies
+        cost-centre: "1234"
+        owner: platform-team
+      diskEncryptionSetId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-keys/providers/Microsoft.Compute/diskEncryptionSets/banlieue-des
+      encryptionAtHost: true                      # encryption-at-host policies
+```
+
+| Policy | Setting | What banlieue does |
+| --- | --- | --- |
+| Required tags | `tags` | Puts them on the NIC, the VM, and the publish Job's image definition, upload disk, snapshot and image version, beside its own ownership tags. **Not the OS disk**: Azure creates it from the VM and does not copy the VM's tags (see below). |
+| Customer-managed keys | `diskEncryptionSetId` | Names the disk encryption set on the OS disk (`storageProfile.osDisk.managedDisk.diskEncryptionSet`), the upload disk and snapshot (`encryption`), and the image version's replica. |
+| Encryption at host | `encryptionAtHost` | Sets `securityProfile.encryptionAtHost` on every VM, beside Trusted Launch when the class asks for it. |
+
+Rules, enforced by admission (`deploy/admission/provider-azure-governance.yaml`)
+and again by the provider, which sets `Ready=False` with reason
+`ConnectionInvalid` and creates nothing while one is broken:
+
+- **banlieue's own tags always win.** A tag name starting with `banlieue-`
+  is refused **in any case**: Azure tag names are case-insensitive, so
+  `Banlieue-Owner-Uid` would replace the ownership tag banlieue deletes by.
+  Two names that differ only in case are refused for the same reason.
+- At most 45 tags (Azure allows 50 per resource; banlieue keeps five), names
+  of 1 to 512 characters without `<`, `>`, `%`, `&`, `\`, `?`, `/`, values of
+  at most 256.
+- The disk encryption set must be a `Microsoft.Compute/diskEncryptionSets`
+  resource **in the `Provider`'s subscription and region** (an Azure
+  restriction). Its resource group may differ. Both identities, the
+  provider's and the publisher's, need `Microsoft.Compute/diskEncryptionSets/read`
+  on it: the single-action role in
+  [`deploy/provider-azure/`](https://github.com/firestoned/banlieue/tree/main/deploy/provider-azure),
+  assigned on the set. The set's own managed identity needs access to the key;
+  that grant is the key owner's.
+- Encryption at host needs the subscription feature
+  `Microsoft.Compute/EncryptionAtHost`, registered once by a subscription
+  owner (`az feature register --namespace Microsoft.Compute --name EncryptionAtHost`,
+  then `az provider register --namespace Microsoft.Compute`), and every size
+  in `instanceSizes` must support it. banlieue does not register it.
+
+The settings apply to resources created after the change. Existing VMs are
+not re-tagged, re-keyed or moved to host encryption, and an image version
+published with a customer-managed key stays encrypted with it (Azure does not
+allow going back).
+
+Not handled, and a conversation with whoever owns the policies:
+
+- **Required tags on managed disks**: the OS disk is created by Azure from
+  the VM's create and carries none of its tags, so a required-tag `deny`
+  policy that covers `Microsoft.Compute/disks` still refuses the VM. Exempt
+  disks in the `Provider`'s resource group from that assignment, or assign
+  Azure's `modify` built-in "Inherit a tag from the resource group if missing"
+  there (set the tags on the resource group), which tags the disk as it is
+  created.
+
+- **`DeployIfNotExists` VM extensions** (monitoring agents, Defender): VMs are
+  created with `provisionVMAgent: false` because the image reports readiness
+  itself, so an extension cannot be deployed. Exempt the VM resource group,
+  or put the agent in the image.
+- **Denying public network access on managed disks**: the publish Job uploads
+  through a SAS on the managed-disk upload endpoint. Exempt the gallery's
+  resource group, or publish images by hand and use a `Template` source.
+
 ## 6. The image, the class and a VM
 
 [`examples/31-virtualmachine-azure.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/31-virtualmachine-azure.yaml)
@@ -819,7 +894,10 @@ Boot diagnostics are always on, so the serial log is there when a VM fails:
 | The token exchange fails to fetch the issuer, or every federated workload stopped at once | The issuer's documents are not reachable from the internet, or the published JWKS is stale after a signing-key rotation. Republish `jwks.json`. |
 | `AuthorizationFailed` on a subnet or gallery | The identity has the custom role on the VMs' resource group only. Grant subnet join and gallery read where those live (step 4). |
 | `AuthorizationFailed` on `skus/read` or `locations/usages/read` | Your tenant does not allow these subscription-scoped reads through a resource-group assignment. Assign those two actions at the subscription (step 4). |
-| Admission refuses the `Provider` | `connection.azure` missing, a `credentialsRef` set, an endpoint that is not `https://`, or an `endpoint` or `authorityHost` outside the cloud table in step 5. |
+| Admission refuses the `Provider` | `connection.azure` missing, a `credentialsRef` set, an endpoint that is not `https://`, or an `endpoint` or `authorityHost` outside the cloud table in step 5. Or a governance setting: a `banlieue-` tag, more than 45 tags, or a `diskEncryptionSetId` that is not a disk encryption set in the `Provider`'s subscription ([In a subscription governed by Azure Policy](#in-a-subscription-governed-by-azure-policy)). |
+| `VMCreated=False`, reason `CreateRefused`, `RequestDisallowedByPolicy` | An Azure Policy `deny` assignment refused the create. The message names the policy. Required tags, customer-managed keys and encryption at host are `Provider` settings ([In a subscription governed by Azure Policy](#in-a-subscription-governed-by-azure-policy)); anything else is for the policy's owner. |
+| `VMCreated=False`, reason `CreateRefused`, naming `EncryptionAtHost` | `encryptionAtHost: true` on a subscription without the `Microsoft.Compute/EncryptionAtHost` feature registered, or a size that does not support it. Register the feature, or map supported sizes. |
+| `LinkedAuthorizationFailed` naming `diskEncryptionSets/read` | The identity (provider or publisher) cannot read the disk encryption set. Assign the disk encryption set reader role on the set to both. |
 
 ## Security notes
 

@@ -9,6 +9,7 @@
 //! did in the roadmap 23 phase 0 spike:
 //!
 //! - [`tags`]: ownership tags under the names Azure accepts (ADR-0158).
+//! - [`encryption`]: the disk encryption set a `Provider` names (ADR-0172).
 //! - [`error`]: ARM error bodies and statuses as typed errors.
 //! - [`retry`]: the `Retry-After` header, parsed and capped.
 //! - [`operation`]: long-running operation handles and statuses.
@@ -34,6 +35,7 @@
 pub mod api;
 pub mod auth;
 pub mod client;
+pub mod encryption;
 pub mod error;
 pub mod fake;
 pub mod fake_blob;

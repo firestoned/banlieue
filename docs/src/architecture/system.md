@@ -104,6 +104,7 @@ flowchart LR
     data-asset-azure-virtual-machine-cr["AzureVirtualMachine Custom Resource"]
     system-azure-guest["Azure Trusted Launch guest"]
     network-azure-disk-upload["Azure managed-disk upload endpoint (external)"]
+    data-asset-azure-disk-encryption-set["Azure disk encryption set (external, admin-owned)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -303,6 +304,8 @@ flowchart LR
     service-banlieue-controller --> data-asset-azure-virtual-machine-cr
     service-banlieue-controller --> data-asset-provider-cr
     service-azure-image-publisher -->|HTTPS| network-azure-disk-upload
+    service-provider-azure -->|HTTPS| data-asset-azure-disk-encryption-set
+    service-azure-image-publisher -->|HTTPS| data-asset-azure-disk-encryption-set
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

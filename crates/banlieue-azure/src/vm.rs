@@ -17,12 +17,17 @@
 //!   itself (ADR-0163).
 //! - an SSH public key: Azure requires one when password login is off. The
 //!   provider passes a key whose private half it discards.
+//!
+//! In a policy-governed subscription (ADR-0172) the OS disk may name a disk
+//! encryption set (`managedDisk.diskEncryptionSet.id`) and the
+//! `securityProfile` may set `encryptionAtHost`.
 
 use std::collections::BTreeMap;
 
 use base64::Engine as _;
 use serde_json::{Value, json};
 
+use crate::encryption::parse_disk_encryption_set_id;
 use crate::error::{Error, Result};
 use crate::tags::validate_tags;
 
@@ -96,14 +101,20 @@ pub struct VmRequest {
     pub trusted_launch: bool,
     /// Tags, ownership tags included.
     pub tags: BTreeMap<String, String>,
+    /// Resource ID of the disk encryption set (customer-managed key) for
+    /// the OS disk; `None` for platform-managed keys (ADR-0172 Decision 2).
+    pub disk_encryption_set_id: Option<String>,
+    /// `securityProfile.encryptionAtHost` (ADR-0172 Decision 3).
+    pub encryption_at_host: bool,
 }
 
 impl VmRequest {
     /// The body of `PUT .../virtualMachines/{name}`.
     ///
     /// # Errors
-    /// [`Error::InvalidRequest`] for a missing field, a zero disk size or
-    /// oversized `customData`; [`Error::InvalidTag`] for a tag Azure refuses.
+    /// [`Error::InvalidRequest`] for a missing field, a zero disk size,
+    /// oversized `customData` or a malformed disk encryption set ID;
+    /// [`Error::InvalidTag`] for a tag Azure refuses.
     pub fn to_body(&self) -> Result<Value> {
         for (field, value) in [
             ("location", &self.location),
@@ -130,6 +141,9 @@ impl VmRequest {
             )));
         }
         validate_tags(&self.tags)?;
+        if let Some(id) = &self.disk_encryption_set_id {
+            parse_disk_encryption_set_id(id)?;
+        }
 
         let mut os_profile = json!({
             "computerName": self.computer_name,
@@ -166,11 +180,18 @@ impl VmRequest {
             ]},
             "diagnosticsProfile": {"bootDiagnostics": {"enabled": true}}
         });
+        if let Some(id) = &self.disk_encryption_set_id {
+            properties["storageProfile"]["osDisk"]["managedDisk"]["diskEncryptionSet"] =
+                json!({"id": id});
+        }
         if self.trusted_launch {
             properties["securityProfile"] = json!({
                 "securityType": "TrustedLaunch",
                 "uefiSettings": {"secureBootEnabled": true, "vTpmEnabled": true}
             });
+        }
+        if self.encryption_at_host {
+            properties["securityProfile"]["encryptionAtHost"] = Value::Bool(true);
         }
 
         Ok(json!({

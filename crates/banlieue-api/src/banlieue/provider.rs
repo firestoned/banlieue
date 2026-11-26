@@ -419,6 +419,39 @@ pub struct AzureConnection {
     /// (`PublisherNotConfigured`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<AzurePublisherIdentity>,
+    /// Extra tags put on every resource this `Provider` creates by name: the
+    /// NIC, the VM, and the publish Job's image definition, upload disk,
+    /// snapshot and image version (ADR-0172 Decision 1). For a subscription
+    /// whose Azure Policy denies a resource without them. Not the OS disk,
+    /// which Azure creates from the VM without copying its tags.
+    ///
+    /// banlieue's own ownership tags always win: a name starting with
+    /// `banlieue-` (in any case, since Azure folds tag-name case) is refused,
+    /// as are two names that differ only in case, a name containing
+    /// `<>%&\?/`, a name over 512 or a value over 256 characters, and more
+    /// than 45 entries. An invalid set sets the `Provider` `Ready=False`
+    /// (`ConnectionInvalid`) and nothing is created. Applies to resources
+    /// created afterwards; existing ones are not re-tagged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("maxProperties" = 45))]
+    pub tags: BTreeMap<String, String>,
+    /// Resource ID of a disk encryption set (customer-managed key) that
+    /// encrypts every OS disk, upload disk, snapshot and image version this
+    /// `Provider` creates (ADR-0172 Decision 2):
+    /// `/subscriptions/<subscriptionId>/resourceGroups/<rg>/providers/Microsoft.Compute/diskEncryptionSets/<name>`.
+    /// It must be in this `Provider`'s subscription and region (an Azure
+    /// restriction); its resource group may differ. Both the provider's
+    /// and the publisher's identities need
+    /// `Microsoft.Compute/diskEncryptionSets/read` on it. Unset:
+    /// platform-managed keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disk_encryption_set_id: Option<String>,
+    /// Create every VM with `securityProfile.encryptionAtHost` (ADR-0172
+    /// Decision 3): temp disks and disk caches encrypted on the host. The
+    /// subscription must have the `Microsoft.Compute/EncryptionAtHost`
+    /// feature registered, and every mapped instance size must support it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub encryption_at_host: bool,
 }
 
 /// An existing Azure Compute Gallery, declared by the admin (ADR-0162

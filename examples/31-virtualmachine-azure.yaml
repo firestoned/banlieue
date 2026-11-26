@@ -70,6 +70,16 @@ spec:
       #   name: banlieue
       # publisher:
       #   clientId: 00000000-0000-0000-0000-000000000000
+      # Only in a subscription whose Azure Policy denies resources without
+      # them (ADR-0172): extra tags on everything this Provider creates
+      # (never a name starting with banlieue-, in any case), a disk
+      # encryption set in this subscription and region for every disk,
+      # snapshot and image version, and encryption at host (needs the
+      # subscription feature Microsoft.Compute/EncryptionAtHost).
+      # tags:
+      #   cost-centre: "1234"
+      # diskEncryptionSetId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-keys/providers/Microsoft.Compute/diskEncryptionSets/banlieue-des
+      # encryptionAtHost: true
   capabilities:
     storageClasses:
       # A managed-disk SKU (ADR-0160).

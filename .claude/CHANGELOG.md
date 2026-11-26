@@ -1,5 +1,62 @@
 # Changelog
 
+## [2026-11-26 23:00] - Azure provider in a policy-governed subscription (ADR-0172)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0172-azure-policy-governed-subscriptions.md` (Accepted): extra tags, a customer-managed key
+  (disk encryption set) and encryption at host, all on the `Provider` (`spec.connection.azure`), never
+  on the `AzureVirtualMachine`; why the `Provider` over a storage class target, the `VMClass` or the
+  infra CR; the OS disk is not tagged (Azure does not copy the VM's tags); `DeployIfNotExists`
+  extensions are out of scope.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `AzureConnection.tags` (`maxProperties: 45`),
+  `diskEncryptionSetId`, `encryptionAtHost`.
+- `crates/banlieue-azure/src/encryption.rs`: `parse_disk_encryption_set_id`,
+  `check_disk_encryption_set_id` (shape and same subscription), `disk_encryption_body`.
+- `crates/banlieue-azure/src/tags.rs`: `validate_extra_tags`, `MAX_EXTRA_TAGS` (45),
+  `RESERVED_TAG_PREFIX` (`banlieue-`, refused in any case); `validate_tags` and `merged_with` refuse
+  names that differ only in case (Azure folds tag-name case).
+- `crates/banlieue-azure/src/vm.rs`: `VmRequest.disk_encryption_set_id`
+  (`osDisk.managedDisk.diskEncryptionSet.id`) and `encryption_at_host`
+  (`securityProfile.encryptionAtHost`, beside Trusted Launch).
+- `crates/banlieue-azure/src/gallery.rs`: `disk_encryption_set_id` on the upload disk and snapshot
+  (`properties.encryption`) and the image version (`targetRegions[0].encryption.osDiskImage`).
+- `crates/banlieue-azure/src/fake.rs`: refuses a malformed, unknown, foreign-subscription or other-region
+  disk encryption set (`add_disk_encryption_set`) and encryption at host until
+  `register_encryption_at_host`; records both for tests.
+- `crates/banlieue-provider-azure`: `check_governance` in `client.rs` (both factories and
+  `checked_azure_connection`: an invalid setting is `ConnectionInvalid`); `Target` carries the settings
+  and `create` merges the extra tags under the ownership tags for the NIC and VM; the publish Job takes
+  `--tags` (JSON) and `--disk-encryption-set-id` (`governance_from`, `PublishPlan::resource_tags`), passed
+  by `job_args` for a publish only.
+- `deploy/admission/provider-azure-governance.yaml` and `scripts/test-provider-azure-governance-policy.py`
+  (`make azure-governance-policy-test`, 24 cases).
+- `deploy/provider-azure/disk-encryption-set-reader-role-definition.json`: the one action
+  (`Microsoft.Compute/diskEncryptionSets/read`) both identities need, assigned on the set.
+- Tests: 48 new unit tests (banlieue-api 3, banlieue-azure 27, banlieue-provider-azure 18).
+
+### Changed
+- `crates/banlieue-azure/tests/live_arm.rs`: optional `AZURE_DISK_ENCRYPTION_SET_ID`,
+  `AZURE_ENCRYPTION_AT_HOST`.
+- `deploy/crds/banlieue.io_providers.yaml`, `docs/src/reference/api.md`: regenerated.
+- `docs/architecture/calm/architecture.json`: the admin's disk encryption set (data asset), two
+  relationships to it, four controls; diagrams regenerated.
+- `docs/src/providers/azure.md`: "In a subscription governed by Azure Policy", troubleshooting rows;
+  `deploy/provider-azure/README.md`, `deploy/admission/README.md`, `examples/31-virtualmachine-azure.yaml`.
+- `docs/src/security/threat-model.md`: full pass, stamp advanced to ADR-0172: A-16 and A-32, the key
+  owner, the §5 diagram, four TB-4 Azure rows, one TB-23 row, §7.36 (m), three §8 risks, one §9 item.
+- `.github/community/23-azure-provider.md` (phase G 🔶, new phase H), `ROADMAPS.md`.
+
+### Why
+An enterprise subscription with Azure Policy `deny` assignments for required tags, customer-managed
+keys or encryption at host refused every create banlieue sent.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new CRD fields; provider and publish Job images)
+- [ ] Config change only
+
 ## [2026-11-26 22:30] - CI publishes the `banlieue-azure-guest` image and each release names its digest
 
 **Author:** Erick Bourgeois

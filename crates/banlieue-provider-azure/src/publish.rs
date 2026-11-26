@@ -23,9 +23,16 @@
 //!    the version created from the snapshot and polled to a long deadline;
 //! 5. the snapshot and upload disk are deleted (finding 6).
 //!
+//! In a policy-governed subscription (ADR-0172) everything created also
+//! carries the `Provider`'s extra tags (`--tags`, a JSON object; the
+//! ownership and digest tags always win), and the upload disk, snapshot and
+//! version are encrypted with its disk encryption set
+//! (`--disk-encryption-set-id`).
+//!
 //! The result is one line of JSON on the termination log, which the
 //! provider's `VMImage` reconciler reads: never a token, never a SAS.
 
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -33,13 +40,14 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
+use banlieue_azure::encryption::check_disk_encryption_set_id;
 use banlieue_azure::gallery::{
     DISK_STATE_ACTIVE_UPLOAD, DISK_STATE_READY_TO_UPLOAD, DISK_STATE_UNATTACHED,
     GalleryImageVersionRequest, ImageDefinitionRequest, PROVISIONING_FAILED,
     PROVISIONING_SUCCEEDED, SnapshotRequest, UPLOAD_ACCESS_SECONDS, UploadDiskRequest, image_offer,
     is_valid_image_definition_name, is_valid_version_name, snapshot_name, upload_disk_name,
 };
-use banlieue_azure::tags::TAG_OWNER_UID;
+use banlieue_azure::tags::{TAG_OWNER_UID, validate_extra_tags};
 use banlieue_azure::upload::{HttpPageWriterFactory, UploadOptions, upload_pages};
 use banlieue_azure::{
     ArmClient, ArmConfig, DiskAccess, FederatedConfig, FederatedToken, OperationHandle,
@@ -151,6 +159,14 @@ pub struct PublishArgs {
     /// `<namespace>.<name>` of the `Provider`: the provider tag.
     #[arg(long)]
     pub provider: String,
+    /// The `Provider`'s extra tags, a JSON object of name to value, put on
+    /// everything created beside the ownership tags (ADR-0172 Decision 1).
+    #[arg(long)]
+    pub tags: Option<String>,
+    /// The `Provider`'s disk encryption set: encrypts the upload disk, the
+    /// snapshot and the version (ADR-0172 Decision 2).
+    #[arg(long)]
+    pub disk_encryption_set_id: Option<String>,
     /// The projected ServiceAccount token exchanged at Entra ID.
     #[arg(
         long,
@@ -288,10 +304,25 @@ pub struct PublishPlan {
     pub trusted_launch: bool,
     /// Ownership tags of everything created.
     pub tags: OwnershipTags,
+    /// The `Provider`'s extra tags, beside the ownership tags (ADR-0172).
+    pub extra_tags: BTreeMap<String, String>,
+    /// The `Provider`'s disk encryption set, if any (ADR-0172).
+    pub disk_encryption_set_id: Option<String>,
     /// The raw disk.
     pub source: PathBuf,
     /// Its expected SHA-256, lowercase hex.
     pub checksum_hex: String,
+}
+
+impl PublishPlan {
+    /// The tags of every resource this publish creates: the ownership tags
+    /// and the extra tags, the ownership tags winning.
+    ///
+    /// # Errors
+    /// [`PublishError::Azure`] with `InvalidTag` when they cannot merge.
+    pub fn resource_tags(&self) -> Result<BTreeMap<String, String>, PublishError> {
+        Ok(self.tags.merged_with(&self.extra_tags)?)
+    }
 }
 
 /// One delete.
@@ -497,7 +528,7 @@ async fn ensure_definition(
         location: t.location.clone(),
         offer: image_offer(&t.definition, plan.trusted_launch),
         trusted_launch: plan.trusted_launch,
-        tags: plan.tags.to_map(),
+        tags: plan.resource_tags()?,
     };
     info!(definition = %t.definition, trusted_launch = plan.trusted_launch, "creating the image definition");
     let handle = api
@@ -685,7 +716,8 @@ async fn ensure_uploaded_disk(
             let request = UploadDiskRequest {
                 location: t.location.clone(),
                 upload_size_bytes: layout.total_len,
-                tags: plan.tags.to_map(),
+                tags: plan.resource_tags()?,
+                disk_encryption_set_id: plan.disk_encryption_set_id.clone(),
             };
             info!(disk = %name, bytes = layout.total_len, "creating the upload disk");
             let handle = api
@@ -756,7 +788,8 @@ async fn ensure_snapshot(
     let request = SnapshotRequest {
         location: t.location.clone(),
         source_disk_id: disk_id,
-        tags: plan.tags.to_map(),
+        tags: plan.resource_tags()?,
+        disk_encryption_set_id: plan.disk_encryption_set_id.clone(),
     };
     info!(snapshot = %name, "creating the snapshot");
     let handle = api.put_snapshot(&t.resource_group, &name, &request).await?;
@@ -852,13 +885,14 @@ pub async fn publish(
         Existing::Create => {
             let snapshot_id = ensure_snapshot(api, writers, plan, layout, timings).await?;
             let t = &plan.target;
-            let mut tags = plan.tags.to_map();
+            let mut tags = plan.resource_tags()?;
             tags.insert(TAG_SOURCE_SHA256.to_string(), plan.checksum_hex.clone());
             let request = GalleryImageVersionRequest {
                 location: t.location.clone(),
                 snapshot_id,
                 end_of_life: None,
                 tags,
+                disk_encryption_set_id: plan.disk_encryption_set_id.clone(),
             };
             info!(version = %t.version, "creating the image version");
             // Observed by reading the version's provisioning state, which a
@@ -984,6 +1018,38 @@ pub fn target_from(args: &PublishArgs) -> Result<(Target, OwnershipTags), Publis
     ))
 }
 
+/// The extra tags and disk encryption set the flags carry (ADR-0172),
+/// checked: the tags as [`validate_extra_tags`] requires, the set in
+/// `--subscription-id`.
+///
+/// # Errors
+/// [`PublishError::InvalidArgument`] for `--tags` that is not a JSON object
+/// of strings or breaks a tag rule, or a `--disk-encryption-set-id` that is
+/// not a disk encryption set in the subscription.
+pub fn governance_from(
+    args: &PublishArgs,
+) -> Result<(BTreeMap<String, String>, Option<String>), PublishError> {
+    let tags: BTreeMap<String, String> = match args.tags.as_deref() {
+        None | Some("") => BTreeMap::new(),
+        Some(json) => serde_json::from_str(json).map_err(|e| {
+            PublishError::InvalidArgument(format!(
+                "--tags must be a JSON object of tag name to value: {e}"
+            ))
+        })?,
+    };
+    validate_extra_tags(&tags)
+        .map_err(|e| PublishError::InvalidArgument(format!("--tags: {e}")))?;
+    let des = args
+        .disk_encryption_set_id
+        .clone()
+        .filter(|id| !id.is_empty());
+    if let Some(id) = &des {
+        check_disk_encryption_set_id(id, &args.subscription_id)
+            .map_err(|e| PublishError::InvalidArgument(format!("--disk-encryption-set-id: {e}")))?;
+    }
+    Ok((tags, des))
+}
+
 /// Runs the flags' mode against `api` and `writers`, returning the
 /// termination log line.
 ///
@@ -1002,10 +1068,13 @@ pub async fn execute(
             let checksum = args.checksum.as_deref().ok_or_else(|| {
                 PublishError::InvalidArgument("--checksum is required to publish".to_string())
             })?;
+            let (extra_tags, disk_encryption_set_id) = governance_from(args)?;
             let plan = PublishPlan {
                 target,
                 trusted_launch: args.trusted_launch,
                 tags,
+                extra_tags,
+                disk_encryption_set_id,
                 source,
                 checksum_hex: parse_checksum(checksum)?,
             };

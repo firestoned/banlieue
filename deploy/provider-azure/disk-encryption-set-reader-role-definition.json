@@ -1,0 +1,14 @@
+{
+  "Name": "banlieue Azure disk encryption set reader",
+  "IsCustom": true,
+  "Description": "For a Provider that sets spec.connection.azure.diskEncryptionSetId (ADR-0172 Decision 6): the one action ARM's linked access check requires of a caller that names a disk encryption set on a disk, snapshot, VM or gallery image version. Assign it on the disk encryption set itself, to both the runtime provider's and the image publisher's identities. Grants nothing on the Key Vault or the key.",
+  "Actions": [
+    "Microsoft.Compute/diskEncryptionSets/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-keys"
+  ]
+}

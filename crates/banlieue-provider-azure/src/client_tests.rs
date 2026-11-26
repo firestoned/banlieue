@@ -174,4 +174,64 @@ mod tests {
         foreign.endpoint = "https://management.azure.com.evil.example".into();
         assert!(factory.build(&foreign).await.is_err());
     }
+
+    // ----- ADR-0172: governance settings are checked before any client -----
+
+    #[test]
+    fn a_governed_connection_is_accepted() {
+        let conn = test_support::connection(Some(test_support::governed_azure()));
+        assert!(checked_azure_connection(&conn).is_ok());
+        assert!(check_governance(&test_support::governed_azure()).is_ok());
+    }
+
+    /// An extra tag in banlieue's own namespace, in any case, could forge an
+    /// ownership tag on ARM's side: `ConnectionInvalid`, no client.
+    #[test]
+    fn a_tag_that_would_override_an_ownership_tag_is_connection_invalid() {
+        let mut azure = test_support::governed_azure();
+        azure
+            .tags
+            .insert("Banlieue-Owner-Uid".into(), "someone-else".into());
+        let err =
+            checked_azure_connection(&test_support::connection(Some(azure))).expect_err("refused");
+        assert_eq!(failure_reason(&err), reasons::CONNECTION_INVALID);
+        assert!(err.to_string().contains("tags"), "{err}");
+    }
+
+    #[test]
+    fn an_invalid_tag_name_is_connection_invalid() {
+        let mut azure = test_support::governed_azure();
+        azure.tags.insert("cost/centre".into(), "1".into());
+        assert!(check_governance(&azure).is_err());
+    }
+
+    #[test]
+    fn a_disk_encryption_set_in_another_subscription_is_connection_invalid() {
+        let mut azure = test_support::governed_azure();
+        azure.disk_encryption_set_id = Some(
+            "/subscriptions/00000000-0000-0000-0000-0000000000ff/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1".into(),
+        );
+        let err = check_governance(&azure).expect_err("refused");
+        assert_eq!(failure_reason(&err), reasons::CONNECTION_INVALID);
+        assert!(err.to_string().contains("diskEncryptionSetId"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_disk_encryption_set_is_connection_invalid() {
+        let mut azure = test_support::governed_azure();
+        azure.disk_encryption_set_id = Some("des-1".into());
+        assert!(check_governance(&azure).is_err());
+    }
+
+    #[tokio::test]
+    async fn both_factories_refuse_an_invalid_governance_setting() {
+        install_default_crypto_provider();
+        let mut azure = test_support::governed_azure();
+        azure.disk_encryption_set_id = Some("des-1".into());
+        let conn = test_support::connection(Some(azure));
+        let http = HttpClientFactory::new(TOKEN_FILE.into());
+        assert!(http.build(&conn).await.is_err());
+        let api: Arc<dyn ArmApi> = Arc::new(FakeArm::from_fixtures(LOCATION).expect("fake"));
+        assert!(StaticClientFactory::new(api).build(&conn).await.is_err());
+    }
 }

@@ -71,8 +71,11 @@ mod tests {
     }
 
     fn manifest(mode: Mode, trusted_launch: bool) -> Value {
+        manifest_for(mode, trusted_launch, &test_support::azure())
+    }
+
+    fn manifest_for(mode: Mode, trusted_launch: bool, azure: &AzureConnection) -> Value {
         let provider = test_support::provider(ProviderCapabilities::default());
-        let azure = test_support::azure();
         let image = vmimage();
         let artifact = artifact();
         let gallery = gallery();
@@ -85,7 +88,7 @@ mod tests {
             mode,
             vmimage: &image,
             provider: &provider,
-            azure: &azure,
+            azure,
             gallery: &gallery,
             publisher: &publisher,
             definition: "kairos",
@@ -347,5 +350,42 @@ mod tests {
             job_watch_selector(),
             "app.kubernetes.io/component=azure-publish"
         );
+    }
+
+    /// ADR-0172: a publish Job of a governed `Provider` carries its extra
+    /// tags (as JSON) and its disk encryption set.
+    #[test]
+    fn a_governed_publish_passes_the_tags_and_the_disk_encryption_set() {
+        let args = args_of(&manifest_for(
+            Mode::Publish,
+            true,
+            &test_support::governed_azure(),
+        ));
+        let tags: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&flag(&args, "--tags").expect("--tags")).expect("JSON");
+        assert_eq!(
+            tags.get(test_support::EXTRA_TAG.0).map(String::as_str),
+            Some(test_support::EXTRA_TAG.1)
+        );
+        assert_eq!(
+            flag(&args, "--disk-encryption-set-id").as_deref(),
+            Some(test_support::DES_ID)
+        );
+    }
+
+    /// Nothing is passed when nothing is configured, and a delete creates
+    /// nothing, so it gets neither.
+    #[test]
+    fn ungoverned_publishes_and_deletes_pass_no_governance_flags() {
+        let plain = args_of(&manifest(Mode::Publish, false));
+        assert!(!plain.iter().any(|a| a == "--tags"));
+        assert!(!plain.iter().any(|a| a == "--disk-encryption-set-id"));
+        let delete = args_of(&manifest_for(
+            Mode::Delete,
+            false,
+            &test_support::governed_azure(),
+        ));
+        assert!(!delete.iter().any(|a| a == "--tags"));
+        assert!(!delete.iter().any(|a| a == "--disk-encryption-set-id"));
     }
 }

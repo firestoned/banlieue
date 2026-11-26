@@ -89,6 +89,8 @@ mod tests {
             },
             trusted_launch: true,
             tags: tags_for(UID),
+            extra_tags: BTreeMap::new(),
+            disk_encryption_set_id: None,
             source: src.path.clone(),
             checksum_hex: src.sha.clone(),
         }
@@ -395,6 +397,7 @@ mod tests {
                 location: "eastus2".into(),
                 upload_size_bytes: layout.total_len,
                 tags: p.tags.to_map(),
+                disk_encryption_set_id: None,
             },
         )
         .await
@@ -444,6 +447,7 @@ mod tests {
                 location: "eastus2".into(),
                 upload_size_bytes: 8 * 1024 * 1024 + 512,
                 tags: p.tags.to_map(),
+                disk_encryption_set_id: None,
             },
         )
         .await
@@ -841,5 +845,179 @@ mod tests {
         let mut unique = suffixes.clone();
         unique.dedup();
         assert_eq!(unique.len(), AZURE_CLOUDS.len());
+    }
+
+    // ----- ADR-0172: a policy-governed subscription -----
+
+    const SUB: &str = "00000000-0000-0000-0000-000000000000";
+    const DES: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+
+    fn governed_plan(src: &Source) -> PublishPlan {
+        PublishPlan {
+            extra_tags: BTreeMap::from([("cost-centre".to_string(), "1234".to_string())]),
+            disk_encryption_set_id: Some(DES.into()),
+            ..plan(src)
+        }
+    }
+
+    /// The definition and version carry the extra tag beside the ownership
+    /// and digest tags, and the version is encrypted with the set.
+    #[tokio::test]
+    async fn a_governed_publish_tags_and_encrypts_what_it_creates() {
+        let src = source();
+        let p = governed_plan(&src);
+        let arm = fake();
+        arm.add_disk_encryption_set(DES, "eastus2");
+        let writers = Keeping::new(&arm, &p);
+        publish(arm.as_ref(), &writers, &p, &timings())
+            .await
+            .unwrap();
+        let version = arm
+            .get_gallery_image_version(RG, GAL, DEF, &p.target.version)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(version.tags["cost-centre"], "1234");
+        assert_eq!(version.tags[TAG_SOURCE_SHA256], src.sha);
+        assert_eq!(version.tags[TAG_OWNER_UID], UID);
+        assert_eq!(
+            arm.version_encryption_set(RG, GAL, DEF, &p.target.version)
+                .as_deref(),
+            Some(DES)
+        );
+        let definition = arm
+            .get_gallery_image_definition(RG, GAL, DEF)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.tags["cost-centre"], "1234");
+    }
+
+    /// The temporaries are encrypted too: seen while a version is still
+    /// creating, before they are deleted.
+    #[tokio::test]
+    async fn a_governed_publish_encrypts_the_upload_disk_and_snapshot() {
+        let src = source();
+        let p = governed_plan(&src);
+        let arm = fake();
+        arm.add_disk_encryption_set(DES, "eastus2");
+        arm.hold_versions_creating(u32::MAX);
+        let err = publish(arm.as_ref(), arm.as_ref(), &p, &timings())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "Timeout");
+        let v = &p.target.version;
+        assert_eq!(
+            arm.upload_disk_encryption_set(RG, &upload_disk_name(GAL, DEF, v))
+                .as_deref(),
+            Some(DES)
+        );
+        assert_eq!(
+            arm.snapshot_encryption_set(RG, &snapshot_name(GAL, DEF, v))
+                .as_deref(),
+            Some(DES)
+        );
+    }
+
+    /// A set ARM does not know fails the publish at the first resource that
+    /// names it, and the error is ARM's.
+    #[tokio::test]
+    async fn an_unknown_disk_encryption_set_fails_the_publish() {
+        let src = source();
+        let p = governed_plan(&src);
+        let arm = fake();
+        let err = publish(arm.as_ref(), arm.as_ref(), &p, &timings())
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), "InvalidParameter");
+        assert!(!arm.has_upload_disk(RG, &upload_disk_name(GAL, DEF, &p.target.version)));
+    }
+
+    #[test]
+    fn governance_flags_parse_into_tags_and_a_set() {
+        let mut a = args(&[
+            "--mode",
+            "publish",
+            "--version",
+            "1.2.3",
+            "--tags",
+            r#"{"cost-centre":"1234","env":"prod"}"#,
+            "--disk-encryption-set-id",
+            DES,
+        ]);
+        a.subscription_id = SUB.into();
+        let (tags, des) = governance_from(&a).expect("valid");
+        assert_eq!(tags.len(), 2);
+        assert_eq!(tags["env"], "prod");
+        assert_eq!(des.as_deref(), Some(DES));
+
+        let plain = args(&["--mode", "delete", "--version", "1.2.3"]);
+        let (tags, des) = governance_from(&plain).expect("valid");
+        assert!(tags.is_empty());
+        assert!(des.is_none());
+    }
+
+    #[test]
+    fn invalid_governance_flags_are_refused() {
+        for (tags, des) in [
+            (Some("not json"), None),
+            (Some(r#"["a"]"#), None),
+            (Some(r#"{"banlieue-source-sha256":"00"}"#), None),
+            (Some(r#"{"Banlieue-Owner-Uid":"x"}"#), None),
+            (Some(r#"{"a/b":"x"}"#), None),
+            (None, Some("des-1")),
+            (
+                None,
+                Some(
+                    "/subscriptions/00000000-0000-0000-0000-0000000000ff/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1",
+                ),
+            ),
+        ] {
+            let mut a = args(&["--mode", "publish", "--version", "1.2.3"]);
+            a.subscription_id = SUB.into();
+            a.tags = tags.map(ToString::to_string);
+            a.disk_encryption_set_id = des.map(ToString::to_string);
+            let err = governance_from(&a).expect_err(&format!("{tags:?} {des:?}"));
+            assert_eq!(err.code(), "InvalidArgument", "{tags:?} {des:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_publishes_with_governance_flags() {
+        let src = source();
+        let checksum = format!("sha256:{}", src.sha);
+        let version = gallery_version_name(&src.sha);
+        let mut a = args(&[
+            "--mode",
+            "publish",
+            "--version",
+            &version,
+            "--source",
+            src.path.to_str().unwrap(),
+            "--checksum",
+            &checksum,
+            "--trusted-launch",
+            "--tags",
+            r#"{"cost-centre":"1234"}"#,
+            "--disk-encryption-set-id",
+            DES,
+        ]);
+        a.subscription_id = SUB.into();
+        let arm = fake();
+        arm.add_disk_encryption_set(DES, "eastus2");
+        execute(&a, arm.as_ref(), arm.as_ref(), &timings())
+            .await
+            .unwrap();
+        let v = arm
+            .get_gallery_image_version(RG, GAL, DEF, &version)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v.tags["cost-centre"], "1234");
+        assert_eq!(
+            arm.version_encryption_set(RG, GAL, DEF, &version)
+                .as_deref(),
+            Some(DES)
+        );
     }
 }

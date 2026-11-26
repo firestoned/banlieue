@@ -167,6 +167,7 @@ mod tests {
             location: "eastus2".into(),
             upload_size_bytes: 2_504_000_000,
             tags: tags(),
+            disk_encryption_set_id: None,
         }
         .to_body()
         .unwrap();
@@ -186,6 +187,7 @@ mod tests {
             location: "eastus2".into(),
             source_disk_id: "/x/disks/d".into(),
             tags: tags(),
+            disk_encryption_set_id: None,
         }
         .to_body()
         .unwrap();
@@ -206,6 +208,7 @@ mod tests {
             snapshot_id: "/x/snapshots/s".into(),
             end_of_life: None,
             tags: tags(),
+            disk_encryption_set_id: None,
         };
         let body = req.to_body().unwrap();
         let p = &body["properties"];
@@ -239,7 +242,8 @@ mod tests {
             UploadDiskRequest {
                 location: "l".into(),
                 upload_size_bytes: 1,
-                tags: bad.clone()
+                tags: bad.clone(),
+                disk_encryption_set_id: None,
             }
             .to_body()
             .is_err()
@@ -249,7 +253,118 @@ mod tests {
                 location: "l".into(),
                 snapshot_id: "s".into(),
                 end_of_life: None,
-                tags: bad
+                tags: bad,
+                disk_encryption_set_id: None,
+            }
+            .to_body()
+            .is_err()
+        );
+    }
+
+    const DES: &str = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-sec/providers/Microsoft.Compute/diskEncryptionSets/des-1";
+
+    /// ADR-0172 Decision 2: every disk-like resource the publish Job
+    /// creates is encrypted with the `Provider`'s customer-managed key.
+    #[test]
+    fn a_disk_encryption_set_encrypts_the_upload_disk_and_snapshot() {
+        let expected = serde_json::json!({
+            "type": "EncryptionAtRestWithCustomerKey",
+            "diskEncryptionSetId": DES,
+        });
+        let disk = UploadDiskRequest {
+            location: "eastus2".into(),
+            upload_size_bytes: 2_504_000_000,
+            tags: tags(),
+            disk_encryption_set_id: Some(DES.into()),
+        }
+        .to_body()
+        .unwrap();
+        assert_eq!(disk["properties"]["encryption"], expected);
+        let snapshot = SnapshotRequest {
+            location: "eastus2".into(),
+            source_disk_id: "/x/disks/d".into(),
+            tags: tags(),
+            disk_encryption_set_id: Some(DES.into()),
+        }
+        .to_body()
+        .unwrap();
+        assert_eq!(snapshot["properties"]["encryption"], expected);
+    }
+
+    #[test]
+    fn without_a_disk_encryption_set_nothing_names_one() {
+        let disk = UploadDiskRequest {
+            location: "eastus2".into(),
+            upload_size_bytes: 2_504_000_000,
+            tags: tags(),
+            disk_encryption_set_id: None,
+        }
+        .to_body()
+        .unwrap();
+        assert!(disk["properties"].get("encryption").is_none());
+        let version = GalleryImageVersionRequest {
+            location: "eastus2".into(),
+            snapshot_id: "/x/snapshots/s".into(),
+            end_of_life: None,
+            tags: tags(),
+            disk_encryption_set_id: None,
+        }
+        .to_body()
+        .unwrap();
+        assert!(
+            version["properties"]["publishingProfile"]["targetRegions"][0]
+                .get("encryption")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_disk_encryption_set_encrypts_the_version_in_its_region() {
+        let body = GalleryImageVersionRequest {
+            location: "eastus2".into(),
+            snapshot_id: "/x/snapshots/s".into(),
+            end_of_life: None,
+            tags: tags(),
+            disk_encryption_set_id: Some(DES.into()),
+        }
+        .to_body()
+        .unwrap();
+        assert_eq!(
+            body["properties"]["publishingProfile"]["targetRegions"][0]["encryption"],
+            serde_json::json!({"osDiskImage": {"diskEncryptionSetId": DES}})
+        );
+    }
+
+    #[test]
+    fn a_malformed_disk_encryption_set_fails_every_request() {
+        let bad = Some("not-an-id".to_string());
+        assert!(
+            UploadDiskRequest {
+                location: "l".into(),
+                upload_size_bytes: 1,
+                tags: tags(),
+                disk_encryption_set_id: bad.clone(),
+            }
+            .to_body()
+            .is_err()
+        );
+        assert!(
+            SnapshotRequest {
+                location: "l".into(),
+                source_disk_id: "/x/disks/d".into(),
+                tags: tags(),
+                disk_encryption_set_id: bad.clone(),
+            }
+            .to_body()
+            .is_err()
+        );
+        assert!(
+            GalleryImageVersionRequest {
+                location: "l".into(),
+                snapshot_id: "s".into(),
+                end_of_life: None,
+                tags: tags(),
+                disk_encryption_set_id: bad,
             }
             .to_body()
             .is_err()
