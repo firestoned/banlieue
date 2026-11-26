@@ -414,6 +414,13 @@ mod tests {
         assert!(deferred_plan().has_install_media());
     }
 
+    /// Every guest's SMBIOS system UUID is its machine's uid, as libvirt's
+    /// domain UUID is: a guest reads it from `/sys/class/dmi/id/product_uuid`.
+    #[test]
+    fn every_guest_gets_its_machine_uid_as_its_smbios_system_uuid() {
+        assert_eq!(plan().guest.system_uuid.as_deref(), Some(UID));
+    }
+
     /// Decision 5: every guest gets a vsock; the provider listens on one
     /// fixed port, whose host end is `<socket>_<port>` in the run directory.
     #[test]

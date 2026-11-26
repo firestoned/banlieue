@@ -388,6 +388,8 @@ pub fn plan_machine(
             .collect(),
         tpm_socket: tpm.as_ref().map(|t| t.socket.clone()),
         vsock_socket: Some(vsock_socket),
+        // The guest reads its machine's uid as product_uuid, as on libvirt.
+        system_uuid: Some(uid.to_string()),
         serial_file: serial_log.clone(),
         landlock: true,
     };

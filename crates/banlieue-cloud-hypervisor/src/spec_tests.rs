@@ -139,6 +139,7 @@ mod tests {
             }],
             tpm_socket: Some(PathBuf::from("/run/swtpm.sock")),
             vsock_socket: Some(PathBuf::from("/run/vsock.sock")),
+            system_uuid: Some("0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d9e01".into()),
             serial_file: PathBuf::from("/srv/serial.log"),
             landlock: true,
         }
