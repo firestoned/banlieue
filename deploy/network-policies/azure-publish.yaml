@@ -1,0 +1,45 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Allow list for the Azure image publish Job (ADR-0094, ADR-0162). It runs in
+# the image-build namespace (banlieue-imagebuild by default), reads the built
+# disk from the artifacts PVC, and talks only to Azure over HTTPS: Entra ID
+# for its token, Azure Resource Manager for the gallery, and the managed
+# disk's blob endpoint for the upload (Put Page through a write SAS). It never
+# calls the Kubernetes API server, so it has no rule for it, and it serves
+# nothing, so no ingress.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: banlieue-azure-publish
+  labels:
+    app.kubernetes.io/name: banlieue
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: banlieue
+      app.kubernetes.io/component: azure-publish
+  policyTypes:
+    - Egress
+  egress:
+    # DNS: cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Entra ID, Azure Resource Manager and the managed disk's blob endpoint.
+    # All are front ends whose addresses Microsoft publishes only as service
+    # tags, which a NetworkPolicy cannot name, so this rule allows any address
+    # on 443. Pin it with an egress proxy or a CNI that matches FQDNs, if you
+    # have one.
+    - ports:
+        - protocol: TCP
+          port: 443

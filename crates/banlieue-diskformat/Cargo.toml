@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "banlieue-diskformat"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "Disk image container formats written by banlieue itself, streaming and without qemu-img: the fixed VHD footer a cloud upload needs (ADR-0162 Decision 2), and later roadmap 15's VMDK."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Pure std plus thiserror (already in the lockfile): no I/O runtime, no
+# network, so every format is tested as bytes in, bytes out.
+
+[dependencies]
+thiserror.workspace = true

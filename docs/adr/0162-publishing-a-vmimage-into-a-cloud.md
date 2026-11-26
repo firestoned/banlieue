@@ -8,6 +8,10 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-11-24
 - **Proposed:** 2026-11-24
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-11-26 (Decision 4: the `VMImage`'s cloud source entry is
+  the declaration, as for vSphere, instead of `spec.publish.providers[]`;
+  Decision 8 added: the published set is reconciled to the declared one;
+  Decision 3's long-running version create is resumed by adoption)
 - **Related:** Roadmap 22 (the centre of it), roadmap 23 (Azure), roadmap 24
   (EC2). [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md) (the image
   builder produces a raw disk), [ADR-0016](0016-imagebuild-namespace-isolation.md)
@@ -89,13 +93,29 @@ module.
   (finding 6).
 - The version create is a long-running operation: the Job records the
   operation URL, exits, and is resumed; it never assumes a duration
-  (finding 4).
+  (finding 4). *Amended 2026-11-26:* every step is named deterministically
+  (upload disk, snapshot, version), so a Job that is restarted, or a new Job
+  for the same digest, adopts the step in flight by reading its
+  provisioning state instead of starting a second one. The Job polls the
+  version create with a deadline far beyond the observed 7 to 22 minutes and
+  fails loudly at it; the provider's retry adopts what is still running.
 
 ### 4. How a `VMImage` asks for it: explicitly
 
-A `VMImage` lists the cloud `Provider`s it is published to
-(`spec.publish.providers[]`); nothing is published by discovery
-(non-negotiable 4). Status gains one entry per `Provider`: the cloud's
+*Amended 2026-11-26.* A `VMImage` declares a cloud by a source entry for its
+class, exactly as it declares vSphere (ADR-0020): `providerClass: azure`,
+`kind: Url` builds the image (or reuses the raw disk already built for it)
+and publishes it into **every `azure` `Provider` that serves the
+`VMImage`**; `kind: Template` names a version an admin published by hand.
+The source entry is the declaration; nothing is published to a class the
+`VMImage` does not name (non-negotiable 4). The earlier
+`spec.publish.providers[]` list is dropped: it would make the cloud the one
+backend whose images are declared differently from vSphere's, and the
+per-`Provider` choice it offered is already made by which `Provider`s serve
+the `VMImage`'s namespace (ADR-0133). The build must produce a raw disk
+(`cloudImage`): a `VMImage` whose shared build is an ISO (a vSphere `Url`
+source listed first) reports the cloud row not ready with a reason, and is
+not published. Status gains one entry per `Provider`: the cloud's
 identifier (image version ID, AMI ID), the region, **the source digest it was
 published from**, and the published image's **minimum OS disk size**
 (finding 7, consumed by ADR-0160 Decision 4). A rebuilt image is a new
@@ -103,6 +123,8 @@ version, never an overwrite. `ImageSourceKind::Template` keeps working for an
 image an admin published by hand.
 
 ### 5. Lifetime
+
+*See also Decision 8.*
 
 A published image banlieue created carries the ADR-0158 ownership tags and is
 deleted when its `VMImage` is deleted or superseded **and** no machine still
@@ -120,6 +142,24 @@ provider boots only a published image whose recorded digest matches the
 `firstBootSealing` (ADR-0088) is valid only on a target with a vTPM (Azure
 Trusted Launch, EC2 NitroTPM). `installMode: Deferred` and ISO sources are
 refused for cloud `Provider`s at admission: there is no install-media path.
+
+### 8. The published set follows the declared set (added 2026-11-26)
+
+banlieue's `VMImage`s are the declared state; the gallery is reconciled to
+it. For each `Provider` serving a `VMImage` with a cloud `Url` source:
+
+- a version for the current source digest that does not exist (never
+  published, or deleted in the cloud by hand) is published;
+- a version banlieue published (owner tags, ADR-0158) for a digest the
+  `VMImage` no longer builds, and that no machine references, is deleted;
+- when the `VMImage` is deleted, every version it owns is deleted once no
+  machine references it, and its image definition with the last version;
+- a version, definition or gallery banlieue did not tag is never touched,
+  and the gallery itself is the admin's (declared on the `Provider`, never
+  created or deleted by banlieue).
+
+The check reads the version by name on the provider's slow cadence; it is a
+reconcile over what was read, never a poll in the create path.
 
 ## Consequences
 

@@ -1,0 +1,31 @@
+{
+  "Name": "banlieue Azure image publisher",
+  "IsCustom": true,
+  "Description": "Least privilege for the banlieue image publish Job (ADR-0159 Decision 3, ADR-0162 Decision 1): upload a built disk to a managed disk through a write SAS, snapshot it, and create and delete the image definitions and versions banlieue tags, in the admin's existing Compute Gallery. Never creates or deletes the gallery. Assign at the gallery's resource group only.",
+  "Actions": [
+    "Microsoft.Compute/galleries/read",
+    "Microsoft.Compute/galleries/images/read",
+    "Microsoft.Compute/galleries/images/write",
+    "Microsoft.Compute/galleries/images/delete",
+    "Microsoft.Compute/galleries/images/versions/read",
+    "Microsoft.Compute/galleries/images/versions/write",
+    "Microsoft.Compute/galleries/images/versions/delete",
+    "Microsoft.Compute/disks/read",
+    "Microsoft.Compute/disks/write",
+    "Microsoft.Compute/disks/delete",
+    "Microsoft.Compute/disks/beginGetAccess/action",
+    "Microsoft.Compute/disks/endGetAccess/action",
+    "Microsoft.Compute/snapshots/read",
+    "Microsoft.Compute/snapshots/write",
+    "Microsoft.Compute/snapshots/delete",
+    "Microsoft.Compute/locations/operations/read",
+    "Microsoft.Compute/locations/diskOperations/read",
+    "Microsoft.Compute/locations/capsOperations/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-images"
+  ]
+}
