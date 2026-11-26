@@ -934,6 +934,15 @@ build-linux-amd64: ## Cross-compile $(BINARY) for linux/amd64
 build-linux-arm64: ## Cross-compile $(BINARY) for linux/arm64
 	@$(MAKE) _build-linux TRIPLE=aarch64-unknown-linux-gnu LINKER=aarch64-linux-gnu-gcc
 
+# Release binaries must not carry the build host's paths: rustc embeds source
+# paths (panic locations), which on a workstation name the user's home
+# directory. Applied to the release and Azure guest helper builds only, so dev
+# builds keep their cache (a RUSTFLAGS change rebuilds every crate).
+REMAP_RUSTFLAGS := --remap-path-prefix=$(HOME)/.cargo/registry/src=/cargo/registry \
+	--remap-path-prefix=$(HOME)/.cargo/git/checkouts=/cargo/git \
+	--remap-path-prefix=$(HOME)/.rustup=/rustup \
+	--remap-path-prefix=$(CURDIR)=/src
+
 # Internal: shared cross-compile body.
 #
 # Prefers a host-installed gcc cross-toolchain (homebrew macos-cross-toolchains
@@ -954,9 +963,9 @@ _build-linux:
 			env CARGO_TARGET_$${TRIPLE_ENV}_LINKER=$$LINKER \
 				CC_$${TRIPLE_US}=$$LINKER \
 				AR_$${TRIPLE_US}=$$AR_TOOL \
-				cargo build --release --target $$TRIPLE -p $(BINARY); \
+				RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build --release --target $$TRIPLE -p $(BINARY); \
 		else \
-			cargo build --release --target $$TRIPLE -p $(BINARY); \
+			RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build --release --target $$TRIPLE -p $(BINARY); \
 		fi; \
 	elif command -v cross >/dev/null 2>&1; then \
 		echo "No host cross-linker for $$TRIPLE; falling back to cross (container build)..."; \
@@ -991,7 +1000,7 @@ AZURE_GUEST_IMAGE  ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/banlieue-azure-g
 .PHONY: azure-guest-binary azure-guest-image
 azure-guest-binary: ## Build the static Azure guest helper and stage it at binaries/amd64/banlieue-azure-guest (ADR-0171)
 	@rustup target add $(AZURE_GUEST_TRIPLE) >/dev/null 2>&1 || true
-	cargo build -p banlieue-guest-azure --profile guest --target $(AZURE_GUEST_TRIPLE)
+	RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build -p banlieue-guest-azure --profile guest --target $(AZURE_GUEST_TRIPLE)
 	@mkdir -p binaries/amd64
 	@cp target/$(AZURE_GUEST_TRIPLE)/guest/banlieue-azure-guest binaries/amd64/
 	@ls -l binaries/amd64/banlieue-azure-guest
@@ -1556,9 +1565,9 @@ kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the ki
 			env CARGO_TARGET_$${TRIPLE_ENV}_LINKER=$$LINKER \
 				CC_$${TRIPLE_US}=$$LINKER \
 				AR_$${TRIPLE_US}=$$AR_TOOL \
-				cargo build --release --target $$TRIPLE -p $(BINARY); \
+				RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build --release --target $$TRIPLE -p $(BINARY); \
 		else \
-			cargo build --release --target $$TRIPLE -p $(BINARY); \
+			RUSTFLAGS="$(RUSTFLAGS) $(REMAP_RUSTFLAGS)" cargo build --release --target $$TRIPLE -p $(BINARY); \
 		fi; \
 		mkdir -p binaries/$$ARCH; \
 		cp target/$$TRIPLE/release/$(BINARY) binaries/$$ARCH/; \
