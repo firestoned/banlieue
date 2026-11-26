@@ -1,0 +1,158 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# DRAFT, roadmap 24 (EC2). A Kairos VMImage with the cloud-config layer an EC2
+# guest needs, measured by the roadmap 22/24 spike. There is no `ec2`
+# ProviderClass in the API yet: the source below names the conventional
+# `ec2` class so the image can be built and carried now; nothing consumes it
+# until the EC2 provider lands (ADR-0166/0167 are still to be written).
+#
+# WHY A LAYER AND NOT THE AZURE-STYLE HELPER
+#
+#   ADR-0171 bakes a Rust helper into every image with an `azure` source,
+#   because Azure needs imperative work (XML, HTTP with retries) at boot. EC2
+#   needs only three small steps, all expressible as cloud-config, so the
+#   layer below is enough for the spike's measurements. A Rust helper
+#   (the standing rule for in-guest code) is a decision for ADR-0166/0167.
+#
+# WHAT THE LAYER DOES (each step is gated on the EC2 DMI vendor)
+#
+#   1. Grows COS_PERSISTENT to the end of the volume after first-boot sealing
+#      (ADR-0088): a template disk is smaller than the EBS volume it lands on.
+#   2. Reads instance user data once over IMDSv2 into /oem, so Kairos applies
+#      it in the same boot (measured: fetched at 20 s, applied at 23 s of
+#      uptime). IMDSv1 is never used; run instances with HttpTokens=required.
+#   3. Writes `BANLIEUE-GUESTREADY` to /dev/kmsg once both the network and
+#      boot.after stages of an ACTIVE boot are done. The EC2 provider reads
+#      it from GetConsoleOutput (ADR-0163 transport; the console refreshes
+#      about every 30 s). Recovery boots never report.
+#
+# WHAT THE BASE IMAGE MUST CARRY (cloud-config cannot add these)
+#
+#   - `curl` (IMDS), and `growpart` + `sfdisk` (packages `cloud-guest-utils`
+#     and `fdisk` on Debian): step 1 and 2 use them.
+#   - `systemd-networkd-wait-online.service` masked. Kairos orders its network
+#     stage after network-online.target and the wait held every EC2 boot for
+#     its full 120 s timeout.
+#   - `kairos-splash.service` masked: it lowers the console log level and hid
+#     the /dev/kmsg lines GuestReady depends on.
+#   - Kairos v4.4.0 or later (first-boot sealing). The spike measured v4.7.0:
+#     sealing to NitroTPM works, unlock about 3 s per boot.
+#
+# WHAT IS NOT HERE ON PURPOSE
+#
+#   - The sealing policy: banlieue-imagebuilder appends its own layer from
+#     `firstBootSealing` (ADR-0088). This layer must NOT set
+#     install.encrypted_partitions (the build is refused with
+#     FirstBootSealingConflict).
+#   - The spike's trace and diagnostic stages (BANLIEUE-STAGE, -NET, -TIME,
+#     -SEAL, EK dump): they measured boot time and are not needed to run. The
+#     EK comes from the EC2 API (GetInstanceTpmEkPub), not from the guest.
+#
+# DELIVERING THE DISK (until the EC2 provider publishes it)
+#
+#   EBS direct (ADR-0162) can be denied by an organization SCP. VM Import
+#   works there: raw disk -> streamOptimized VMDK -> S3 (key WITHOUT a
+#   `.vmdk` suffix, some guardrails refuse it) -> `ec2 import-snapshot`
+#   (Format=VMDK, encrypted, tagged) -> `register-image` with
+#   `--boot-mode uefi --tpm-support v2.0 --ena-support`. Instances must set
+#   IMDSv2 only (hop limit 1).
+#
+# Every identifier is a placeholder: pin your own image by digest.
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kairos-ec2-cloud-config
+  # Create this Secret in the namespace banlieue-imagebuilder builds in; a
+  # VMImage's cloudConfigs are read from there.
+type: Opaque
+stringData:
+  cloud-config.yaml: |
+    #cloud-config
+    stages:
+      boot:
+        - name: banlieue-ec2 grow COS_PERSISTENT to the end of the volume
+          if: grep -q "Amazon EC2" /sys/class/dmi/id/sys_vendor && [ -e /run/cos/active_mode ]
+          commands:
+            - |
+              # Runs after sealing (encrypt-pending runs in the initramfs):
+              # partition (growpart also moves the backup GPT), then the
+              # dm-crypt mapping, then ext4, all online. Idempotent: growpart
+              # reports NOCHANGE once the partition already ends at the disk end.
+              log() { echo "<3>BANLIEUE-GROW $*" > /dev/kmsg; }
+              src=$(findmnt -no SOURCE /usr/local)
+              part=$(lsblk -lnpo NAME,FSTYPE | awk '$2=="crypto_LUKS"{print $1}' | head -1)
+              [ -n "$part" ] || part=$(blkid -L COS_PERSISTENT)
+              disk=/dev/$(basename "$(readlink -f /sys/class/block/$(basename "$part")/..)")
+              num=$(cat /sys/class/block/$(basename "$part")/partition)
+              out=$(growpart "$disk" "$num" 2>&1); rc=$?
+              log "growpart $disk $num rc=$rc $(echo "$out" | head -1 | cut -c1-140)"
+              [ $rc -eq 0 ] || exit 0
+              if [ "${src#/dev/mapper/}" != "$src" ]; then
+                m=${src#/dev/mapper/}
+                cryptsetup resize "$m" >/dev/null 2>&1; log "cryptsetup resize $m rc=$?"
+              fi
+              resize2fs "$src" >/dev/null 2>&1; log "resize2fs $src rc=$?"
+      network.after:
+        - name: banlieue-ec2 read user data over IMDSv2 (once)
+          if: grep -q "Amazon EC2" /sys/class/dmi/id/sys_vendor && [ ! -e /oem/91_ec2_userdata.yaml ]
+          commands:
+            - |
+              log() { echo "<3>BANLIEUE-USERDATA $*" > /dev/kmsg; }
+              imds=http://169.254.169.254/latest
+              # Wait for the default route; the network stage can finish first.
+              for i in $(seq 120); do ip -4 route show default | grep -q . && break; sleep 0.5; done
+              tok=$(curl -fsS --retry 30 --retry-delay 1 --retry-connrefused --retry-all-errors \
+                    --max-time 5 -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" "$imds/api/token" 2>/dev/null)
+              [ -n "$tok" ] || { log "no IMDSv2 token"; exit 0; }
+              code=$(curl -sS -o /tmp/ud -w '%{http_code}' --max-time 5 -H "X-aws-ec2-metadata-token: $tok" "$imds/user-data")
+              if [ "$code" = 200 ] && [ -s /tmp/ud ]; then
+                install -m 0600 /tmp/ud /oem/91_ec2_userdata.yaml
+                log "$(wc -c < /oem/91_ec2_userdata.yaml) bytes via IMDSv2"
+              else
+                # Empty marker so a later boot does not fetch again.
+                : > /oem/91_ec2_userdata.yaml; chmod 0600 /oem/91_ec2_userdata.yaml
+                log "none (http=$code)"
+              fi
+              rm -f /tmp/ud
+        - name: banlieue-ec2 GuestReady (network.after side)
+          if: grep -q "Amazon EC2" /sys/class/dmi/id/sys_vendor && [ -e /run/cos/active_mode ]
+          commands:
+            - |
+              touch /run/banlieue-network-after.done
+              if [ -e /run/banlieue-boot-after.done ]; then
+                echo "<3>BANLIEUE-GUESTREADY by=network.after uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/kmsg
+              fi
+      boot.after:
+        - name: banlieue-ec2 GuestReady (boot.after side)
+          if: grep -q "Amazon EC2" /sys/class/dmi/id/sys_vendor && [ -e /run/cos/active_mode ]
+          commands:
+            - |
+              touch /run/banlieue-boot-after.done
+              if [ -e /run/banlieue-network-after.done ]; then
+                echo "<3>BANLIEUE-GUESTREADY by=boot.after uptime=$(cut -d' ' -f1 /proc/uptime)" > /dev/kmsg
+              fi
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-debian-13-ec2
+spec:
+  osFamily: linux
+  osDistribution: debian
+  osVersion: "13"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: ec2
+      kind: Url
+      ref: unused-for-url-sources # required by the schema; ignored for kind: Url
+      importFrom: ghcr.io/example/kairos-debian:13-ec2@sha256:0000000000000000000000000000000000000000000000000000000000000000 # placeholder: pin your own image's digest
+  cloudConfigs:
+    - secretRef:
+        name: kairos-ec2-cloud-config
+        key: cloud-config.yaml
+  # Seal COS_PERSISTENT to the instance's NitroTPM on its first boot
+  # (ADR-0088). `{}` takes the defaults: [COS_PERSISTENT], 600 seconds.
+  firstBootSealing: {}

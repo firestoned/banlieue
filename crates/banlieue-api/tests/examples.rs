@@ -539,3 +539,64 @@ fn capi_cloud_hypervisor_example_matches_the_types() {
         assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
     }
 }
+
+/// Example 32: the EC2 `VMImage` names the `ec2` source class, builds from a
+/// URL, seals first boot (ADR-0088), and reads its cloud-config layer from the
+/// Secret beside it. The layer reports `GuestReady` for an active boot only,
+/// reads user data over IMDSv2, and never sets `install.encrypted_partitions`
+/// (the image builder refuses a layer that does, `FirstBootSealingConflict`).
+#[test]
+fn ec2_vmimage_example_matches_the_types() {
+    use banlieue_api::banlieue::VMImage;
+    use banlieue_api::banlieue::vmimage::ImageSourceKind;
+
+    let path = format!("{EXAMPLES}/32-vmimage-kairos-ec2.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut secret_name = None;
+    let mut layer = String::new();
+    let mut image = None;
+
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        match doc["kind"].as_str().expect("kind") {
+            "Secret" => {
+                secret_name = doc["metadata"]["name"].as_str().map(str::to_string);
+                layer = doc["stringData"]["cloud-config.yaml"]
+                    .as_str()
+                    .expect("the layer under stringData")
+                    .to_string();
+            }
+            "VMImage" => {
+                let img: VMImage = serde_json::from_value(doc.clone()).expect("VMImage");
+                assert_no_dropped_keys(&doc["spec"], &img.spec);
+                image = Some(img);
+            }
+            other => panic!("unexpected kind {other}"),
+        }
+    }
+
+    let spec = image.expect("example has a VMImage").spec;
+    assert_eq!(spec.sources.len(), 1);
+    assert_eq!(spec.sources[0].provider_class, "ec2");
+    assert_eq!(spec.sources[0].kind, ImageSourceKind::Url);
+    assert!(
+        spec.first_boot_sealing.is_some(),
+        "the template seals to NitroTPM on first boot"
+    );
+
+    assert_eq!(spec.cloud_configs.len(), 1);
+    let key = spec.cloud_configs[0]
+        .secret_ref
+        .as_ref()
+        .expect("secretRef");
+    assert_eq!(Some(key.name.clone()), secret_name);
+
+    assert!(layer.starts_with("#cloud-config"));
+    assert!(layer.contains("BANLIEUE-GUESTREADY"));
+    assert!(layer.contains("X-aws-ec2-metadata-token"), "IMDSv2 token");
+    assert!(layer.contains("/run/cos/active_mode"), "active boots only");
+    assert!(
+        !layer.contains("encrypted_partitions"),
+        "the sealing policy comes from firstBootSealing, not this layer"
+    );
+}
