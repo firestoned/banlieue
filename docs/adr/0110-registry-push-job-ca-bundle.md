@@ -115,6 +115,10 @@ as a follow-up (see Consequences).
   Deployment would pass it through the downward API or an env var), so a
   mirrored install needs one setting fewer. Not done here: it changes a
   default and needs its own test of how a digest-pinned deployment image is
-  reported.
+  reported. Done for `banlieue bootstrap imagebuilder` (2026-11-26): it
+  passes `--push-image` set to the image it installs, digest included, after
+  a pre-release install's Jobs ran the release-tag default, which predated
+  the `digest` subcommand. A kustomize install still sets
+  `BANLIEUE_PUSH_IMAGE` itself.
 - Threat model: a new trust anchor in the push Job (TB-4/TB-6), pass recorded
   in the same change.

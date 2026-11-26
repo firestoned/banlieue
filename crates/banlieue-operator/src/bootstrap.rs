@@ -191,6 +191,15 @@ pub enum BootstrapTarget {
         /// for the same reason (ADR-0103), and more so for a privileged Job.
         #[arg(long, value_parser = parse_image_digest)]
         prelay_image_digest: Option<String>,
+
+        /// The Azure guest helper bundle (`banlieue-azure-guest`, ADR-0171)
+        /// every image with an `azure` source carries, as
+        /// `<registry>/<repository>@sha256:<digest>`. Only a digest-pinned
+        /// reference is accepted: the bundle is unpacked into the image's
+        /// root filesystem. Without it the imagebuilder refuses Azure builds
+        /// (`AzureGuestImageUnset`).
+        #[arg(long, value_parser = parse_pinned_image)]
+        azure_guest_image: Option<String>,
     },
 
     /// Issue a Cloud Hypervisor host its first credential: a kubeconfig and
@@ -270,6 +279,7 @@ impl CommonArgs {
                 build_toleration: self.build_toleration.clone(),
                 image_digest: self.image_digest.clone(),
                 prelay_image_digest: None,
+                azure_guest_image: None,
                 watch_namespace_selector: self.watch_namespace_selector.clone(),
             },
             self.dry_run,
@@ -306,9 +316,23 @@ pub struct InstallOptions {
     /// --prelay-image-digest`, ADR-0113). Never taken from
     /// [`InstallOptions::image_digest`]: different image, different bytes.
     pub prelay_image_digest: Option<String>,
+    /// Digest-pinned Azure guest helper bundle for the imagebuilder
+    /// (`bootstrap imagebuilder --azure-guest-image`, ADR-0171). `None`
+    /// omits the flag, and Azure builds are refused.
+    pub azure_guest_image: Option<String>,
 }
 
 impl InstallOptions {
+    /// These options with the Azure guest helper bundle set to `image` (or
+    /// unset for `None`).
+    #[must_use]
+    pub fn with_azure_guest_image(self, image: Option<String>) -> Self {
+        Self {
+            azure_guest_image: image,
+            ..self
+        }
+    }
+
     /// These options with the pre-lay image pinned to `digest` (or unpinned
     /// for `None`).
     #[must_use]
@@ -408,9 +432,19 @@ impl InstallRole {
         }
         // The version being installed, not the binary's own default, and the
         // mirror under `--registry` (ADR-0113, amendment 2026-11-04).
-        if matches!(self, Self::Imagebuilder) {
-            args.push("--prelay-image".to_string());
-            args.push(prelay_install_image(opts));
+        if !matches!(self, Self::Imagebuilder) {
+            return args;
+        }
+        args.push("--prelay-image".to_string());
+        args.push(prelay_install_image(opts));
+        // The measure, push and publish Jobs run the image being installed,
+        // never the binary's release-tag default, which can predate the Job
+        // subcommands this imagebuilder asks for.
+        args.push("--push-image".to_string());
+        args.push(install_image(opts));
+        if let Some(image) = &opts.azure_guest_image {
+            args.push("--azure-guest-image".to_string());
+            args.push(image.clone());
         }
         args
     }
@@ -575,6 +609,21 @@ pub fn parse_image_digest(value: &str) -> Result<String, String> {
     banlieue_oci::reference::require_digest(value)
         .map(|()| value.to_string())
         .map_err(|_| format!("{value:?} is not a digest: expected sha256:<64 lowercase hex>"))
+}
+
+/// `--azure-guest-image` value parser: a registry-qualified reference
+/// pinned by a sha256 digest (`<registry>/<repository>@sha256:<hex>`).
+///
+/// # Errors
+/// A message naming the expected form when `value` is not such a reference.
+pub fn parse_pinned_image(value: &str) -> Result<String, String> {
+    let expected = "expected <registry>/<repository>@sha256:<64 lowercase hex>";
+    let reference =
+        banlieue_oci::reference::Reference::parse(value).map_err(|e| format!("{e}: {expected}"))?;
+    if reference.digest.is_none() {
+        return Err(format!("{value:?} is not pinned by digest: {expected}"));
+    }
+    Ok(value.to_string())
 }
 
 /// Build the full platform install.
@@ -1414,9 +1463,12 @@ pub async fn run(cli: Cli, backends: &[&str]) -> Result<()> {
         BootstrapTarget::Imagebuilder {
             common,
             prelay_image_digest,
+            azure_guest_image,
         } => {
             let (opts, dry_run) = common.split();
-            let opts = opts.with_prelay_digest(prelay_image_digest.clone());
+            let opts = opts
+                .with_prelay_digest(prelay_image_digest.clone())
+                .with_azure_guest_image(azure_guest_image.clone());
             (
                 build_role_install(&InstallRole::Imagebuilder, &opts)?,
                 dry_run,
