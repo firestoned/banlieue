@@ -24,6 +24,7 @@ mod tests {
                 ("fast".into(), "/nvme/banlieue/ch".into()),
             ],
             network: vec![("default".into(), "virbr0".into())],
+            isolate_ports: vec![],
             uid_base: 2_000_000,
             uid_count: 1024,
             registry: None,
@@ -326,5 +327,45 @@ mod tests {
         let text = render(&GUEST_SLICE, &values(&s, &h)).unwrap();
         assert!(text.contains("[Slice]\nCPUQuota=4800%\n"), "{text}");
         assert!(!text.contains("AllowedCPUs"));
+    }
+
+    // ------------------------------------------- port isolation (ADR-0144)
+
+    /// An isolated class is written as a table, every other class stays the
+    /// plain bridge string, and the provider's own parser reads both back.
+    #[test]
+    fn an_isolated_class_is_written_as_a_table() {
+        let h = FakeHost::debian();
+        let s = Settings {
+            network: vec![
+                ("default".into(), "virbr0".into()),
+                ("sandbox".into(), "br1".into()),
+            ],
+            isolate_ports: vec!["sandbox".into()],
+            ..settings()
+        };
+        let text = host_config(&s, &h, &Release::pinned()).unwrap();
+        assert!(text.contains("default = \"virbr0\""), "{text}");
+        // The serializer writes the table form as a sub-table, which is the
+        // same TOML as the inline spelling and reads back identically.
+        assert!(text.contains("[network_classes.sandbox]"), "{text}");
+        assert!(text.contains("bridge = \"br1\""), "{text}");
+        assert!(text.contains("isolate_ports = true"), "{text}");
+        assert_eq!(
+            text.matches("isolate_ports").count(),
+            1,
+            "only the isolated class carries the attribute: {text}"
+        );
+        let c = HostConfig::parse(&text).unwrap();
+        assert!(!c.isolate_ports("default"));
+        assert!(c.isolate_ports("sandbox"));
+        assert_eq!(c.bridge("sandbox"), Some("br1"));
+    }
+
+    #[test]
+    fn no_isolation_writes_only_plain_bridge_strings() {
+        let h = FakeHost::debian();
+        let text = host_config(&settings(), &h, &Release::pinned()).unwrap();
+        assert!(!text.contains("isolate_ports"), "{text}");
     }
 }

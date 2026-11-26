@@ -308,6 +308,88 @@ default = "br-test"
         assert!(!text.contains("hardening"), "{text}");
     }
 
+    // ------------------------------------------------------------------
+    // Port isolation on a network class (ADR-0144 Decision 3)
+    // ------------------------------------------------------------------
+
+    /// Every config written before ADR-0144 names a class as a bridge string.
+    /// It must keep loading, and it must not isolate: isolation is explicit.
+    #[test]
+    fn a_plain_bridge_class_does_not_isolate_ports() {
+        let c = parsed();
+        assert_eq!(c.bridge("default"), Some("br-test"));
+        assert!(!c.isolate_ports("default"));
+    }
+
+    #[test]
+    fn a_class_table_may_isolate_ports() {
+        let c = with(
+            "\"br-test\"",
+            "{ bridge = \"br-test\", isolate_ports = true }",
+        )
+        .unwrap();
+        assert_eq!(c.bridge("default"), Some("br-test"));
+        assert!(c.isolate_ports("default"));
+    }
+
+    /// A table that only names the bridge is the same as the plain string.
+    #[test]
+    fn a_class_table_defaults_to_no_isolation() {
+        let c = with("\"br-test\"", "{ bridge = \"br-test\" }").unwrap();
+        assert_eq!(c.bridge("default"), Some("br-test"));
+        assert!(!c.isolate_ports("default"));
+    }
+
+    /// An undeclared class is not isolated and has no bridge: the caller
+    /// refuses the machine on the bridge lookup, never here.
+    #[test]
+    fn an_unknown_class_does_not_isolate_ports() {
+        assert!(!parsed().isolate_ports("sandbox"));
+    }
+
+    /// A misspelt key must not silently leave a sandbox class unisolated.
+    #[test]
+    fn a_class_table_with_a_typo_or_no_bridge_is_refused() {
+        for (case, to) in [
+            (
+                "typo in isolate_ports",
+                "{ bridge = \"br-test\", isolate_port = true }",
+            ),
+            ("unknown key", "{ bridge = \"br-test\", uplink = true }"),
+            ("no bridge", "{ isolate_ports = true }"),
+            (
+                "isolate_ports is not a bool",
+                "{ bridge = \"br-test\", isolate_ports = \"yes\" }",
+            ),
+            (
+                "an impossible bridge name",
+                "{ bridge = \"a-bridge-name-too-long\", isolate_ports = true }",
+            ),
+        ] {
+            assert!(with("\"br-test\"", to).is_err(), "{case} should be refused");
+        }
+    }
+
+    /// The installer renders this type and parses it back (ADR-0067): an
+    /// isolating class survives, and a plain class stays a plain string so a
+    /// config that never asked for isolation is byte-for-byte what it was.
+    #[test]
+    fn classes_round_trip_and_a_plain_class_stays_a_string() {
+        let plain = toml::to_string(&parsed()).unwrap();
+        assert!(plain.contains("default = \"br-test\""), "{plain}");
+        assert!(!plain.contains("isolate_ports"), "{plain}");
+        assert_eq!(HostConfig::parse(&plain).unwrap(), parsed());
+
+        let isolating = with(
+            "\"br-test\"",
+            "{ bridge = \"br-test\", isolate_ports = true }",
+        )
+        .unwrap();
+        let text = toml::to_string(&isolating).unwrap();
+        assert!(text.contains("isolate_ports = true"), "{text}");
+        assert_eq!(HostConfig::parse(&text).unwrap(), isolating);
+    }
+
     #[test]
     fn a_hardening_typo_or_a_bad_name_is_refused() {
         let base = format!("{FROM_BOOTSTRAP}\n[hardening]\n");

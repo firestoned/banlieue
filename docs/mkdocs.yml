@@ -196,6 +196,7 @@ nav:
           - Cloud Hypervisor:
               - Cloud Hypervisor Provider: guides/cloud-hypervisor-host.md
               - 'Host Internals: systemd, polkit, identities': guides/cloud-hypervisor-host-systemd.md
+              - 'Sandbox Segment: bridges, host rules, isolation': guides/cloud-hypervisor-sandbox-segment.md
           - vSphere:
               - vSphere Provider: guides/vsphere-provider.md
               - Building an Alpine VM Template: guides/alpine-vsphere-template.md

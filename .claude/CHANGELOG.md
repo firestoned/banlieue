@@ -579,6 +579,25 @@ signature fixes both without moving the key off the host or giving the host a cr
 - [ ] Config change only
 - [x] Documentation only
 
+## [2026-11-19 15:30] - Fix: the port-isolation netlink attribute number was wrong (ADR-0144 Decision 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/netlink.rs`: `IFLA_BRPORT_ISOLATED` was 34, which is `IFLA_BRPORT_BACKUP_PORT` in `<linux/if_link.h>`; it is 33. The kernel rejected the request with `ERANGE` (the attribute is a `u32` policy for the backup port, ours carried one byte). Confirmed against the kernel headers of both a Linux 6.8 kernel and the RHEL 8.10 4.18 kernel (`IFLA_PROTINFO=12`, `IFLA_BRPORT_ISOLATED=33`, `IFLA_BRPORT_BACKUP_PORT=34`).
+- `crates/banlieue-provider-cloud-hypervisor/src/netlink_tests.rs`: `the_kernel_attribute_numbers_match_linux_if_link_h` pins both attribute numbers to the header values (red against the old constant, green after the fix). The earlier test compared the constant to itself and could not catch this.
+- `crates/banlieue-provider-cloud-hypervisor/tests/live_isolate.rs`: the live test now asserts that `ping` exists and fails loudly if it does not (a swallowed exec failure had been reported as a misleading baseline failure); the module docs say `ping` is needed as well as `ip`.
+
+### Why
+Found by running the `#[ignore]`d live test on a real kernel for the first time (a privileged container, kernel 6.8): both live tests now pass. A fake host cannot catch a wrong ABI constant, which is why the live tier exists (`.claude/rules/testing.md`). Nothing shipped with the wrong number.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+(Unreleased code: the isolation feature of this change set had never worked on a real kernel before this fix.)
+
 ## [2026-11-19 15:00] - threat model pass: ADR-0144
 
 **Author:** Erick Bourgeois
@@ -595,6 +614,73 @@ ADR-0144 is implemented; the threat-model rule makes the full pass the last step
 - [ ] Requires cluster rollout
 - [ ] Config change only
 - [x] Documentation only
+
+## [2026-11-19 14:10] - Operator guides: sandbox segment matches the implemented ADR-0144 surface
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guides/cloud-hypervisor-sandbox-segment.md`: status box now Accepted, listing what is implemented and what is not (gateway neighbour pinning, gateway failover); new addressing section (sandbox addresses private and unique across the fleet, carved from a fleet-wide supernet; uplink and host bridge addresses may repeat; example ranges are documentation ranges); Step 3 shows the three classes `sandbox` (isolated sub-table), `sandbox-gw` (same bridge, not isolated) and `uplink`; the `TODO(ADR-0144)` is replaced with the real installer flag `--isolate-ports`, `BANLIEUE_HOST_ISOLATE_PORTS`, its validation, the kept-config rule, the preflight checks and the provider's fail-closed netlink isolation. A running sandbox is isolated within one reconcile pass after the provider restarts (`ensure_taps` runs on every pass, `machine.rs`), so nothing needs recreating.
+- `docs/src/guides/cloud-hypervisor-host.md`: `--isolate-ports` row in the settings table and an "Isolated network classes" subsection linking to the sandbox segment guide.
+
+### Why
+The guides still described the installer flag and the class layout as pending, and did not state the fleet-unique sandbox address rule from the 2026-11-19 amendment of ADR-0144.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-11-19 14:00] - preflight: refuse an isolated class without the sandbox segment host rules (ADR-0144 Decision 6)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-host/src/stages.rs`: `preflight` reads the host ruleset (`iptables -S`, `iptables -t nat -S`) through the read-only `Probe::query`, for each class declared `isolate_ports`, and refuses (naming the class and the missing piece) when a table cannot be read (fail closed), when `BANLIEUE_SBX_INPUT`, `BANLIEUE_SBX_FORWARD` (filter) or `BANLIEUE_SBX_NAT` (nat) is absent, or when a jump to one is missing or not at position 1 of INPUT, FORWARD or POSTROUTING. The chain names and positions are named constants matching the cloud-hypervisor-sandbox-segment guide's recipe. A class that is not isolated is never probed.
+- `crates/banlieue-host/src/fake.rs`: `Env.iptables` and `put_iptables` for canned `iptables -S` output; an unset table fails like a missing `iptables`.
+- `crates/banlieue-host/src/stages_tests.rs`: tests for each refusal and for the passing case.
+
+### Why
+Port isolation stops a sandbox reaching another sandbox; these rules stop it reaching the host and the uplink. Isolation configured without the rules that complete it must be refused at install time, not discovered at run time.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+(Host installer behaviour change: an install with an isolated class now needs the sandbox segment rules in place first. No CRD change.)
+
+## [2026-11-19 13:00] - Provider isolates sandbox taps (ADR-0144 Decision 3)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-cloud-hypervisor/src/netlink.rs` (new, tests in
+  `netlink_tests.rs`): a pure encoder for the one `RTM_SETLINK` /
+  `IFLA_PROTINFO` / `IFLA_BRPORT_ISOLATED` request and a reader for the ack.
+  Hand-written, no new dependency; netlink rather than sysfs because the
+  provider unit mounts `/sys` read-only.
+- `sys.rs`: `isolate_port` (netlink socket via `rustix`, no new `unsafe`) and
+  `ensure_tap_isolated`, which isolates after enslaving and before link up on
+  every pass; `ensure_tap` is unchanged.
+- `plan.rs`: `NicPlan` carries `network_class` and `isolate`, resolved from
+  the host config. `host.rs`: `ensure_taps` fails closed with an error naming
+  the tap and the class.
+- `fake.rs`: records isolated taps, can refuse isolation (`isolate_fails`),
+  and refuses a tap that is not on a bridge as the kernel does.
+- `tests/live_isolate.rs` (new, `#[ignore]`d): a real kernel, three
+  namespaces on one bridge.
+
+### Why
+Sandboxes on the shared segment must not reach each other; only the gateways
+(plain ports) may talk to them.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires provider rollout for isolation to take effect
+- [ ] Config change only
+- [ ] Documentation only
 
 ## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
 
@@ -1136,6 +1222,58 @@ The API half of the Firecracker provider class, code-first.
 - [x] Requires cluster rollout (re-apply the Provider, VMImage, VirtualMachine,
       VirtualMachineClaim CRDs and the two new ones)
 - [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-19 12:00] - Operator guide for the sandbox segment (ADR-0144)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guides/cloud-hypervisor-sandbox-segment.md` (new): the segment
+  (diagram), the two internal bridges (NetworkManager and `ip`, with a check
+  that profiles persist), host iptables rules as an env file, a script and a
+  systemd unit that own only their own chains, the `[network_classes]`
+  declaration, isolation checks and counters, the Decision 8 bring-up
+  exception, and the ADR's open questions. Rules were exercised in a
+  privileged container with network namespaces; `br_netfilter`, RHEL 8's
+  iptables and the NetworkManager commands were not.
+- `docs/mkdocs.yml`: nav entry under Providers, Cloud Hypervisor.
+
+### Why
+ADR-0144 makes the bridges and host rules operator work; the recipe must be
+written down and tested before the binary can refuse hosts that lack it.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (a TODO marks the installer flag; threat model pass follows the implementation)
+
+## [2026-11-19 12:00] - Installer declares and preflights port isolation (ADR-0144 slices 2 and 4)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-host/src/settings.rs`: `--isolate-ports NAME` (env
+  `BANLIEUE_HOST_ISOLATE_PORTS`, repeatable or comma-separated) marks a class
+  declared with `--network-class` as isolated; `Settings::isolate_ports`.
+  Strict: a malformed, repeated or undeclared name is refused. Against a kept
+  host config the flag follows ADR-0067 Decision 5 (a re-run without it keeps
+  the recorded isolation; a contradicting flag is refused, `--force` regenerates).
+- `crates/banlieue-host/src/render.rs`: an isolated class is written as
+  `name = { bridge = "br1", isolate_ports = true }`, others stay plain strings.
+- `crates/banlieue-host/src/stages.rs`: `preflight` refuses an isolated class
+  when the bridge's member port (`brif/`) has no `brport/isolated`, or when the
+  bridge has no member port to probe.
+- Tests in `settings_tests.rs`, `render_tests.rs`, `stages_tests.rs`.
+
+### Why
+Isolation configured and not enforced must be a refusal (ADR-0144 Decision 3).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
 - [ ] Documentation only
 
 ## [2026-11-19 10:00] - The Firecracker and shared-host ADRs are Accepted (0137, 0138, 0140, 0141, 0142, 0143)

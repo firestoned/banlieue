@@ -49,6 +49,7 @@ pub mod hostfs;
 pub mod import;
 pub mod machine;
 pub mod neigh;
+mod netlink;
 pub mod plan;
 pub mod provider;
 pub mod reconciler;

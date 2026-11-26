@@ -404,6 +404,88 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
+    // Port isolation (ADR-0144 Decision 3)
+    // ------------------------------------------------------------------
+
+    /// A plan whose one NIC is on an isolating class, on `br1`.
+    fn isolating_plan() -> MachinePlan {
+        let mut c = config();
+        c.network_classes.insert(
+            "sandbox".into(),
+            crate::host_config::NetworkClass::Table(crate::host_config::NetworkClassTable {
+                bridge: "br1".into(),
+                isolate_ports: true,
+            }),
+        );
+        let mut s = spec();
+        s.nics[0].network_class = "sandbox".into();
+        plan_machine(UID, MACHINE_NAME, "ch-a", &s, &c, HOST_UID).unwrap()
+    }
+
+    fn isolating_host(plan: &MachinePlan) -> FakeHost {
+        FakeHost::new(&["br1"], &[plan.image.as_path()])
+    }
+
+    #[tokio::test]
+    async fn a_tap_on_an_isolating_class_is_isolated() {
+        let plan = isolating_plan();
+        let h = isolating_host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(h.state.lock().unwrap().isolated.contains(&plan.nics[0].tap));
+    }
+
+    #[tokio::test]
+    async fn a_tap_on_a_plain_class_is_never_isolated() {
+        let plan = plan_for(&spec());
+        let h = host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(h.state.lock().unwrap().isolated.is_empty());
+    }
+
+    /// A tap that exists without isolation (left by an older provider, or
+    /// cleared) is fixed on the next pass.
+    #[tokio::test]
+    async fn a_tap_that_lost_its_isolation_is_isolated_again_on_the_next_pass() {
+        let plan = isolating_plan();
+        let h = isolating_host(&plan);
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        h.state.lock().unwrap().isolated.clear();
+        pass(&h, &plan, &PowerState::PoweredOn).await;
+        assert!(h.state.lock().unwrap().isolated.contains(&plan.nics[0].tap));
+    }
+
+    /// Fail closed: when isolation cannot be set the machine does not start,
+    /// and the error names the tap and the class.
+    #[tokio::test]
+    async fn a_machine_does_not_start_when_isolation_cannot_be_set() {
+        let plan = isolating_plan();
+        let h = isolating_host(&plan);
+        h.state.lock().unwrap().isolate_fails = true;
+        let err = converge(
+            &h,
+            &plan,
+            "db-01",
+            Some("#cloud-config\n"),
+            &PowerState::PoweredOn,
+        )
+        .await
+        .expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(msg.contains(&plan.nics[0].tap), "{msg}");
+        assert!(msg.contains("sandbox"), "{msg}");
+        assert!(h.state.lock().unwrap().units.is_empty(), "no VMM started");
+    }
+
+    /// The real kernel refuses isolation on an interface that is not a bridge
+    /// port; the fake must too.
+    #[tokio::test]
+    async fn the_fake_refuses_to_isolate_a_tap_that_is_not_on_a_bridge() {
+        let h = FakeHost::new(&["br1"], &[]);
+        let err = h.isolate_unenslaved("bchnotaport0").expect_err("refused");
+        assert!(err.to_string().contains("not a bridge port"), "{err}");
+    }
+
+    // ------------------------------------------------------------------
     // Teardown
     // ------------------------------------------------------------------
 

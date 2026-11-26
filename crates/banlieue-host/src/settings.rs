@@ -33,6 +33,8 @@ pub const STORAGE_CANDIDATES: [&str; 5] = ["/srv", "/data", "/home", "/opt", "/v
 const STORAGE_SUBDIR: &str = "banlieue/ch";
 /// The bridge the default network class uses when it exists.
 pub const DEFAULT_BRIDGE: &str = "virbr0";
+/// The flag that declares a network class isolated.
+const ISOLATE_PORTS_FLAG: &str = "--isolate-ports";
 /// The name of the default storage and network classes.
 pub const DEFAULT_CLASS: &str = "default";
 /// Interfaces, as the kernel lists them.
@@ -86,6 +88,20 @@ pub struct HostArgs {
         value_name = "NAME=BRIDGE"
     )]
     pub network_classes: Vec<String>,
+    /// A network class to put in kernel port isolation (ADR-0144): the
+    /// provider sets `isolated on` on each guest's tap, so guests on it reach
+    /// only non-isolated ports (a gateway, the host), never each other. Name
+    /// a class declared with `--network-class`; repeat, or comma-separate.
+    /// Never inferred from a class name. Default: the kept host config's,
+    /// else none. Install refuses it on a kernel without
+    /// `brport/isolated`.
+    #[arg(
+        long = "isolate-ports",
+        env = "BANLIEUE_HOST_ISOLATE_PORTS",
+        value_delimiter = ',',
+        value_name = "NAME"
+    )]
+    pub isolate_ports: Vec<String>,
     /// First uid a guest runs as. Default: the kept host config's, else
     /// 2000000.
     #[arg(long, env = "BANLIEUE_HOST_GUEST_UID_BASE")]
@@ -375,6 +391,8 @@ pub struct Settings {
     pub storage: Vec<(String, PathBuf)>,
     /// Network classes, in the order given.
     pub network: Vec<(String, String)>,
+    /// Names of the network classes declared `isolate_ports`, sorted.
+    pub isolate_ports: Vec<String>,
     /// First guest uid.
     pub uid_base: u32,
     /// Guest uid count.
@@ -706,6 +724,62 @@ fn accepted_hardening(
     Ok(recorded)
 }
 
+/// The classes declared isolated: the flag's, validated against the declared
+/// classes, or the kept config's; refused when both exist and differ (a
+/// re-run without the flag keeps what the config says).
+fn agree_isolation(
+    args: &HostArgs,
+    network: &[(String, String)],
+    kept: Option<&HostConfig>,
+) -> Result<Vec<String>, Error> {
+    let mut given: Vec<String> = Vec::new();
+    for name in args
+        .isolate_ports
+        .iter()
+        .map(|n| n.trim())
+        .filter(|n| !n.is_empty())
+    {
+        if !valid_class_name(name) {
+            return Err(bad(
+                ISOLATE_PORTS_FLAG,
+                format!("class name {name:?}: lowercase letters, digits and '-' only"),
+            ));
+        }
+        if given.iter().any(|g| g == name) {
+            return Err(bad(ISOLATE_PORTS_FLAG, format!("class {name} given twice")));
+        }
+        if !network.iter().any(|(declared, _)| declared == name) {
+            return Err(bad(
+                ISOLATE_PORTS_FLAG,
+                format!("{name}: not a declared network class (--network-class {name}=<bridge>)"),
+            ));
+        }
+        given.push(name.to_string());
+    }
+    given.sort();
+    let Some(kept) = kept else {
+        return Ok(given);
+    };
+    let recorded: Vec<String> = kept
+        .network_classes
+        .iter()
+        .filter(|(_, class)| class.isolates_ports())
+        .map(|(name, _)| name.clone())
+        .collect();
+    if !given.is_empty() && given != recorded {
+        return Err(contradicts(
+            ISOLATE_PORTS_FLAG,
+            &given.join(","),
+            &if recorded.is_empty() {
+                "no isolated class".to_string()
+            } else {
+                recorded.join(",")
+            },
+        ));
+    }
+    Ok(recorded)
+}
+
 fn resolve_with(
     args: &HostArgs,
     probe: &dyn Probe,
@@ -744,7 +818,14 @@ fn resolve_with(
     let mut network = agree_classes(
         "--network-class",
         pairs("--network-class", &args.network_classes)?,
-        kept.map(|c| &c.network_classes),
+        // Isolation is compared on its own, by `agree_isolation`.
+        kept.map(|c| {
+            c.network_classes
+                .iter()
+                .map(|(k, class)| (k.clone(), class.bridge().to_string()))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .as_ref(),
     )?;
     if network.is_empty()
         && kept.is_none()
@@ -752,6 +833,7 @@ fn resolve_with(
     {
         network.push((DEFAULT_CLASS.into(), DEFAULT_BRIDGE.into()));
     }
+    let isolate_ports = agree_isolation(args, &network, kept)?;
     let uid_base = agree(
         "--guest-uid-base",
         args.guest_uid_base,
@@ -815,6 +897,7 @@ fn resolve_with(
         namespace,
         storage,
         network,
+        isolate_ports,
         uid_base,
         uid_count,
         registry,

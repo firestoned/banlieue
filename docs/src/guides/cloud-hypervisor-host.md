@@ -261,6 +261,7 @@ variable, so a cloud-init payload needs no file of its own
 | `--provider-namespace` | `banlieue-system` | The `Provider`'s namespace: the operator's install namespace, where External Providers live. |
 | `--storage-class name=path` | `default=<roomiest of /srv, /data, /home, /opt, /var/lib>/banlieue/ch` | Where guest disks and the image cache live. Repeat, or comma-separate. |
 | `--network-class name=bridge` | `default=virbr0` if it exists | Each bridge must exist. Repeat, or comma-separate. |
+| `--isolate-ports NAME` | none | Mark the declared network class `NAME` isolated: the provider puts each guest's tap on it in kernel port isolation. Repeat, or set `BANLIEUE_HOST_ISOLATE_PORTS` (comma-separated). See [Isolated network classes](#isolated-network-classes). |
 | `--guest-uid-base`, `--guest-uid-count` | `2000000`, `1024` | One unprivileged uid per guest. Must not overlap real accounts or `/etc/subuid`. |
 | `--registry-repository` | none | The one repository `Url` images are pulled from, by digest (ADR-0064). |
 | `--registry-plain-http` | off | Speak `http://` to that registry (a private network or a test only). |
@@ -282,6 +283,31 @@ variable, so a cloud-init payload needs no file of its own
 | `--attestation-ca-openbao-addr URL`, `--attestation-ca-openbao-mount MOUNT`, `--attestation-ca-openbao-auth-mount MOUNT`, `--attestation-ca-openbao-role ROLE` (env `BANLIEUE_HOST_ATTESTATION_CA_OPENBAO_*`) | none | Have OpenBao sign the request in this run, logging in as the host's own ServiceAccount (ADR-0146 Decision 8). `URL` is a bare `https` origin. |
 | `--attestation-ca-openbao-token-file FILE` | none | The same, with a one-use token an administrator minted, for a host with no cluster identity. The file is read once and removed. Instead of the role flags. |
 | `--attestation-ca-openbao-ca-ttl DURATION` | `8760h` | The CA's lifetime as the OpenBao policy pins it. Sent exactly as written, so it must equal the policy's. |
+
+### Isolated network classes
+
+A network class may isolate the ports of its guests, so guests on it reach
+only non-isolated ports (a gateway) and never each other. `--isolate-ports
+NAME` declares that for a class named by `--network-class` in the same run;
+the config then records it as a sub-table instead of a plain bridge string:
+
+```toml
+[network_classes]
+default = "br0"
+
+[network_classes.sandbox]
+bridge = "br-sbx"
+isolate_ports = true
+```
+
+(The inline form `sandbox = { bridge = "br-sbx", isolate_ports = true }`
+parses identically.) A class given as a plain string never isolates. `preflight`
+refuses an isolated class on a kernel without `brport/isolated`, and when its
+bridge has no member port to probe. A re-run without the flag keeps the
+recorded isolation; a flag that contradicts it is refused unless `--force`. The
+full recipe, including the second, non-isolated class the gateways need on the
+same bridge and the host firewall rules, is in
+[the sandbox segment](cloud-hypervisor-sandbox-segment.md).
 
 On a host `install` has already prepared, `/etc/banlieue/cloud-hypervisor.toml`
 is kept (only `--force` regenerates it), so it decides the settings it

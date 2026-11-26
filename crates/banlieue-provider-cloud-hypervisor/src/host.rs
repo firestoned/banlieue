@@ -175,6 +175,22 @@ impl RealHost {
 }
 
 /// Run blocking file or syscall work off the async executor.
+/// An error from setting up `nic`'s tap. For an isolating class it names the
+/// tap and the class: the machine is not started on a port that could not be
+/// isolated (ADR-0144 Decision 3).
+pub(crate) fn tap_error(nic: &crate::plan::NicPlan, source: &std::io::Error) -> std::io::Error {
+    if !nic.isolate {
+        return std::io::Error::new(source.kind(), source.to_string());
+    }
+    std::io::Error::new(
+        source.kind(),
+        format!(
+            "tap {} on network class {:?} could not be set up with port isolation: {source}",
+            nic.tap, nic.network_class
+        ),
+    )
+}
+
 async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> std::io::Result<T> + Send + 'static,
 ) -> Result<T> {
@@ -259,7 +275,8 @@ impl HostOps for RealHost {
         let plan = plan.clone();
         blocking(move || {
             for nic in &plan.nics {
-                sys::ensure_tap(&nic.tap, Some(plan.host_uid), &nic.bridge)?;
+                sys::ensure_tap_isolated(&nic.tap, Some(plan.host_uid), &nic.bridge, nic.isolate)
+                    .map_err(|e| tap_error(nic, &e))?;
             }
             Ok(())
         })

@@ -81,6 +81,9 @@ pub struct Env {
     pub systemd_version: Option<u32>,
     /// cgroup v2 (the unified hierarchy).
     pub cgroup_unified: bool,
+    /// What `iptables -S` prints, by table (`filter`, `nat`); a table not
+    /// here is one `iptables` fails to read.
+    pub iptables: BTreeMap<String, String>,
 }
 
 impl Default for Env {
@@ -95,6 +98,7 @@ impl Default for Env {
             free: BTreeMap::new(),
             systemd_version: Some(FAKE_SYSTEMD_VERSION),
             cgroup_unified: true,
+            iptables: BTreeMap::new(),
         }
     }
 }
@@ -154,6 +158,15 @@ impl FakeHost {
         );
         h.env.lock().unwrap().free.insert("/srv".into(), 500 << 30);
         h
+    }
+
+    /// Set what `iptables [-t table] -S` prints for `table`.
+    pub fn put_iptables(&self, table: &str, output: &str) {
+        self.env
+            .lock()
+            .unwrap()
+            .iptables
+            .insert(table.to_string(), output.to_string());
     }
 
     /// Put a root-owned directory (and its ancestors) at `path`.
@@ -546,6 +559,10 @@ impl Probe for FakeHost {
                     .unwrap_or_else(|| "inactive".into()),
             ),
             ("systemctl", ["list-units", ..]) => Some(String::new()),
+            ("iptables", ["-S"]) => self.env.lock().unwrap().iptables.get("filter").cloned(),
+            ("iptables", ["-t", table, "-S"]) => {
+                self.env.lock().unwrap().iptables.get(*table).cloned()
+            }
             (p, ["--version"]) if self.exists(Path::new(p)) => Some(format!("{p} v53.0\n")),
             _ => None,
         }
