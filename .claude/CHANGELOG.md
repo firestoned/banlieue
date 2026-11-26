@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-25 19:40] - Cloud Hypervisor: every guest has an SMBIOS system UUID, its machine's uid
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-cloud-hypervisor/src/types.rs`: `GuestPlan::system_uuid`, sent as `platform.system_uuid` in
+  `vm.create` (absent when `None`).
+- `crates/banlieue-provider-cloud-hypervisor/src/plan.rs`: every plan sets it to the machine's uid, as
+  libvirt's domain UUID is.
+- Tests: `types_tests.rs` (present with a UUID, absent without), `plan_tests.rs` (the machine's uid), and the
+  spec check now exercises `platform.system_uuid` against the vendored v53 API document.
+
+### Why
+Without a platform UUID the VMM writes an all-zero SMBIOS type 1 UUID, which Linux drops, so a Cloud
+Hypervisor guest has no `/sys/class/dmi/id/product_uuid`. A guest that identifies itself by it (a mediatore
+sandbox member registering as a node) failed before registering, so a pool of such members never reached
+`GuestReady` and never filled.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+- Cloud Hypervisor hosts pick it up with the next provider binary. Guests created after the upgrade get the
+  UUID; running guests keep none until recreated. No CRD or API change.
+
 ## [2026-11-25 14:00] - Cloud Hypervisor: a lost vTPM state is terminal, not a 5 s retry loop
 
 **Author:** Erick Bourgeois

@@ -57,6 +57,9 @@ pub struct GuestPlan {
     /// Host end of the guest's vsock device (ADR-0065 Decision 5): a guest
     /// connecting to host port `P` reaches `<socket>_P`.
     pub vsock_socket: Option<PathBuf>,
+    /// SMBIOS system UUID (type 1). Without one the VMM writes zeros, which
+    /// Linux drops, so the guest has no `/sys/class/dmi/id/product_uuid`.
+    pub system_uuid: Option<String>,
     /// File the serial console is written to.
     pub serial_file: PathBuf,
     /// Enable the VMM's Landlock sandbox (ADR-0063 Decision 3).
@@ -111,6 +114,8 @@ pub struct VmConfigRequest {
     tpm: Option<TpmRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]
     vsock: Option<VsockRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform: Option<PlatformRequest>,
     landlock_enable: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     landlock_rules: Vec<LandlockRule>,
@@ -178,6 +183,11 @@ struct VsockRequest {
     socket: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PlatformRequest {
+    system_uuid: String,
+}
+
 /// Where a console or serial port goes. Only the modes banlieue uses.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 enum ConsoleMode {
@@ -238,6 +248,9 @@ impl VmConfigRequest {
             vsock: plan.vsock_socket.as_ref().map(|s| VsockRequest {
                 cid: VSOCK_GUEST_CID,
                 socket: s.clone(),
+            }),
+            platform: plan.system_uuid.as_ref().map(|u| PlatformRequest {
+                system_uuid: u.clone(),
             }),
             landlock_enable: plan.landlock,
             landlock_rules: if plan.landlock {

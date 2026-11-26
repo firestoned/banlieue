@@ -80,6 +80,7 @@ mod tests {
             nics: vec![],
             tpm_socket: None,
             vsock_socket: None,
+            system_uuid: None,
             serial_file: PathBuf::from("/srv/serial.log"),
             landlock: false,
         }

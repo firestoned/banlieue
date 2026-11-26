@@ -33,6 +33,7 @@ mod tests {
             }],
             tpm_socket: None,
             vsock_socket: None,
+            system_uuid: None,
             serial_file: PathBuf::from("/srv/banlieue/ch/m/serial.log"),
             landlock: true,
         }
@@ -164,6 +165,20 @@ mod tests {
         let c = serde_json::to_value(VmConfigRequest::for_guest(&p)).unwrap();
         assert_eq!(c["vsock"]["socket"], "/run/banlieue/ch/m/vsock.sock");
         assert_eq!(c["vsock"]["cid"], VSOCK_GUEST_CID);
+    }
+
+    /// The SMBIOS system UUID: without one the VMM writes zeros, which Linux
+    /// drops, so the guest has no `/sys/class/dmi/id/product_uuid`.
+    #[test]
+    fn platform_carries_the_system_uuid_and_is_absent_without_one() {
+        assert!(config().get("platform").is_none());
+        let mut p = plan();
+        p.system_uuid = Some("0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d9e01".into());
+        let c = serde_json::to_value(VmConfigRequest::for_guest(&p)).unwrap();
+        assert_eq!(
+            c["platform"],
+            serde_json::json!({"system_uuid": "0f3c9a1e-5b7d-4e2a-9c11-3f2b7a5d9e01"})
+        );
     }
 
     #[test]
