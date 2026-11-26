@@ -579,6 +579,23 @@ signature fixes both without moving the key off the host or giving the host a cr
 - [ ] Config change only
 - [x] Documentation only
 
+## [2026-11-19 15:00] - threat model pass: ADR-0144
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/security/threat-model.md`: full pass over all ten sections against ADR-0144 (a Cloud Hypervisor host serves sandboxes from an isolated segment behind two egress gateway VMs that NAT out through the host's own address). Header stamp advanced to 2026-11-19, ADR-0001 ... ADR-0139 and ADR-0144; ADR-0136, 0137, 0138 and 0140 to 0143 are named as not covered (nothing implemented). New boundaries TB-19 (sandbox segment) and TB-20 (uplink segment and host NAT), TB-18 cross-referenced, a changed TB-9 spoofing row, two §2 components, asset A-23, one §4 actor (another tenant of the host), the §5 diagram and table, §7.32, nine §8 accepted risks each with a Revisit when, one §9 bullet. §1 notes no new `unsafe` (the crate still has two blocks; the netlink call goes through `rustix`). §10 unchanged.
+- The `preflight` rows say what it does and does not cover: it refuses an isolated class when the kernel cannot isolate and unless the three `BANLIEUE_SBX_*` chains exist with their jumps first (`crates/banlieue-host/src/stages.rs`, `isolation_problems` and `firewall_problems`); it does not read the chains' contents, the forwarding state, `br_netfilter` or the IPv6 sysctl (§7.32, §8).
+
+### Why
+ADR-0144 is implemented; the threat-model rule makes the full pass the last step of the ADD cycle, so the ADR counts as implemented only now. Threats without a control in the tree (gateway-side neighbour pinning, a check of the chains' contents, a destination filter for gateway egress, a policy on who may name the non-isolating class, gateway failover, NAT metering) are recorded in §8, not described as controls. The citations are to files in the implementation pull request, which must merge before or with this change.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 12:00] - CALM model and roadmap 20 for the Firecracker provider (ADR-0137 to ADR-0143)
 
 **Author:** Erick Bourgeois
