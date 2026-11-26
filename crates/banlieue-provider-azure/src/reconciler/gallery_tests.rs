@@ -141,6 +141,21 @@ mod tests {
         assert!(message.contains("vsphere Url source"), "{message}");
     }
 
+    /// While the image builder measures the disk (ADR-0010, amendment
+    /// 2026-11-26) the row says so, rather than a bare "in progress".
+    #[test]
+    fn a_build_being_measured_reads_as_waiting_for_its_digest() {
+        let mut a = artifact(
+            BuildArtifactKind::CloudImage,
+            BuildArtifactPhase::Building,
+            None,
+        );
+        a.reason = Some("DigestPending".to_string());
+        let (reason, message) = gate_build(Some(&a)).unwrap_err();
+        assert_eq!(reason, reasons::BUILD_PENDING);
+        assert!(message.contains("DigestPending"), "{message}");
+    }
+
     #[test]
     fn only_a_full_sha256_is_a_digest() {
         assert_eq!(

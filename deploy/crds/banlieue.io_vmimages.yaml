@@ -290,9 +290,11 @@ spec:
                       description: |-
                         Optional checksum for imported images. Format: `<alg>:<hex>`,
                         e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`.
-                        Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify
-                        the built artifact against this value before writing it to the backend
-                        and fail closed on mismatch or an unsupported algorithm.
+                        Supported algorithms: `sha256`, `sha512`. For a `Url` source,
+                        `banlieue-imagebuilder` verifies the built artifact against this value
+                        once the build finishes and fails the build closed on mismatch or an
+                        unsupported algorithm (ADR-0010, amendment 2026-11-26); it is optional
+                        because the build measures the artifact itself.
                       nullable: true
                       type: string
                     importFrom:
@@ -561,12 +563,16 @@ spec:
                 properties:
                   checksum:
                     description: |-
-                      Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the
-                      `Url` source the build serves. Consumers that stream the artifact to a
-                      backend MUST verify it against this value and fail closed on mismatch
-                      (security review 2026-07-31, SEC-004) — the value lives here, next to
-                      the PVC reference, so no consumer has to re-derive which source the
-                      shared build came from.
+                      `sha256:<hex>` of the built artifact file, measured by
+                      `banlieue-imagebuilder` from the file on the artifacts PVC once the
+                      build finished (ADR-0010, amendment 2026-11-26); for a pre-laid build,
+                      of the pre-laid file (ADR-0113). Set only at phase `Ready`: while it
+                      is being measured the phase is `Building` with reason `DigestPending`.
+                      When the `Url` source declares a checksum, the build is verified
+                      against it first and fails closed on mismatch. Consumers that stream
+                      the artifact to a backend MUST verify it against this value and fail
+                      closed on mismatch (security review 2026-07-31, SEC-004); a cloud
+                      publisher names the published version by it (ADR-0162 Decision 6).
                     nullable: true
                     type: string
                   file:

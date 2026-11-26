@@ -2028,7 +2028,7 @@ has one, rather than leaving it to `find_url_source` /
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `checksum` | string |  | Optional checksum for imported images. Format: `<alg>:<hex>`, e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`. Supported algorithms: `sha256`, `sha512`. Provider import Jobs verify the built artifact against this value before writing it to the backend and fail closed on mismatch or an unsupported algorithm. |
+| `checksum` | string |  | Optional checksum for imported images. Format: `<alg>:<hex>`, e.g. `sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b...`. Supported algorithms: `sha256`, `sha512`. For a `Url` source, `banlieue-imagebuilder` verifies the built artifact against this value once the build finishes and fails the build closed on mismatch or an unsupported algorithm (ADR-0010, amendment 2026-11-26); it is optional because the build measures the artifact itself. |
 | `importFrom` | string |  | Optional source URL. When set, providers that support image import will pull from here if the image isn't already present locally. |
 | `kind` | string | Yes | What kind of backend artifact `ref` refers to. Allowed: `Template`, `BackingFile`, `Url`, `OciArtifact`. |
 | `providerClass` | string | Yes | Name of the ProviderClass this source applies to. Conventional values: `vsphere`, `proxmox`, `libvirt`. |
@@ -2134,7 +2134,7 @@ ADR-0010 and ADR-0020.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `checksum` | string |  | Expected checksum (`<alg>:<hex>`) of the built artifact, copied from the `Url` source the build serves. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004) — the value lives here, next to the PVC reference, so no consumer has to re-derive which source the shared build came from. |
+| `checksum` | string |  | `sha256:<hex>` of the built artifact file, measured by `banlieue-imagebuilder` from the file on the artifacts PVC once the build finished (ADR-0010, amendment 2026-11-26); for a pre-laid build, of the pre-laid file (ADR-0113). Set only at phase `Ready`: while it is being measured the phase is `Building` with reason `DigestPending`. When the `Url` source declares a checksum, the build is verified against it first and fails closed on mismatch. Consumers that stream the artifact to a backend MUST verify it against this value and fail closed on mismatch (security review 2026-07-31, SEC-004); a cloud publisher names the published version by it (ADR-0162 Decision 6). |
 | `file` | string |  | File name of the artifact within the artifacts PVC (kairos-operator convention: `<osArtifactRef>.raw` for `cloudImage`, `<osArtifactRef>.iso` for `iso`). Populated at phase `Ready`. |
 | `firstBootSealingLayer` | boolean |  | Whether this build carries the banlieue-generated first-boot sealing layer (ADR-0088): set when `spec.firstBootSealing` was honoured by the merged cloud-config this artifact was built from. Omitted when false. |
 | `kind` | string | Yes | What kind of artifact was built, aligned with kairos-operator's own `OSArtifactKind`. Determines the `file` extension and which provider class consumes it. Allowed: `cloudImage`, `iso`. |

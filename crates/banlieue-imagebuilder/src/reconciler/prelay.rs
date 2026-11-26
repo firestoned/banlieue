@@ -5,12 +5,14 @@
 //! When a `VMImage` asks for `spec.prelay` and its `OSArtifact` is `Ready`,
 //! the reconciler creates a Job beside the artifacts PVC that runs
 //! `scripts/prelay-kairos-raw.sh` from the operator's `--prelay-image`: it
-//! verifies the built raw file against the source's checksum, boots it once
+//! verifies the built raw file against the source's declared checksum, boots it once
 //! through the Kairos recovery reset under QEMU (no TPM, no network), writes
 //! the result to a new file on the same PVC and reports that file's
 //! `sha256:<hex>` as its termination message. Until then the artifact stays
 //! `Building` (`Prelaying`), so no import Job or registry push starts on the
 //! raw file; afterwards it is `Ready` with the pre-laid file and the digest.
+//! That digest is measured by the Job, so a pre-laid build needs no separate
+//! digest Job ([`super::digest`]).
 //!
 //! Everything here is pure; the reconciler does the API calls.
 
@@ -121,6 +123,10 @@ pub struct PrelayJobInputs<'a> {
     pub os_artifact_uid: &'a str,
     /// `spec.prelay.diskSizeGiB`.
     pub disk_size_gib: u32,
+    /// The checksum the `Url` source declares, which the Job verifies the
+    /// built file against first (SEC-004). Not `artifact.checksum`: that is
+    /// only ever a measured value (ADR-0010, amendment 2026-11-26).
+    pub verify_checksum: Option<&'a str>,
     /// Build tolerations (`--build-toleration`).
     pub tolerations: &'a [Toleration],
     /// Build node selector (`--build-node-selector`): where KVM is.
@@ -146,6 +152,7 @@ pub fn build_prelay_job(inputs: &PrelayJobInputs<'_>) -> Value {
         artifact,
         os_artifact_uid,
         disk_size_gib,
+        verify_checksum,
         tolerations,
         node_selector,
     } = *inputs;
@@ -164,7 +171,7 @@ pub fn build_prelay_job(inputs: &PrelayJobInputs<'_>) -> Value {
         json!({ "name": "PRELAY_DISK_SIZE_GIB", "value": disk_size_gib.to_string() }),
         json!({ "name": "PRELAY_RESULT_FILE", "value": TERMINATION_LOG }),
     ];
-    if let Some(checksum) = &artifact.checksum {
+    if let Some(checksum) = verify_checksum {
         env.push(json!({ "name": "PRELAY_VERIFY_CHECKSUM", "value": checksum }));
     }
 

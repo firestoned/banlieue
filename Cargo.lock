@@ -311,6 +311,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
 ]
@@ -356,6 +357,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "banlieue-diskformat"
+version = "0.6.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
+name = "banlieue-guest-azure"
+version = "0.6.0"
+dependencies = [
+ "base64 0.23.1",
+ "libc",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "banlieue-host"
 version = "0.6.0"
 dependencies = [
@@ -390,6 +408,7 @@ dependencies = [
  "kube",
  "serde-saphyr",
  "serde_json",
+ "sha2",
  "thiserror",
  "tokio",
  "tracing",
@@ -458,6 +477,7 @@ dependencies = [
  "aws-lc-rs",
  "banlieue-api",
  "banlieue-azure",
+ "banlieue-diskformat",
  "banlieue-provider-sdk",
  "banlieue-tls",
  "base64 0.23.1",
@@ -467,6 +487,8 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "serde_json",
+ "sha2",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

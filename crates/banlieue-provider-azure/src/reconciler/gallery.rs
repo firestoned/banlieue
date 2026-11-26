@@ -54,7 +54,9 @@ pub mod reasons {
     pub const BUILD_FAILED: &str = "BuildFailed";
     /// The shared build is an ISO, which a cloud cannot boot.
     pub const BUILD_KIND_UNSUPPORTED: &str = "BuildKindUnsupported";
-    /// The build carries no `sha256:` checksum to name and verify it by.
+    /// A `Ready` build carries no `sha256:` checksum to name and verify it
+    /// by: only an image builder that predates ADR-0010's 2026-11-26
+    /// amendment leaves one unmeasured.
     pub const CHECKSUM_MISSING: &str = "ChecksumMissing";
     /// A publish Job is running, or about to.
     pub const PUBLISHING: &str = "Publishing";
@@ -114,9 +116,15 @@ pub fn gate_build(
     };
     match artifact.phase {
         BuildArtifactPhase::Pending | BuildArtifactPhase::Building => {
+            // `DigestPending`: the image builder is measuring the disk
+            // whose sha256 names the version (ADR-0010, amendment
+            // 2026-11-26).
             return Err((
                 reasons::BUILD_PENDING,
-                format!("build in progress ({:?})", artifact.phase),
+                match artifact.reason.as_deref() {
+                    Some(reason) => format!("build in progress ({:?}, {reason})", artifact.phase),
+                    None => format!("build in progress ({:?})", artifact.phase),
+                },
             ));
         }
         BuildArtifactPhase::Failed => {
@@ -143,8 +151,10 @@ pub fn gate_build(
         return Err((
             reasons::CHECKSUM_MISSING,
             format!(
-                "status.buildArtifact.checksum is {:?}; publishing needs sha256:<hex> to name \
-                 and verify the image (ADR-0162 Decision 6)",
+                "status.buildArtifact.checksum is {:?}; publishing needs the sha256:<hex> \
+                 banlieue-imagebuilder measures from the built disk to name and verify the \
+                 image (ADR-0162 Decision 6); an image builder older than ADR-0010's \
+                 2026-11-26 amendment does not measure it: upgrade it",
                 artifact.checksum
             ),
         ));

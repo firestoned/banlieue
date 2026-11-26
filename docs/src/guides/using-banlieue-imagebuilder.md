@@ -366,8 +366,17 @@ can watch the underlying `OSArtifact` directly too:
 kubectl -n banlieue-imagebuild get osartifact kairos-ubuntu-2404-build -w
 ```
 
-Once `buildArtifact.phase` is `Ready`, `kind`, `pvcRef`, and `file` are
-populated — that's the handoff a provider's per-zone import reads:
+When the `OSArtifact` is `Ready`, the imagebuilder measures the file it
+produced before handing it over (ADR-0010, amendment 2026-11-26). A Job
+named `<osartifact>-digest` runs `banlieue imagebuilder digest` beside the
+artifacts PVC (read-only, non-root, no ServiceAccount token, the
+`--push-image` image) and reports the file's `sha256:<hex>`. Meanwhile
+`buildArtifact` stays `Building` with reason `DigestPending`, so no import,
+push or publish starts on an unmeasured file.
+
+Once `buildArtifact.phase` is `Ready`, `kind`, `pvcRef`, `file` and
+`checksum` are populated: that's the handoff a provider's per-zone import
+reads:
 
 ```text
 buildArtifact:
@@ -377,7 +386,21 @@ buildArtifact:
   pvcRef:
     name: kairos-ubuntu-2404-build-artifacts
   file: kairos-ubuntu-2404-build.iso
+  checksum: sha256:<64 hex, measured from the file>
 ```
+
+| `phase`, `reason` | Meaning |
+| --- | --- |
+| `Building`, `DigestPending` | the digest Job is measuring the built file |
+| `Failed`, `ChecksumMismatch` | the built file does not match the `checksum` the source declares |
+| `Failed`, `ChecksumUnsupported` | the source's `checksum` is not `sha256:<64 hex>` or `sha512:<128 hex>` |
+| `Failed`, `DigestFailed` | the digest Job failed or reported something other than a digest; its pod log says why |
+
+A failed digest Job is not retried on its own (one pod retry aside):
+delete it (`kubectl -n banlieue-imagebuild delete job <osartifact>-digest`)
+and touch the `VMImage` to measure again. A mirrored-image cluster sets
+`--push-image` (`BANLIEUE_PUSH_IMAGE`) even without a registry: the digest
+Job runs that image.
 
 ## 4. Check per-provider / per-zone status
 
@@ -495,6 +518,27 @@ by `GuestReady=False` (`FirstBootSealingUnverified` or
 `firstBootSealing` on an existing `VMImage` does not rebuild an artifact
 that already exists; recreate the `VMImage`.
 
+## Azure guest layer (ADR-0171)
+
+When any of a `VMImage`'s sources is `providerClass: azure`, the builder adds
+two things to the shared build, after the sealing layer:
+
+- the `banlieue-azure-guest` helper, unpacked onto the image's root
+  filesystem from the OCI image `--azure-guest-image`
+  (`BANLIEUE_AZURE_GUEST_IMAGE`) names, through the `OSArtifact`'s
+  `spec.artifacts.bundles`. The reference must be pinned by digest
+  (`<repository>@sha256:<hex>`) or the builder refuses to start;
+- a cloud-config layer that leaves the accelerated-networking VF unmanaged,
+  masks the QEMU guest agent, copies `customData` from the provisioning disk
+  into `/oem` and reports ready to Azure. Every step is gated on Azure's DMI
+  asset tag, so the same image is unchanged on any other backend.
+
+The [Azure guide](../providers/azure.md#what-the-image-must-do-and-what-banlieue-adds-for-you)
+has the details. An image without an `azure` source is built exactly as
+before. With the flag unset, the build is refused (`phase: Failed`, reason
+`AzureGuestImageUnset`). Adding or removing an `azure` source, or a new helper
+digest, rebuilds the artifact.
+
 ## Rebuilding after a worker is replaced (ADR-0115)
 
 On `local-path` storage the artifacts PVC is a directory on one worker's disk.
@@ -553,7 +597,7 @@ What happens, in order:
    `--prelay-image`. `buildArtifact` stays `Building`, reason `Prelaying`,
    so no import Job or registry push starts on the raw file.
 3. The Job checks the built file against the source's `checksum` (when
-   set), boots it once under QEMU with no network and no TPM, writes
+   set; this replaces the digest Job for a pre-laid build), boots it once under QEMU with no network and no TPM, writes
    `<osartifact>-prelaid.raw` beside it and reports that file's digest.
 4. `buildArtifact` becomes `Ready` with `file` the pre-laid image,
    `checksum` its digest and `prelaidDiskSizeGiB` the size; imports and the
@@ -661,13 +705,16 @@ Two guarantees hold over everything above:
   from before a spec change, or a foreign pre-created one — is deleted and
   rebuilt. kairos' status has no `observedGeneration` or digest to bind a
   `Ready` to the spec, so object identity is the anchor.
-- **The artifact can be verified end to end.** Set `checksum: <alg>:<hex>`
-  (`sha256` or `sha512`) on the `Url` source. It is copied to
-  `status.buildArtifact.checksum`, and provider import Jobs hash the built
-  artifact before any byte reaches a backend — both the libvirt and the
-  vSphere import Jobs fail closed on mismatch or an unsupported algorithm,
-  so a substituted or corrupted artifact never lands in a storage pool or
-  datastore.
+- **The artifact can be verified end to end.** The imagebuilder measures
+  every finished build and records its `sha256:<hex>` as
+  `status.buildArtifact.checksum` (ADR-0010, amendment 2026-11-26). Set
+  `checksum: <alg>:<hex>` (`sha256` or `sha512`) on the `Url` source to
+  pin what the build must produce: a mismatch fails the build closed
+  (`ChecksumMismatch`) before anything uses it. Provider import Jobs then
+  hash the artifact against the recorded checksum before any byte reaches
+  a backend; both the libvirt and the vSphere import Jobs fail closed on
+  mismatch, so a file substituted or corrupted after it was measured never
+  lands in a storage pool or datastore.
 
 !!! warning "`banlieue-imagebuild` pod-create is node-root-equivalent (SEC-009)"
     The build namespace enforces PSA `privileged` because kairos' build pods
@@ -675,7 +722,7 @@ Two guarantees hold over everything above:
     the host filesystem — treat every RoleBinding in `banlieue-imagebuild` as
     a node-root grant. Nothing but kairos' build pods, the providers' import
     Jobs, the registry push Jobs, and the artifacts PVC should ever run
-    there. The import Jobs
+    there (the digest and pre-lay Jobs aside). The import Jobs
     mitigate this by running under a dedicated read-only ServiceAccount,
     never the provider controller's own identity (ADR-0016 §4).
 
