@@ -45,13 +45,14 @@ use kube::{Resource, ResourceExt};
 use serde_json::{Value, json};
 use tracing::{info, warn};
 
+use crate::azure_guest::{azure_guest_layer, has_azure_source};
 use crate::cloud_config_merge::merge_cloud_configs;
 
 use crate::context::Context;
 use crate::error::{Error, Result};
 use crate::first_boot_sealing::{SealingLayerError, sealing_layer};
 use crate::importer_image::ImporterImage;
-use crate::reconciler::{prelay, push};
+use crate::reconciler::{digest, prelay, push};
 
 /// `OSArtifact`'s API group (kairos-operator, not banlieue's own).
 pub const OSARTIFACT_GROUP: &str = "build.kairos.io";
@@ -797,8 +798,9 @@ fn artifact_file_name(
 /// Compute the [`BuildArtifactStatus`] to publish, given the `OSArtifact`'s
 /// name, the artifact `kind`, and its current kairos status view. A missing
 /// `phase` (the `OSArtifact` was just created; status not yet populated) is
-/// treated as `Pending`. `checksum` is copied from the `Url` source verbatim —
-/// consumers verify the artifact against it (SEC-004). `os_artifact_uid` is
+/// treated as `Pending`. `checksum` is always `None` here: it is measured
+/// from the built file once the build is `Ready` ([`digest`]; ADR-0010,
+/// amendment 2026-11-26), never copied from the source. `os_artifact_uid` is
 /// the live `OSArtifact`'s `metadata.uid`, once observed — each provider's
 /// per-zone import Job sets it as its own `ownerReference` so a rebuild's
 /// deleted-and-recreated `OSArtifact` garbage-collects the stale Job instead
@@ -808,7 +810,6 @@ pub fn compute_build_artifact_status(
     os_artifact_name: &str,
     kind: BuildArtifactKind,
     view: &KairosArtifactStatusView,
-    checksum: Option<&str>,
     os_artifact_uid: Option<&str>,
     trusted_boot: bool,
 ) -> BuildArtifactStatus {
@@ -838,7 +839,7 @@ pub fn compute_build_artifact_status(
         pvc_ref,
         file,
         message: view.message.clone(),
-        checksum: checksum.map(str::to_string),
+        checksum: None,
         oci_artifact: None,
         first_boot_sealing_layer: false,
         prelaid_disk_size_gi_b: None,
@@ -898,13 +899,114 @@ pub fn merge_with_sealing(
     })
 }
 
+/// `buildArtifact.reason` when a `VMImage` has an `azure` source but the
+/// imagebuilder has no `--azure-guest-image` to put in it (ADR-0171).
+pub const REASON_AZURE_GUEST_IMAGE_UNSET: &str = "AzureGuestImageUnset";
+
+/// Merge the operator layers and the first-boot sealing layer
+/// ([`merge_with_sealing`]), then, for an image with an `azure` source,
+/// banlieue's Azure guest layer **last** (ADR-0171 Decision 3). With
+/// `azure_guest == false` the result is exactly [`merge_with_sealing`]'s, so
+/// an image without an `azure` source builds byte for byte as before.
+///
+/// # Errors
+/// [`Error::CloudConfigMerge`] when the layers do not merge.
+pub fn merge_build_layers(
+    operator_docs: &[&str],
+    sealing: Option<SealingRequest<'_>>,
+    azure_guest: bool,
+) -> Result<MergedCloudConfig> {
+    let merged = merge_with_sealing(operator_docs, sealing)?;
+    if !azure_guest {
+        return Ok(merged);
+    }
+    match merged {
+        MergedCloudConfig::Ready {
+            yaml,
+            sealing_layer,
+        } => Ok(MergedCloudConfig::Ready {
+            yaml: merge_cloud_configs(&[&yaml, &azure_guest_layer()])?,
+            sealing_layer,
+        }),
+        refused @ MergedCloudConfig::SealingRefused(_) => Ok(refused),
+    }
+}
+
+/// The `spec.artifacts.bundles` a build carries: the Azure guest helper
+/// image for an image with an `azure` source (ADR-0171 Decision 2), nothing
+/// otherwise.
+#[must_use]
+pub fn build_bundles(azure_guest: bool, helper_image: Option<&str>) -> Vec<String> {
+    match (azure_guest, helper_image) {
+        (true, Some(image)) => vec![image.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+/// Add `bundles` to a desired `OSArtifact` as `spec.artifacts.bundles`.
+/// An empty list adds nothing, so the manifest of a build without bundles
+/// is unchanged.
+pub fn with_bundles(os_artifact: &mut Value, bundles: &[String]) {
+    if bundles.is_empty() {
+        return;
+    }
+    if let Some(artifacts) = os_artifact
+        .get_mut("spec")
+        .and_then(|s| s.get_mut("artifacts"))
+        .and_then(Value::as_object_mut)
+    {
+        artifacts.insert("bundles".to_string(), json!(bundles));
+    }
+}
+
+/// True when the live `OSArtifact` unpacks exactly `bundles` (absent counts
+/// as empty). Adding or removing an `azure` source, or a new helper digest,
+/// changes the image's content, so it must rebuild ([`spec_matches`]'s
+/// reasoning: kairos-operator does not rebuild a changed spec).
+#[must_use]
+pub fn bundles_match(data: &Value, bundles: &[String]) -> bool {
+    let live: Vec<&str> = data["spec"]["artifacts"]["bundles"]
+        .as_array()
+        .map(|a| a.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    live.len() == bundles.len() && live.iter().zip(bundles).all(|(l, b)| *l == b)
+}
+
+/// `status.buildArtifact` for a build refused before any `OSArtifact`
+/// exists because the image has an `azure` source and no helper image is
+/// configured (ADR-0171).
+#[must_use]
+pub fn azure_guest_refused_status(
+    os_artifact_name: &str,
+    kind: BuildArtifactKind,
+) -> BuildArtifactStatus {
+    BuildArtifactStatus {
+        kind,
+        reason: Some(REASON_AZURE_GUEST_IMAGE_UNSET.to_string()),
+        phase: BuildArtifactPhase::Failed,
+        os_artifact_ref: os_artifact_name.to_string(),
+        os_artifact_uid: None,
+        pvc_ref: None,
+        file: None,
+        message: Some(
+            "this VMImage has an azure source, and an image for Azure must carry the \
+             banlieue-azure-guest helper, but the imagebuilder has no --azure-guest-image \
+             (BANLIEUE_AZURE_GUEST_IMAGE) set (ADR-0171)"
+                .to_string(),
+        ),
+        checksum: None,
+        oci_artifact: None,
+        first_boot_sealing_layer: false,
+        prelaid_disk_size_gi_b: None,
+    }
+}
+
 /// `status.buildArtifact` for a build refused before any `OSArtifact`
 /// exists because first-boot sealing cannot be honoured (ADR-0088).
 #[must_use]
 pub fn sealing_refused_status(
     os_artifact_name: &str,
     kind: BuildArtifactKind,
-    checksum: Option<&str>,
     err: &SealingLayerError,
 ) -> BuildArtifactStatus {
     BuildArtifactStatus {
@@ -916,7 +1018,7 @@ pub fn sealing_refused_status(
         pvc_ref: None,
         file: None,
         message: Some(err.to_string()),
-        checksum: checksum.map(str::to_string),
+        checksum: None,
         oci_artifact: None,
         first_boot_sealing_layer: false,
         prelaid_disk_size_gi_b: None,
@@ -941,6 +1043,7 @@ async fn merge_and_apply_cloud_configs(
     vmimage_uid: &str,
     cloud_configs: &[CloudConfigSource],
     sealing: Option<SealingRequest<'_>>,
+    azure_guest: bool,
 ) -> Result<CloudConfigOutcome> {
     let secrets_api: Api<Secret> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
 
@@ -967,9 +1070,10 @@ async fn merge_and_apply_cloud_configs(
         yaml_docs.push(yaml_str);
     }
 
-    // 2. Merge, with banlieue's first-boot sealing layer last (ADR-0088).
+    // 2. Merge, with banlieue's first-boot sealing layer (ADR-0088) and then
+    //    its Azure guest layer (ADR-0171) last.
     let doc_refs: Vec<&str> = yaml_docs.iter().map(String::as_str).collect();
-    let (merged_yaml, sealing_layer) = match merge_with_sealing(&doc_refs, sealing)? {
+    let (merged_yaml, sealing_layer) = match merge_build_layers(&doc_refs, sealing, azure_guest)? {
         MergedCloudConfig::Ready {
             yaml,
             sealing_layer,
@@ -1008,6 +1112,7 @@ async fn merge_and_apply_cloud_configs(
         secret = %merged_name,
         sources = cloud_configs.len(),
         sealing_layer,
+        azure_guest,
         "SSA-applied merged cloud-config Secret"
     );
 
@@ -1106,7 +1211,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
                     trusted_boot.secret_ref.name,
                     missing.join(", "),
                 )),
-                checksum: source.checksum.clone(),
+                checksum: None,
                 oci_artifact: None,
                 first_boot_sealing_layer: false,
                 prelaid_disk_size_gi_b: None,
@@ -1115,6 +1220,20 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             return Ok(requeue_default());
         }
     }
+
+    // ADR-0171: an image with an azure source carries the Azure guest helper
+    // and layer. Without a helper image to put in it the build is refused
+    // before any OSArtifact exists: an image that cannot report ready would
+    // fail every Azure VM after 20 minutes.
+    let azure_guest = has_azure_source(&image.spec.sources);
+    if azure_guest && ctx.azure_guest_image.is_none() {
+        warn!("VMImage has an azure source but --azure-guest-image is unset; refusing the build");
+        let build_status = azure_guest_refused_status(&os_name, kind.clone());
+        patch_vmimage_status(&ctx, &name, build_status).await?;
+        // Nothing changes until the imagebuilder restarts with the flag.
+        return Ok(requeue_long());
+    }
+    let bundles = build_bundles(azure_guest, ctx.azure_guest_image.as_deref());
 
     let os_api: Api<DynamicObject> = Api::namespaced_with(
         ctx.client.clone(),
@@ -1146,7 +1265,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             arch_str(&image.spec.architecture),
             &kind,
             image.spec.trusted_boot.as_ref(),
-        ),
+        ) && bundles_match(&obj.data, &bundles),
         terminating: obj.metadata.deletion_timestamp.is_some(),
         volume_lost,
     });
@@ -1184,7 +1303,6 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             &os_name,
             kind.clone(),
             &view,
-            source.checksum.as_deref(),
             None,
             image.spec.trusted_boot.is_some(),
         );
@@ -1197,7 +1315,8 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
     // Secrets. If empty, no cloud-config at all.
     // ADR-0088: an image that seals on first boot always gets a merged
     // Secret, since banlieue's own layer is a cloud-config even when the
-    // operator supplied none.
+    // operator supplied none. ADR-0171: so does an image with an azure
+    // source.
     let sealing = image
         .spec
         .first_boot_sealing
@@ -1207,9 +1326,17 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             kind: &kind,
             install_mode,
         });
-    let (merged_cc, sealing_layer) = if !image.spec.cloud_configs.is_empty() || sealing.is_some() {
-        match merge_and_apply_cloud_configs(&ctx, &name, &uid, &image.spec.cloud_configs, sealing)
-            .await?
+    let needs_merge = !image.spec.cloud_configs.is_empty() || sealing.is_some() || azure_guest;
+    let (merged_cc, sealing_layer) = if needs_merge {
+        match merge_and_apply_cloud_configs(
+            &ctx,
+            &name,
+            &uid,
+            &image.spec.cloud_configs,
+            sealing,
+            azure_guest,
+        )
+        .await?
         {
             CloudConfigOutcome::Applied {
                 source,
@@ -1217,12 +1344,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
             } => (Some(source), sealing_layer),
             CloudConfigOutcome::SealingRefused(err) => {
                 warn!(reason = err.reason(), error = %err, "firstBootSealing refused the build");
-                let build_status = sealing_refused_status(
-                    &os_name,
-                    kind.clone(),
-                    source.checksum.as_deref(),
-                    &err,
-                );
+                let build_status = sealing_refused_status(&os_name, kind.clone(), &err);
                 patch_vmimage_status(&ctx, &name, build_status).await?;
                 // Nothing changes until the VMImage or a cloud-config does.
                 return Ok(requeue_long());
@@ -1232,7 +1354,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         (None, false)
     };
 
-    let desired = desired_os_artifact(
+    let mut desired = desired_os_artifact(
         &os_name,
         &ctx.build_namespace,
         source,
@@ -1248,6 +1370,7 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &ctx.importer_image,
         image.spec.trusted_boot.as_ref(),
     );
+    with_bundles(&mut desired, &bundles);
     let params = PatchParams::apply(FIELD_MANAGER_IMAGEBUILDER).force();
     os_api
         .patch(&os_name, &params, &Patch::Apply(&desired))
@@ -1263,23 +1386,33 @@ pub async fn reconcile(image: Arc<VMImage>, ctx: Arc<Context>) -> Result<Action>
         &os_name,
         kind,
         &view,
-        source.checksum.as_deref(),
         os_artifact_uid,
         image.spec.trusted_boot.is_some(),
     );
     build_status.first_boot_sealing_layer = sealing_layer;
     // ADR-0113: a pre-laid image is the artifact; until the pre-lay Job is
-    // done nothing may start on the raw file.
+    // done nothing may start on the raw file. The pre-lay Job verifies the
+    // declared checksum and measures the file it writes.
     if let Some(request) = image.spec.prelay.as_ref() {
         if let Some(refusal) =
             prelay::prelay_refusal(&build_status.kind, ctx.prelay_image.as_deref())
         {
             prelay::apply_refusal(&mut build_status, refusal);
         } else if build_status.phase == BuildArtifactPhase::Ready {
+            let declared = source.checksum.as_deref();
             let outcome =
-                reconcile_prelay(&ctx, &name, &build_status, request.disk_size_gi_b).await?;
+                reconcile_prelay(&ctx, &name, &build_status, request.disk_size_gi_b, declared)
+                    .await?;
             prelay::apply_prelay(&mut build_status, &outcome, request.disk_size_gi_b);
         }
+    } else if build_status.phase == BuildArtifactPhase::Ready {
+        // ADR-0010 (amendment 2026-11-26): every other build is measured
+        // before anything uses it; a declared checksum is verified here.
+        let previous = image
+            .status
+            .as_ref()
+            .and_then(|s| s.build_artifact.as_ref());
+        measure_build(&ctx, &name, source, previous, &mut build_status).await?;
     }
     // ADR-0064: a host-resident provider cannot mount the PVC, so a Ready
     // artifact it needs goes to the registry too.
@@ -1406,14 +1539,88 @@ async fn reconcile_push(
     Ok(status)
 }
 
+/// Measure a `Ready` build and fold the result into `status` (ADR-0010,
+/// amendment 2026-11-26): refuse a declared checksum banlieue cannot verify,
+/// otherwise drive the digest Job and check what it reports against the
+/// declared checksum, if any.
+async fn measure_build(
+    ctx: &Context,
+    vmimage: &str,
+    source: &ImageSource,
+    previous: Option<&BuildArtifactStatus>,
+    status: &mut BuildArtifactStatus,
+) -> Result<()> {
+    let declared = match source
+        .checksum
+        .as_deref()
+        .map(digest::parse_declared_checksum)
+        .transpose()
+    {
+        Ok(declared) => declared,
+        Err(why) => {
+            let value = source.checksum.as_deref().unwrap_or_default();
+            digest::apply_checksum_refusal(status, value, &why);
+            return Ok(());
+        }
+    };
+    let outcome = reconcile_digest(ctx, vmimage, status, declared.as_ref(), previous).await?;
+    digest::apply_digest(status, &outcome, declared.as_ref());
+    Ok(())
+}
+
+/// Drive the digest Job for a `Ready` build: create it if absent, replace a
+/// previous build's, and once it succeeds read the digests it reported. A
+/// succeeded Job whose result is gone keeps the digest already recorded for
+/// this build, or runs again when there is none.
+async fn reconcile_digest(
+    ctx: &Context,
+    vmimage: &str,
+    artifact: &BuildArtifactStatus,
+    declared: Option<&digest::DeclaredChecksum>,
+    previous: Option<&BuildArtifactStatus>,
+) -> Result<digest::DigestOutcome> {
+    let Some(uid) = artifact.os_artifact_uid.as_deref() else {
+        return Ok(digest::DigestOutcome::Running);
+    };
+    let job_name = digest::digest_job_name(&artifact.os_artifact_ref);
+    let desired = || {
+        digest::build_digest_job(&digest::DigestJobInputs {
+            job_name: &job_name,
+            namespace: &ctx.build_namespace,
+            vmimage,
+            image: &ctx.helper_image,
+            artifact,
+            os_artifact_uid: uid,
+            sha512: declared.is_some_and(|d| d.algorithm == digest::ChecksumAlgorithm::Sha512),
+            tolerations: &ctx.scheduling.tolerations,
+        })
+    };
+    let (job, message) = match ensure_job(ctx, &job_name, uid, "digest", desired).await? {
+        JobState::Created | JobState::Replacing => return Ok(digest::DigestOutcome::Running),
+        JobState::Live(job, message) => (job, message),
+    };
+    let outcome = digest::digest_outcome(&job, message.as_deref());
+    if outcome != digest::DigestOutcome::ResultLost {
+        return Ok(outcome);
+    }
+    let carryable = declared.is_none_or(|d| d.algorithm == digest::ChecksumAlgorithm::Sha256);
+    if let Some(checksum) = digest::carried_digest(previous, uid).filter(|_| carryable) {
+        return Ok(digest::DigestOutcome::Carried(checksum));
+    }
+    let jobs: Api<Job> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
+    jobs.delete(&job_name, &DeleteParams::background()).await?;
+    Ok(outcome)
+}
+
 /// Drive the pre-lay Job for a `Ready` raw build (ADR-0113): create it if
 /// absent, replace a previous build's, and once it succeeds read the digest
-/// it reported.
+/// it reported. `declared` is the source's checksum, verified first.
 async fn reconcile_prelay(
     ctx: &Context,
     vmimage: &str,
     artifact: &BuildArtifactStatus,
     disk_size_gib: u32,
+    declared: Option<&str>,
 ) -> Result<prelay::PrelayOutcome> {
     let (Some(image), Some(uid)) = (
         ctx.prelay_image.as_deref(),
@@ -1431,6 +1638,7 @@ async fn reconcile_prelay(
             artifact,
             os_artifact_uid: uid,
             disk_size_gib,
+            verify_checksum: declared,
             tolerations: &ctx.scheduling.tolerations,
             node_selector: &ctx.scheduling.node_selector,
         })
@@ -1447,7 +1655,7 @@ fn job_succeeded(job: &Job) -> bool {
     job.status.as_ref().and_then(|s| s.succeeded).unwrap_or(0) > 0
 }
 
-/// The termination message of the push Job's successful pod, if any.
+/// The termination message of a helper Job's successful pod, if any.
 async fn push_termination_message(ctx: &Context, job_name: &str) -> Result<Option<String>> {
     let pods: Api<Pod> = Api::namespaced(ctx.client.clone(), &ctx.build_namespace);
     let list = pods

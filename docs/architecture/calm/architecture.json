@@ -1229,7 +1229,7 @@
       "unique-id": "system-azure-guest",
       "node-type": "system",
       "name": "Azure Trusted Launch guest",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163, ADR-0165). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. The image reads customData from the local provisioning disk, never configures the accelerated-networking VF, and reports Ready to the host-local WireServer only from active mode after user data is applied. No public IP; the subnet has no default outbound access."
+      "description": "IMPLEMENTED for banlieue-built images, NOT VERIFIED LIVE (ADR-0163, ADR-0165, ADR-0171). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. Every build of a VMImage with an azure source carries the Azure guest layer and helper (ADR-0171): banlieue-imagebuilder lists the digest-pinned banlieue-azure-guest bundle image in the OSArtifact's spec.artifacts.bundles (kairos-operator unpacks it onto the build rootfs at /usr/bin/banlieue-azure-guest; crates/banlieue-imagebuilder/src/reconciler/vmimage.rs, --azure-guest-image must be repository@sha256) and merges a generated cloud-config layer last (crates/banlieue-imagebuilder/src/azure_guest.rs): the accelerated-networking VF (mana, mlx4_core, mlx5_core) left unmanaged in the initramfs and the real root, qemu-guest-agent masked on Hyper-V, banlieue-azure-guest customdata in the boot stage (crates/banlieue-guest-azure/src/customdata.rs, src/ovf.rs: the local UDF provisioning disk mounted read-only nosuid nodev noexec, a strict ovf-env.xml parser, at most 64 KiB and only a #cloud-config document, written to /oem/91_azure_customdata.yaml 0600 atomically), and banlieue-azure-ready.service after cos-setup-network.service on active or passive boots only. Every step is gated on the Azure DMI chassis asset tag, so the same image is unchanged on other backends. Logs go to /dev/kmsg; customData is never logged. No public IP; the subnet has no default outbound access."
     },
     {
       "unique-id": "network-azure-disk-upload",
@@ -4035,7 +4035,7 @@
     },
     {
       "unique-id": "rel-azure-guest-wireserver-ready",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163): the guest posts Ready to the host-local WireServer (168.63.129.16, goal state then health) once in active mode with its user data applied; Azure then marks the VM Succeeded, which the provider reads through ARM as GuestReady. banlieue's side is read-only; no credential in the guest. Verified on real VMs 2026-11-23/24.",
+      "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0163, ADR-0171): banlieue-azure-guest ready (crates/banlieue-guest-azure/src/ready.rs, src/goalstate.rs, src/http.rs), run by banlieue-azure-ready.service after Kairos's network stage so every stage of customData has applied, only on an active or passive boot, GETs the goal state from the host-local WireServer (168.63.129.16:80, a constant, plain HTTP as Azure designs it, x-ms-version 2012-11-30) and POSTs a Health document with State Ready, echoing Incarnation, ContainerId and InstanceId after checking each against a narrow character set; retried with back-off (1 s doubling to 30 s) for at most 15 minutes. Azure then marks the VM Succeeded, which the provider reads through ARM as GuestReady. The guest only reports; it receives no credential from WireServer, and banlieue's side is read-only. The spike's shell version was verified on real VMs 2026-11-23/24.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -4049,7 +4049,7 @@
       "protocol": "HTTP",
       "controls": {
         "azure-guestready-read-only": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163 Decision 1): banlieue only reads provisioningState through ARM; it opens no channel into the guest.",
+          "description": "IMPLEMENTED (ADR-0163 Decision 1): banlieue only reads provisioningState through ARM (crates/banlieue-provider-azure/src/reconciler/azurevirtualmachine.rs); it opens no channel into the guest.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -4060,6 +4060,23 @@
                   "AC-4"
                 ],
                 "evidence": "docs/adr/0163-guestready-on-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "azure-guest-helper-local-only": {
+          "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0171): the helper is baked into the image at build time from a digest-pinned bundle (crates/banlieue-imagebuilder/src/azure_guest.rs validate_helper_image; a tag refuses to start), fetches nothing at boot, reads customData only from the local provisioning disk, and its WireServer address is a compile-time constant with no flag or environment override (crates/banlieue-guest-azure/src/cli.rs).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SR-4",
+                  "SI-7",
+                  "CM-14"
+                ],
+                "evidence": "docs/adr/0171-azure-guest-layer.md"
               }
             }
           ]

@@ -54,8 +54,9 @@ resource group, network, security group or image. Have these first
   assignment tight.
 - **A virtual network and subnet** the VMs' NICs join, with whatever network
   security group and egress you want. It may live in another resource group.
-- **A Compute Gallery image version** to boot, built for Azure (see
-  [What the image must do](#what-the-image-must-do)). Its image definition
+- **A Compute Gallery image version** to boot, built for Azure (banlieue
+  builds it for you from a `Url` source; see
+  [What the image must do](#what-the-image-must-do-and-what-banlieue-adds-for-you)). Its image definition
   must have:
     - `HyperVGeneration` **V2**;
     - `SecurityType=TrustedLaunch`, when VMs of a `tpmEnabled` class will
@@ -391,12 +392,17 @@ spec:
       kind: Url               # build it (or reuse the build) and publish it
       ref: unused-for-url-sources
       importFrom: quay.io/kairos/ubuntu:24.04-core-amd64-generic-v4.4.0@sha256:<digest>
-      checksum: sha256:<64 hex of the built raw disk>
 ```
 
-`checksum` is the SHA-256 of the **built** disk, which names the published
-version and which the publish Job verifies before uploading. Without one the
-row reports `ChecksumMissing` and nothing is published.
+The published version is named after the SHA-256 of the **built** disk,
+which the image builder measures once the build finishes and records as
+`status.buildArtifact.checksum` (ADR-0010, amendment 2026-11-26); the
+publish Job verifies the file against it before uploading. No `checksum` is
+needed on the source: an OCI-built disk's hash cannot be known in advance.
+If you do declare one (`sha256:` or `sha512:` of the built disk), the build
+fails closed (`ChecksumMismatch`) when the disk does not match it. While the
+disk is being measured the build is `Building` (`DigestPending`) and the
+Azure row reports `BuildPending`.
 
 ### What it needs
 
@@ -445,7 +451,8 @@ For every `azure` `Provider` that serves the `VMImage`:
    build is an ISO and the Azure row reports `BuildKindUnsupported`. List the
    `azure` source first, or use a separate `VMImage`.
 2. The provider names the version after the build's digest
-   (`status.buildArtifact.checksum`, which must be `sha256:...`) and the
+   (`status.buildArtifact.checksum`, the `sha256:...` the image builder
+   measured from the built disk) and the
    image definition after the `VMImage` (a `-tl` Trusted Launch definition
    when the image declares `firstBootSealing`), and reads that version.
 3. If it is missing, the provider creates a publish Job in
@@ -483,7 +490,7 @@ gallery itself are never touched.
 | `PublisherNotConfigured` | The `Provider` declares no `connection.azure.publisher` |
 | `BuildPending` / `BuildFailed` | The image builder has not built the source yet, or failed |
 | `BuildKindUnsupported` | The shared build is an ISO |
-| `ChecksumMissing` | The build has no `sha256:` checksum to name and verify the version by |
+| `ChecksumMissing` | A `Ready` build has no `sha256:` checksum to name and verify the version by: its status was written by an image builder older than ADR-0010's 2026-11-26 amendment, which measures every build; it clears once the upgraded image builder has measured it |
 | `LookupFailed` | The version could not be read from Azure (the runtime identity lacks `versions/read` on the gallery, or ARM is unreachable) |
 | `Publishing` | A publish Job is running, or was just created or replaced |
 | `PublishFailed` | The publish Job failed; it is retried 10 minutes after the failure. The message carries its last error |
@@ -676,27 +683,73 @@ nothing reports, Azure fails the VM with `OSProvisioningTimedOut` after
 about 20 minutes, however healthy it is, and banlieue sets `GuestReady=False`
 with that reason.
 
-### What the image must do
+### What the image must do, and what banlieue adds for you
 
 The provider sets `provisionVMAgent: false` and runs no Azure agent, so the
-image itself must (ADR-0163 Decision 3):
+image itself must (ADR-0163 Decision 3) read `customData` locally, apply it
+before reporting, report ready to WireServer only from an installed boot,
+leave the accelerated-networking VF unmanaged, start no QEMU guest agent on
+Hyper-V and log to `/dev/kmsg`.
 
-- **Read `customData` locally**, from the provisioning disk (UDF,
-  `ovf-env.xml`, `<CustomData>` base64), never from a metadata address.
-  Kairos's own datasource does not read it; a step baked into the image
-  must.
-- **Apply the user data before reporting ready**, in the same boot, so
-  "ready" means "configured as asked".
-- **Report ready** to WireServer (`168.63.129.16`): fetch the goal state,
-  post a `Health` document with `<State>Ready</State>`, retrying until a 2xx,
-  after waiting for a route; only when booted from the installed disk (never
-  recovery mode).
-- **Never configure the accelerated-networking VF** (drivers `mana`,
-  `mlx4_core`, `mlx5_core`): exclude it from the initramfs network config, or
-  the default route can land on it and the report never arrives. Required
-  before you set `acceleratedNetworking: "true"`.
-- **Not start a QEMU guest agent on Hyper-V**, and **log to `/dev/kmsg`**
-  rather than the serial device.
+**An image banlieue builds gets all of it automatically**
+([ADR-0171](https://github.com/firestoned/banlieue/blob/main/docs/adr/0171-azure-guest-layer.md)).
+When a `VMImage` has any `azure` source, the image builder adds two things to
+its build, whatever the Kairos source image (a stock flavour, your own base
+image, a gateway image):
+
+- **`banlieue-azure-guest`**, a 453 KiB static Rust binary, at
+  `/usr/bin/banlieue-azure-guest`. It comes from a digest-pinned OCI image
+  that kairos-operator unpacks onto the image's root filesystem at build
+  time (`spec.artifacts.bundles`); nothing is downloaded at boot.
+- **A cloud-config layer**, merged after your `cloudConfigs` and after the
+  first-boot sealing layer, so none of yours can remove it:
+
+  | Stage | What it does |
+  | --- | --- |
+  | `rootfs.before`, `initramfs` | writes `/etc/systemd/network/10-banlieue-azure-vf-unmanaged.network`, so the VF (`mana`, `mlx4_core`, `mlx5_core`) is never configured, in the initramfs or the real root |
+  | `initramfs` | masks `qemu-guest-agent.service` for the boot, and installs `banlieue-azure-ready.service` |
+  | `boot` | `banlieue-azure-guest customdata`: mounts the provisioning disk read-only, takes `CustomData` out of `ovf-env.xml` (at most 64 KiB, and only a `#cloud-config` document), and writes it to `/oem/91_azure_customdata.yaml`, mode 0600 |
+  | after `cos-setup-network.service` | `banlieue-azure-ready.service` runs `banlieue-azure-guest ready` on an active or passive boot only: goal state, then `Health` `Ready` to `168.63.129.16`, retried with back-off for up to 15 minutes |
+
+Every step is gated on Azure's DMI chassis asset tag, so the same image
+behaves exactly as before on libvirt, Cloud Hypervisor or vSphere. An image
+without an `azure` source is built byte for byte as before.
+
+The order is what makes "ready" mean "configured as asked": a raw image's
+first boot is a recovery boot that writes `/oem/91_azure_customdata.yaml`
+before AuroraBoot's automatic reset, the reset keeps `COS_OEM`, and the first
+active boot applies your user data from its very first stage; the report
+waits for Kairos's last boot stage.
+
+The image builder needs the helper image's reference, pinned by digest:
+
+```yaml
+# deploy/imagebuilder/configmap.yaml
+BANLIEUE_AZURE_GUEST_IMAGE: "ghcr.io/firestoned/banlieue-azure-guest@sha256:<digest>"
+```
+
+Without it, a `VMImage` with an `azure` source fails its build with
+`AzureGuestImageUnset` instead of producing an image that would time out on
+Azure; a tag instead of a digest stops the image builder at start-up.
+
+#### What your base image must not do
+
+The layer works with any Kairos image that does not undo it. Do not:
+
+- configure the VF from a networkd file that sorts before
+  `10-banlieue-azure-vf-unmanaged.network`;
+- install another Azure provisioning agent (`waagent`, or cloud-init with the
+  Azure datasource): two agents would both consume customData and report;
+- ship your own `/usr/bin/banlieue-azure-guest`, or mask
+  `banlieue-azure-ready.service`;
+- mount `COS_OEM` read-only, or block root's traffic to `168.63.129.16`
+  (a host firewall must allow it for uid 0);
+- make customData anything but a `#cloud-config` document: anything else is
+  refused and logged, never written.
+
+**A hand-published image** (a `Template` source) is not built by banlieue and
+gets none of this: it must carry the same pieces itself, or be rebuilt from a
+`Url` source.
 
 A first boot (recovery, layout, reset, reboot, user data, readiness) must
 finish inside Azure's provisioning window. In the roadmap 23 spike, create to
@@ -711,7 +764,8 @@ Boot diagnostics are always on, so the serial log is there when a VM fails:
 | Symptom | Cause |
 | --- | --- |
 | `GuestReady=False`, reason `OSProvisioningTimedOut`, after about 20 minutes | The image never reported ready: it has no ready step, it could not reach WireServer (no route, often the VF took the default route on an accelerated-networking size), or first boot took longer than the window. Read the boot log. After this failure Azure refuses every update to the VM; delete and recreate it. |
-| The VM boots but ignores its user data | The image reads `customData` from a metadata address, or applies it on the next boot (after the report). See [What the image must do](#what-the-image-must-do). |
+| The VM boots but ignores its user data | The image reads `customData` from a metadata address, or applies it on the next boot (after the report). For a banlieue-built image, the boot log (`banlieue-azure-guest:` lines) says why: no provisioning disk, no customData, or customData refused (not a `#cloud-config` document, over 64 KiB). See [What the image must do](#what-the-image-must-do-and-what-banlieue-adds-for-you). |
+| A `VMImage` with an `azure` source fails to build, reason `AzureGuestImageUnset` | The image builder has no `BANLIEUE_AZURE_GUEST_IMAGE`. Set it to the `banlieue-azure-guest` image, pinned by digest (ADR-0171). |
 | A zone missing from the `Provider`'s failure domains, or `NotAvailableForSubscription` | The size is offered in that zone but restricted for this subscription. `az vm list-skus --location <region> --size <size>` shows the restrictions. Map another size for that zone with `instanceSizes[].perZone`, or request access. |
 | A `VirtualMachine` stays unscheduled on Azure, reason `insufficient quota: vCPUs ...` | The published quota headroom (`capacity.cpus`) does not fit the VM. Raise the region's or the size family's vCPU quota (`az vm list-usage` shows usage and limit); quota is an action outside banlieue. |
 | `VMCreated=False`, reason `QuotaExceeded` | The scheduler admitted the VM but ARM refused it over quota (see [Failure domains and capacity](#failure-domains-and-capacity)). The create is retried every 5 minutes; raise the quota or delete the `VirtualMachine`. |

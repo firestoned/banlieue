@@ -32,6 +32,11 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 tracing.workspace = true
 
+# Streaming sha256/sha512 of a finished build for `banlieue imagebuilder
+# digest` (ADR-0010, amendment 2026-11-26). RustCrypto, already in the
+# workspace; ADR-0170 bans ring.
+sha2.workspace = true
+
 clap.workspace = true
 
 [dev-dependencies]

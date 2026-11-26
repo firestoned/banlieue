@@ -10,6 +10,7 @@ members = [
     "crates/banlieue-proxmox",
     "crates/banlieue-controller",
     "crates/banlieue-diskformat",
+    "crates/banlieue-guest-azure",
     "crates/banlieue-host",
     "crates/banlieue-imagebuilder",
     "crates/banlieue-libvirt",
@@ -121,6 +122,11 @@ getrandom = "0.4"
 # as base64 (ADR-0043). Well-known, actively maintained, decode-only use.
 base64 = "0.23"
 
+# mount(2)/umount2(2) for the Azure guest helper's read-only mount of the
+# provisioning disk (ADR-0171). Already in the lockfile through tokio and
+# getrandom; pinned here so the helper does not shell out to mount(8).
+libc = "0.2"
+
 # Parsing vTPM endorsement key certificates (ADR-0045). A guest reports its own
 # EK certificate on libvirt, so banlieue must confirm the bytes really are an
 # X.509 certificate issued to the domain it defined before publishing them into
@@ -172,3 +178,14 @@ banlieue-diskformat = { path = "crates/banlieue-diskformat" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The Azure guest helper (ADR-0171) ships inside every Azure-bound image,
+# so it is built for size: `cargo build -p banlieue-guest-azure --profile
+# guest --target x86_64-unknown-linux-musl`. Only that binary uses it.
+[profile.guest]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

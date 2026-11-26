@@ -978,6 +978,28 @@ prepare-binaries-linux-arm64: build-linux-arm64 ## Stage $(BINARY) at binaries/a
 	@cp target/aarch64-unknown-linux-gnu/release/$(BINARY) binaries/arm64/
 	@echo "✓ binaries/arm64/$(BINARY) ready"
 
+# ----- Azure guest helper (ADR-0171) ----------------------------------------
+#
+# `banlieue-azure-guest` ships inside every Azure-bound Kairos image as a
+# kairos-operator bundle: a FROM-scratch OCI image holding one static musl
+# binary. Built for size with the workspace's `guest` profile. The image
+# builder takes the published image by digest (--azure-guest-image).
+
+AZURE_GUEST_TRIPLE ?= x86_64-unknown-linux-musl
+AZURE_GUEST_IMAGE  ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/banlieue-azure-guest:$(IMAGE_TAG)
+
+.PHONY: azure-guest-binary azure-guest-image
+azure-guest-binary: ## Build the static Azure guest helper and stage it at binaries/amd64/banlieue-azure-guest (ADR-0171)
+	@rustup target add $(AZURE_GUEST_TRIPLE) >/dev/null 2>&1 || true
+	cargo build -p banlieue-guest-azure --profile guest --target $(AZURE_GUEST_TRIPLE)
+	@mkdir -p binaries/amd64
+	@cp target/$(AZURE_GUEST_TRIPLE)/guest/banlieue-azure-guest binaries/amd64/
+	@ls -l binaries/amd64/banlieue-azure-guest
+
+azure-guest-image: azure-guest-binary ## Build the FROM-scratch bundle image $(AZURE_GUEST_IMAGE) (linux/amd64, loads to local docker)
+	docker buildx build --platform linux/amd64 --load \
+	  -f Dockerfile.azure-guest -t $(AZURE_GUEST_IMAGE) .
+
 # ----- Docker images --------------------------------------------------------
 
 docker-build: ## Build distroless image for $(BINARY) (linux/amd64, loads to local docker)

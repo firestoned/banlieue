@@ -21,9 +21,11 @@
 //! the `banlieue imagebuilder` subcommand (see ADR-0004). It has no `main`.
 
 pub mod app;
+pub mod azure_guest;
 pub mod cloud_config_merge;
 pub mod context;
 pub mod error;
+pub mod file_digest;
 pub mod first_boot_sealing;
 pub mod importer_image;
 pub mod oci_push;

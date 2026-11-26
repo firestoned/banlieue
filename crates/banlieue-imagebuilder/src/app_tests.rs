@@ -194,6 +194,21 @@ mod tests {
         assert_eq!(args.scratch_dir, std::path::PathBuf::from("/scratch"));
     }
 
+    /// The digest Job's command line (ADR-0010, amendment 2026-11-26).
+    #[test]
+    fn digest_subcommand_parses() {
+        let cli = parse(&["digest", "--file", "/artifacts/x.raw", "--sha512"]);
+        let Some(ImagebuilderCommand::Digest(args)) = cli.command else {
+            panic!("expected digest");
+        };
+        assert_eq!(args.file, std::path::PathBuf::from("/artifacts/x.raw"));
+        assert!(args.sha512);
+        assert_eq!(
+            args.termination_log,
+            std::path::PathBuf::from("/dev/termination-log")
+        );
+    }
+
     #[test]
     fn build_importer_image_overrides_parse() {
         let cli = parse(&[
@@ -270,5 +285,41 @@ mod tests {
         for off in ["", "  "] {
             assert_eq!(prelay_image(&parse(&["--prelay-image", off])), None);
         }
+    }
+
+    // ---- --azure-guest-image (ADR-0171) ----
+
+    const PINNED_HELPER: &str = "registry.internal:5000/banlieue-azure-guest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    /// Unset by default: a VMImage with an azure source then fails with
+    /// `AzureGuestImageUnset` rather than building an image that cannot
+    /// report ready.
+    #[test]
+    fn azure_guest_image_is_unset_by_default() {
+        assert_eq!(azure_guest_image(&parse(&[])).expect("ok"), None);
+        assert_eq!(
+            azure_guest_image(&parse(&["--azure-guest-image", "  "])).expect("ok"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_digest_pinned_azure_guest_image_is_accepted() {
+        let cli = parse(&["--azure-guest-image", PINNED_HELPER]);
+        assert_eq!(
+            azure_guest_image(&cli).expect("ok").as_deref(),
+            Some(PINNED_HELPER)
+        );
+    }
+
+    /// A tag can move; what lands in every Azure image must not.
+    #[test]
+    fn a_tagged_azure_guest_image_refuses_to_start() {
+        let cli = parse(&[
+            "--azure-guest-image",
+            "ghcr.io/firestoned/banlieue-azure-guest:v0.6.0",
+        ]);
+        let err = azure_guest_image(&cli).expect_err("refused");
+        assert!(err.to_string().contains("--azure-guest-image"));
     }
 }

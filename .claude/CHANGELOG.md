@@ -1,5 +1,87 @@
 # Changelog
 
+## [2026-11-26 16:30] - Azure guest layer and the `banlieue-azure-guest` helper (ADR-0171)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0171-azure-guest-layer.md` (Accepted): every build of a `VMImage` with an `azure` source carries
+  ADR-0163 Decision 3's image requirements automatically, as a banlieue-generated cloud-config layer merged
+  last plus a Rust helper delivered as a digest-pinned kairos-operator bundle (`spec.artifacts.bundles`).
+  Records why not base64 in the cloud-config, `overlayRootfsVolume` (ISO only), an `ociSpec` Dockerfile, an
+  importer, a boot-time fetch or shell with `curl`.
+- `crates/banlieue-guest-azure` (new workspace member), binary `banlieue-azure-guest`: `customdata` (scan
+  `/dev/sr*`, mount read-only `nosuid,nodev,noexec`, strict `ovf-env.xml` parser, base64 within 64 KiB, only a
+  `#cloud-config` document, written to `/oem/91_azure_customdata.yaml` 0600 atomically, idempotent) and `ready`
+  (goal state then `Health` `Ready` to the constant `168.63.129.16:80` over a minimal `std::net` HTTP/1.1
+  client, identifiers checked before they reach XML, back-off 1 s to 30 s for at most 15 minutes, active or
+  passive boots only). Both do nothing off Azure (DMI asset tag) and log to `/dev/kmsg`, never customData.
+  Dependencies: `libc` (new in `[workspace.dependencies]`, already in the lockfile), `base64`, `thiserror`.
+  78 unit tests, including a fake WireServer on 127.0.0.1. Static musl build with the new `[profile.guest]`
+  (opt-level z, fat LTO, strip, panic=abort): 463,536 bytes.
+- `crates/banlieue-imagebuilder/src/azure_guest.rs`: the layer (VF networkd file in `rootfs.before` and
+  `initramfs`, `qemu-guest-agent` masked for the boot, `banlieue-azure-ready.service` after
+  `cos-setup-network.service`, `customdata` in `boot`; every step gated on the asset tag), a snapshot
+  (`azure_guest_layer.snapshot.yaml`), `has_azure_source`, `validate_helper_image`.
+- `--azure-guest-image` / `BANLIEUE_AZURE_GUEST_IMAGE` (`app.rs`, `context.rs`): digest-pinned or the
+  imagebuilder refuses to start; unset, a `VMImage` with an `azure` source fails with `AzureGuestImageUnset`.
+- `Dockerfile.azure-guest` (`FROM scratch`, one file at `/usr/bin/banlieue-azure-guest`) and
+  `make azure-guest-binary` / `make azure-guest-image`; commented `BANLIEUE_AZURE_GUEST_IMAGE` in
+  `deploy/imagebuilder/configmap.yaml`.
+
+### Changed
+- `crates/banlieue-imagebuilder/src/reconciler/vmimage.rs`: `merge_build_layers` (operator, sealing, then
+  Azure), `build_bundles`, `with_bundles`, `bundles_match` (a changed bundle list rebuilds the artifact),
+  `azure_guest_refused_status`. An image without an `azure` source merges and renders byte for byte as before
+  (tested).
+- `docs/architecture/calm/architecture.json`: `system-azure-guest` and `rel-azure-guest-wireserver-ready`
+  now IMPLEMENTED (not verified live), citing files; new control `azure-guest-helper-local-only`.
+- `docs/src/providers/azure.md`: "What the image must do, and what banlieue adds for you", what a site base
+  image must not do, two troubleshooting rows.
+- `docs/src/security/threat-model.md`: threat model pass for ADR-0171: §2 component, A-2, §5 diagram (the
+  guest's provisioning disk and WireServer legs), three TB-4 rows, a TB-6 row, §7.36 (l), two §8 risks
+  (customData at rest on `COS_OEM`; plain-HTTP report and no live run yet); stamp now ADR-0171, 2026-11-26.
+- Roadmap 23 phase D and `ROADMAPS.md`.
+
+### Why
+ADR-0163 left the image requirements to each image; the spike met them with shell and `curl` in one image.
+Any Kairos image, a site's own base image and a gateway image should boot on Azure with nothing
+Azure-specific in them, and in-guest helpers are Rust.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (imagebuilder flag; Azure builds refuse without it)
+- [ ] Config change only
+- [ ] Documentation only
+
+Not run on Azure. A live run must confirm the bundle lands in the active image, the recovery boot writes
+customData before the reset, the ready unit runs after `cos-setup-network.service` and gets HTTP 200, and the
+VF stays unmanaged on an accelerated-networking size.
+
+## [2026-11-26 13:15] - ClusterFuzzLite builds with a nightly at or above the MSRV
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.clusterfuzzlite/Dockerfile`: installs and selects `nightly-2026-04-10` (rustc 1.96.0-nightly, LLVM 22) on
+  top of the pinned `base-builder-rust`, whose own `nightly-2025-09-05` (rustc 1.91) is below the workspace
+  MSRV of 1.95 (#239). Upstream has not moved that pin since 2025-09.
+- `crates/banlieue-libvirt/fuzz/Cargo.lock`: refreshed; it still recorded `banlieue-libvirt` 0.1.0 and lacked
+  `banlieue-tls` and aws-lc-rs.
+
+### Why
+The fuzz job failed with "rustc 1.91.0-nightly is not supported by ... banlieue-libvirt requires rustc 1.95"
+on the first PR to touch `banlieue-libvirt` since the MSRV bump. Verified on a build host by running CIFuzz's
+`compile` in the pinned image with this nightly, then the `decode_message` fuzzer for 30 s under ASan.
+`ring` appears in the fuzz lockfile only as an optional dependency of `rustls-webpki`; `cargo tree -i ring`
+finds nothing that builds it (ADR-0170 holds).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [x] Config change only
+- [ ] Documentation only
+
 ## [2026-11-26 14:00] - Azure: publish a VMImage Url source into the gallery, kept to the declared state (ADR-0162 D4, D8)
 
 **Author:** Erick Bourgeois
@@ -57,6 +139,34 @@
 - Docs: `docs/src/providers/azure.md` "Publishing images"; `docs/src/security/network-policies.md`;
   `deploy/provider-azure/README.md`; `examples/31-virtualmachine-azure.yaml` (commented `Url` variant);
   roadmaps 22 (phases A, D) and 23 (phase D), `ROADMAPS.md`.
+- **The image builder measures every build (ADR-0010, amended 2026-11-26).** `buildArtifact.checksum` was the
+  `Url` source's declared `checksum`, copied verbatim, so a build from an OCI image (which cannot declare its raw
+  disk's hash in advance) had none and could not be published to Azure (`ChecksumMissing`). Now, once the
+  `OSArtifact` is `Ready`, `crates/banlieue-imagebuilder/src/reconciler/digest.rs` creates
+  `<osartifact>-digest`, a Job beside the artifacts PVC (adopted across reconciles, owned by the `OSArtifact`,
+  no SA token, non-root, read-only root, no escalation, capabilities dropped, `RuntimeDefault`, PVC read-only,
+  `--push-image` image) running the new `banlieue imagebuilder digest --file ...`
+  (`src/file_digest.rs`, streaming SHA-256 via RustCrypto `sha2`, new direct dependency already in the
+  workspace; SHA-512 too with `--sha512`; no `ring`, ADR-0170). Its termination message is validated
+  (`sha256:` + 64 lowercase hex, optional `sha512:` line, nothing else) and recorded. A declared checksum is
+  verified against the measurement (`ChecksumMismatch` fails closed; an algorithm other than sha256/sha512 is
+  `ChecksumUnsupported`, before any Job). Until measured the build is `Building`, reason `DigestPending`, no
+  `file`/`checksum`, so imports, the registry push and Azure publishing wait on the phase they already gate on.
+  A succeeded Job whose pod is gone keeps the checksum already recorded for the same `OSArtifact` uid, else
+  re-runs. A pre-laid build is measured by its pre-lay Job (no digest Job); the declared checksum is now passed
+  to it explicitly (`PrelayJobInputs.verify_checksum`). The push Job is not reused: it reports a manifest
+  reference and its layer digest is of the gzip copy, not the raw bytes. Every kind, `iso` included, is
+  measured. `compute_build_artifact_status` and `sealing_refused_status` no longer take a checksum.
+  `ImageSource.checksum` / `BuildArtifactStatus.checksum` rustdoc rewritten (CRDs and API reference
+  regenerated). Azure: `gate_build` shows the build's reason (`DigestPending`) in `BuildPending`, and
+  `ChecksumMissing` now names an un-upgraded image builder. The imagebuilder Role already holds the Job verbs;
+  `deploy/imagebuilder/rbac/role.yaml` comments updated. Tests: `digest_tests.rs`, `file_digest_tests.rs`,
+  `app_tests.rs` (`digest_subcommand_parses`), `prelay_tests.rs`, `vmimage_tests.rs`, Azure `gallery_tests.rs`.
+  Docs: ADR-0010 amendment, `docs/src/guides/using-banlieue-imagebuilder.md` (digest step, reasons table,
+  integrity section), `docs/src/providers/azure.md` (no `checksum` needed on the source). Threat model pass
+  (stamp date unchanged, 2026-11-26): §2 digest Job row, TB-3 note, TB-10 rows (measured not copied; a
+  compromised digest Job), TB-23 publish row, §8 Job-creation risk; no new identity, grant or boundary.
+  Upgrade note: a `Ready` build returns to `Building` (`DigestPending`) once while it is measured.
 
 ### Why
 "kubectl create VMImage" builds the image, or uploads the existing raw disk, to Azure as it does for vSphere;

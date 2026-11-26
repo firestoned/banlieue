@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "banlieue-guest-azure"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "In-guest helper for Kairos images on Azure: reads customData from the local provisioning disk and reports ready to WireServer (ADR-0163, ADR-0171)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Shipped into every Azure-bound Kairos image as one static binary
+# (ADR-0171): built for x86_64-unknown-linux-musl with the workspace's
+# `guest` profile (opt-level z, fat LTO, strip, panic=abort):
+#
+#     cargo build -p banlieue-guest-azure --profile guest \
+#       --target x86_64-unknown-linux-musl
+#
+# Deliberately tiny: std's TcpStream for WireServer (plain HTTP on the
+# host-local link, so no TLS stack and no reqwest), `libc` for mount(2),
+# `base64` (decode only) for customData. No async runtime, no logging
+# framework, no CLI parser.
+
+[[bin]]
+name = "banlieue-azure-guest"
+path = "src/main.rs"
+
+[dependencies]
+base64.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

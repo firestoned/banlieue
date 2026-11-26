@@ -14,6 +14,8 @@ SPDX-License-Identifier: Apache-2.0
   decided by roadmap 24's spike. [ADR-0054](0054-nocloud-seed-iso-first-party.md)
   (user-data delivery is per backend), [ADR-0158](0158-shape-of-a-cloud-provider-class.md),
   [ADR-0162](0162-publishing-a-vmimage-into-a-cloud.md).
+- **Implemented by:** [ADR-0171](0171-azure-guest-layer.md) (2026-11-26): Decision 3's
+  image requirements are added automatically to every image banlieue builds for an `azure` source.
 
 ## Context
 

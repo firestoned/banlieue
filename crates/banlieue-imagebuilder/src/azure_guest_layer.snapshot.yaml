@@ -1,0 +1,79 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+# Snapshot of azure_guest_layer() (ADR-0171), checked by azure_guest_tests.rs.
+# The test compares everything after these comment lines byte for byte.
+stages:
+  boot:
+  - commands:
+    - /usr/bin/banlieue-azure-guest customdata
+    if: grep -qF 7783-7084-3265-9085-8269-3286-77 /sys/class/dmi/id/chassis_asset_tag 2>/dev/null
+    name: banlieue-azure-customdata
+  initramfs:
+  - commands:
+    - networkctl reload 2>/dev/null || true
+    files:
+    - content: |
+        # banlieue (ADR-0163, ADR-0171): on Azure, the accelerated-networking VF is
+        # enslaved to the synthetic hv_netvsc interface by the kernel. Configuring it
+        # as well gives two interfaces the same address and can put the default route
+        # on the VF, which cannot reach WireServer.
+        [Match]
+        Driver=mana mlx4_core mlx5_core
+
+        [Link]
+        Unmanaged=yes
+      group: 0
+      owner: 0
+      path: /etc/systemd/network/10-banlieue-azure-vf-unmanaged.network
+      permissions: 420
+    if: grep -qF 7783-7084-3265-9085-8269-3286-77 /sys/class/dmi/id/chassis_asset_tag 2>/dev/null
+    name: banlieue-azure-vf-unmanaged
+  - commands:
+    - systemctl mask --runtime qemu-guest-agent.service 2>/dev/null || true
+    if: grep -qF 7783-7084-3265-9085-8269-3286-77 /sys/class/dmi/id/chassis_asset_tag 2>/dev/null
+    name: banlieue-azure-no-qemu-guest-agent
+  - commands:
+    - mkdir -p /etc/systemd/system/multi-user.target.wants && ln -sf /etc/systemd/system/banlieue-azure-ready.service /etc/systemd/system/multi-user.target.wants/banlieue-azure-ready.service
+    files:
+    - content: |
+        [Unit]
+        Description=banlieue: report ready to Azure WireServer (ADR-0163, ADR-0171)
+        After=cos-setup-network.service
+        ConditionPathExists=|/run/cos/active_mode
+        ConditionPathExists=|/run/cos/passive_mode
+        ConditionPathExists=!/run/cos/recovery_mode
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=/usr/bin/banlieue-azure-guest ready
+        TimeoutStartSec=infinity
+
+        [Install]
+        WantedBy=multi-user.target
+      group: 0
+      owner: 0
+      path: /etc/systemd/system/banlieue-azure-ready.service
+      permissions: 420
+    if: grep -qF 7783-7084-3265-9085-8269-3286-77 /sys/class/dmi/id/chassis_asset_tag 2>/dev/null
+    name: banlieue-azure-ready-unit
+  rootfs.before:
+  - commands:
+    - networkctl reload 2>/dev/null || true
+    files:
+    - content: |
+        # banlieue (ADR-0163, ADR-0171): on Azure, the accelerated-networking VF is
+        # enslaved to the synthetic hv_netvsc interface by the kernel. Configuring it
+        # as well gives two interfaces the same address and can put the default route
+        # on the VF, which cannot reach WireServer.
+        [Match]
+        Driver=mana mlx4_core mlx5_core
+
+        [Link]
+        Unmanaged=yes
+      group: 0
+      owner: 0
+      path: /etc/systemd/network/10-banlieue-azure-vf-unmanaged.network
+      permissions: 420
+    if: grep -qF 7783-7084-3265-9085-8269-3286-77 /sys/class/dmi/id/chassis_asset_tag 2>/dev/null
+    name: banlieue-azure-vf-unmanaged-initrd
