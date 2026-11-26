@@ -579,6 +579,22 @@ signature fixes both without moving the key off the host or giving the host a cr
 - [ ] Config change only
 - [x] Documentation only
 
+## [2026-11-19 16:00] - ADR-0166 (Proposed): fleet-wide unique sandbox addresses
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/0166-fleet-wide-unique-sandbox-addresses.md`: new ADR (Proposed). Written as 0145 and renumbered to 0166 on 2026-11-25, because `main` took 0145 for a different ADR. Enforces the amended ADR-0144 Decision 2. A cluster-scoped `SandboxAddressSpace` records the supernet, reserved ranges and host prefix. Each Provider's sandbox network class carries its carve-out. Uniqueness is enforced by admission, a Provider overlap check, and an ADR-0083 fleet-wide address key. A retired range is held until a person clears it.
+
+### Why
+ADR-0144 says sandbox addresses are unique across the fleet but nothing enforced it. Pool entries are free text, and ADR-0083 keys on `networkClass`, which cannot see another host's range. The supernet, the vSphere sandbox ranges and the host prefix are open questions for the operator; CALM, the threat-model pass and a `ROADMAPS.md` row follow acceptance.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-19 15:30] - Fix: the port-isolation netlink attribute number was wrong (ADR-0144 Decision 3)
 
 **Author:** Erick Bourgeois
