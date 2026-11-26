@@ -14,6 +14,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Amended by:** [ADR-0016](0016-imagebuild-namespace-isolation.md) (2026-07-31): builds run in their own
   namespace; [ADR-0064](0064-artifact-delivery-to-host-resident-providers.md) (2026-09-27) revisits the deferred
   alternative for host-resident providers.
+- **Amended:** 2026-11-26 (`buildArtifact.checksum` is measured from the
+  built file, not copied from the source; see the amendment below Decision).
 
 ## Context
 
@@ -198,6 +200,56 @@ been confirmed to support `ROX`.
 > (`privileged`) namespace rather than loosening `banlieue-system` for
 > everything running in it. The PVC/Job co-location reasoning above is
 > unaffected — it now just applies to `banlieue-imagebuild` instead.
+
+> **Amendment (2026-11-26): the build's checksum is measured, not copied.**
+> `VMImage.status.buildArtifact.checksum` used to be the `Url` source's
+> declared `checksum`, copied verbatim (SEC-004). A source built from a
+> Kairos OCI image (`importFrom: quay.io/...@sha256:...`) cannot know its
+> raw disk's hash in advance, so it had none, and a cloud publisher that
+> names and verifies the upload by `sha256:<hex>` (ADR-0162 Decision 6)
+> could publish nothing built from a `Url` source.
+>
+> 1. Once an `OSArtifact` is `Ready`, `banlieue-imagebuilder` measures the
+>    produced file: a Job beside the artifacts PVC runs
+>    `banlieue imagebuilder digest --file /artifacts/<file>` (streaming
+>    SHA-256 with RustCrypto `sha2`; never `ring`, ADR-0170), reports through
+>    its termination log, and the reconciler validates the message
+>    (`sha256:` and 64 lowercase hex, nothing else) before recording it as
+>    `buildArtifact.checksum`. The Job is named deterministically
+>    (`<osartifact>-digest`), adopted across reconciles, owned by the
+>    `OSArtifact` (ADR-0027), and runs as the push Job does: no
+>    ServiceAccount token, non-root, seccomp `RuntimeDefault`, read-only root
+>    filesystem, no privilege escalation, every capability dropped, the PVC
+>    read-only. It runs the banlieue image (`--push-image`).
+> 2. A pre-laid build (ADR-0113) needs no digest Job: the pre-lay Job
+>    already measures the file it writes, and that digest is recorded.
+> 3. The push Job (ADR-0064) is not reused: its result is a manifest
+>    reference, and its layer digest is of the gzip-compressed copy, not of
+>    the raw bytes; it also runs only for a `cloud-hypervisor` source. The
+>    push now starts after the measurement.
+> 4. A checksum the source declares is still verified, now by the image
+>    builder: the Job also reports SHA-512 when the declared value is
+>    `sha512:`, and a mismatch fails the build closed (`ChecksumMismatch`);
+>    an algorithm other than `sha256`/`sha512` fails it before any Job
+>    (`ChecksumUnsupported`). The recorded value is always the measured
+>    `sha256:<hex>`. A pre-laid build's declared checksum is verified by the
+>    pre-lay Job, as before.
+> 5. Until the digest is known the build is `Building` with reason
+>    `DigestPending`, no `file` and no `checksum`, so every consumer (the
+>    libvirt and vSphere import Jobs, the registry push, the cloud
+>    publisher) waits on the phase it already gates on. A `Ready` build
+>    always carries a checksum. The import Jobs keep verifying the file
+>    against it; that check now passes by construction unless the file
+>    changed after it was measured, which is exactly what it should catch.
+>
+> Every kind is measured, `iso` included, so `checksum` means the same
+> thing for every consumer. On upgrade, a build that was `Ready` returns to
+> `Building` (`DigestPending`) once, for as long as the Job takes to read
+> the file; provider rows report `BuildPending` meanwhile. A Job that
+> succeeded but whose pod (and so its result) is gone keeps the checksum
+> already recorded for the same `OSArtifact` uid (re-checked against a
+> declared `sha256:`), or runs again. This crate now creates Jobs, which the
+> paragraph above saying it does not predates (ADR-0064, ADR-0113).
 
 ## Consequences
 

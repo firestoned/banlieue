@@ -902,14 +902,8 @@ mod tests {
     #[test]
     fn compute_status_missing_phase_defaults_pending() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            None,
-            None,
-            false,
-        );
+        let s =
+            compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, false);
         assert_eq!(s.phase, BuildArtifactPhase::Pending);
         assert_eq!(s.kind, BuildArtifactKind::Iso);
         assert_eq!(s.os_artifact_ref, "x-build");
@@ -923,14 +917,8 @@ mod tests {
             phase: Some("Building".to_string()),
             message: Some("pulling image".to_string()),
         };
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            None,
-            None,
-            false,
-        );
+        let s =
+            compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, false);
         assert_eq!(s.phase, BuildArtifactPhase::Building);
         assert!(s.pvc_ref.is_none());
         assert!(s.file.is_none());
@@ -947,7 +935,6 @@ mod tests {
             "kairos-rhel98-build",
             BuildArtifactKind::Iso,
             &view,
-            None,
             None,
             false,
         );
@@ -975,7 +962,6 @@ mod tests {
             BuildArtifactKind::Iso,
             &view,
             None,
-            None,
             true,
         );
         assert_eq!(s.phase, BuildArtifactPhase::Ready);
@@ -994,7 +980,6 @@ mod tests {
             BuildArtifactKind::CloudImage,
             &view,
             None,
-            None,
             false,
         );
         assert_eq!(
@@ -1010,14 +995,8 @@ mod tests {
             phase: Some("Error".to_string()),
             message: Some("pull failed: manifest unknown".to_string()),
         };
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            None,
-            None,
-            false,
-        );
+        let s =
+            compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, false);
         assert_eq!(s.phase, BuildArtifactPhase::Failed);
         assert!(s.pvc_ref.is_none());
         assert_eq!(s.message.as_deref(), Some("pull failed: manifest unknown"));
@@ -1039,7 +1018,6 @@ mod tests {
                 "x-build",
                 BuildArtifactKind::Iso,
                 &view,
-                None,
                 None,
                 false,
             );
@@ -1187,38 +1165,25 @@ mod tests {
     // SEC-004: checksum threading
     // ----------------------------------------------------------------------
 
+    /// ADR-0010 (amendment 2026-11-26): the checksum is measured once the
+    /// build is Ready (`digest.rs`), never copied from the source; a status
+    /// computed from the `OSArtifact` alone carries none.
     #[test]
-    fn compute_status_threads_the_source_checksum_through() {
-        let view = KairosArtifactStatusView {
-            phase: Some("Ready".to_string()),
-            message: None,
-        };
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"),
-            None,
-            false,
-        );
-        assert_eq!(
-            s.checksum.as_deref(),
-            Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
-        );
-    }
-
-    #[test]
-    fn compute_status_without_a_source_checksum_publishes_none() {
-        let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            None,
-            None,
-            false,
-        );
-        assert!(s.checksum.is_none());
+    fn compute_status_never_carries_a_checksum() {
+        for phase in [None, Some("Building"), Some("Ready")] {
+            let view = KairosArtifactStatusView {
+                phase: phase.map(str::to_string),
+                message: None,
+            };
+            let s = compute_build_artifact_status(
+                "x-build",
+                BuildArtifactKind::Iso,
+                &view,
+                None,
+                false,
+            );
+            assert!(s.checksum.is_none(), "{phase:?}");
+        }
     }
 
     // ----------------------------------------------------------------------
@@ -1235,7 +1200,6 @@ mod tests {
             "x-build",
             BuildArtifactKind::Iso,
             &view,
-            None,
             Some("11111111-2222-3333-4444-555555555555"),
             false,
         );
@@ -1248,14 +1212,8 @@ mod tests {
     #[test]
     fn compute_status_without_a_known_uid_publishes_none() {
         let view = KairosArtifactStatusView::default();
-        let s = compute_build_artifact_status(
-            "x-build",
-            BuildArtifactKind::Iso,
-            &view,
-            None,
-            None,
-            false,
-        );
+        let s =
+            compute_build_artifact_status("x-build", BuildArtifactKind::Iso, &view, None, false);
         assert!(s.os_artifact_uid.is_none());
     }
 
@@ -1527,8 +1485,7 @@ mod tests {
     #[test]
     fn sealing_refused_status_is_a_failed_build_naming_the_reason() {
         let err = crate::first_boot_sealing::SealingLayerError::Conflict("why".to_string());
-        let s =
-            sealing_refused_status("img-build", BuildArtifactKind::Iso, Some("sha256:00"), &err);
+        let s = sealing_refused_status("img-build", BuildArtifactKind::Iso, &err);
         assert_eq!(s.phase, BuildArtifactPhase::Failed);
         assert_eq!(
             s.reason.as_deref(),
@@ -1536,6 +1493,178 @@ mod tests {
         );
         assert_eq!(s.message.as_deref(), Some("why"));
         assert!(!s.first_boot_sealing_layer);
-        assert_eq!(s.checksum.as_deref(), Some("sha256:00"));
+        assert_eq!(
+            s.checksum, None,
+            "nothing was built, so nothing was measured"
+        );
+    }
+
+    // ---- the Azure guest layer and helper bundle (ADR-0171) ---------------
+
+    const HELPER: &str = "registry.internal:5000/banlieue-azure-guest@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn sealing_req(sealing: &banlieue_api::common::FirstBootSealing) -> SealingRequest<'_> {
+        SealingRequest {
+            sealing,
+            kind: &BuildArtifactKind::CloudImage,
+            install_mode: banlieue_api::banlieue::InstallMode::Immediate,
+        }
+    }
+
+    fn ready_yaml(m: MergedCloudConfig) -> (String, bool) {
+        let MergedCloudConfig::Ready {
+            yaml,
+            sealing_layer,
+        } = m
+        else {
+            panic!("expected a merged cloud-config, got {m:?}");
+        };
+        (yaml, sealing_layer)
+    }
+
+    /// The names of a stage's steps, in order.
+    fn step_names(yaml: &str, stage: &str) -> Vec<String> {
+        let doc: Value = serde_saphyr::from_str(yaml).expect("YAML");
+        doc["stages"][stage]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Byte for byte: an image without an azure source merges exactly as
+    /// before ADR-0171, with or without operator layers or sealing.
+    #[test]
+    fn without_an_azure_source_the_merge_is_byte_identical() {
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        for docs in [&[][..], &[OPERATOR][..]] {
+            assert_eq!(
+                merge_build_layers(docs, None, false).unwrap(),
+                merge_with_sealing(docs, None).unwrap()
+            );
+            assert_eq!(
+                merge_build_layers(docs, Some(sealing_req(&sealing)), false).unwrap(),
+                merge_with_sealing(docs, Some(sealing_req(&sealing))).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn with_an_azure_source_the_layer_alone_is_a_cloud_config() {
+        let (yaml, sealing_layer) = ready_yaml(merge_build_layers(&[], None, true).unwrap());
+        assert!(!sealing_layer);
+        assert!(yaml.starts_with("#cloud-config\n"), "yip needs the header");
+        assert!(yaml.contains(crate::azure_guest::HELPER_PATH));
+    }
+
+    /// Lists concatenate in merge order, so the Azure steps come after every
+    /// operator step and after the sealing layer's report step in `boot`.
+    #[test]
+    fn the_azure_layer_is_merged_last() {
+        let operator = "stages:\n  boot:\n    - name: operator-step\n      commands: [\"true\"]\n  initramfs:\n    - name: operator-initramfs\n";
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        let (yaml, sealing_layer) = ready_yaml(
+            merge_build_layers(&[OPERATOR, operator], Some(sealing_req(&sealing)), true).unwrap(),
+        );
+        assert!(sealing_layer);
+        assert!(yaml.contains("name: kairos"), "operator content survives");
+        assert_eq!(
+            step_names(&yaml, "boot"),
+            [
+                "operator-step",
+                crate::first_boot_sealing::REPORT_STEP_NAME,
+                crate::azure_guest::STEP_CUSTOM_DATA,
+            ]
+        );
+        let initramfs = step_names(&yaml, "initramfs");
+        assert_eq!(
+            initramfs.first().map(String::as_str),
+            Some("operator-initramfs")
+        );
+        assert_eq!(
+            initramfs.last().map(String::as_str),
+            Some(crate::azure_guest::STEP_READY_UNIT)
+        );
+    }
+
+    #[test]
+    fn a_sealing_refusal_still_refuses_with_an_azure_source() {
+        let sealing = banlieue_api::common::FirstBootSealing::default();
+        let req = SealingRequest {
+            sealing: &sealing,
+            kind: &BuildArtifactKind::Iso,
+            install_mode: banlieue_api::banlieue::InstallMode::Immediate,
+        };
+        let operator = "install:\n  encrypted_partitions:\n    - COS_PERSISTENT\n";
+        assert!(matches!(
+            merge_build_layers(&[operator], Some(req), true).unwrap(),
+            MergedCloudConfig::SealingRefused(_)
+        ));
+    }
+
+    #[test]
+    fn bundles_carry_the_helper_only_for_an_azure_image() {
+        assert_eq!(build_bundles(true, Some(HELPER)), [HELPER.to_string()]);
+        assert!(build_bundles(false, Some(HELPER)).is_empty());
+        assert!(build_bundles(true, None).is_empty());
+    }
+
+    /// An image without an azure source renders the same OSArtifact as
+    /// before ADR-0171: no `bundles` key at all.
+    #[test]
+    fn no_bundles_leaves_the_os_artifact_unchanged() {
+        let source = libvirt_url_source("quay.io/kairos/x@sha256:abc");
+        let mut args = OsArtifactArgs::new(&source);
+        args.kind = BuildArtifactKind::CloudImage;
+        let before = args.render();
+        let mut after = before.clone();
+        with_bundles(&mut after, &[]);
+        assert_eq!(before, after);
+        assert!(bundles_match(&after, &[]));
+    }
+
+    #[test]
+    fn bundles_are_added_to_the_artifacts_spec() {
+        let source = libvirt_url_source("quay.io/kairos/x@sha256:abc");
+        let mut args = OsArtifactArgs::new(&source);
+        args.kind = BuildArtifactKind::CloudImage;
+        let mut desired = args.render();
+        let bundles = build_bundles(true, Some(HELPER));
+        with_bundles(&mut desired, &bundles);
+        assert_eq!(desired["spec"]["artifacts"]["bundles"], json!([HELPER]));
+        assert_eq!(desired["spec"]["artifacts"]["cloudImage"], json!(true));
+        assert!(bundles_match(&desired, &bundles));
+    }
+
+    /// Adding or removing an azure source, or a new helper digest, changes
+    /// what is in the image, so the live OSArtifact no longer matches and is
+    /// rebuilt.
+    #[test]
+    fn a_change_of_bundles_is_judged_stale() {
+        let with = json!({"spec": {"artifacts": {"bundles": [HELPER]}}});
+        let without = json!({"spec": {"artifacts": {"cloudImage": true}}});
+        let other = json!({"spec": {"artifacts": {"bundles": ["r@sha256:00"]}}});
+        let helper = build_bundles(true, Some(HELPER));
+        assert!(bundles_match(&with, &helper));
+        assert!(!bundles_match(&without, &helper));
+        assert!(!bundles_match(&with, &[]));
+        assert!(!bundles_match(&other, &helper));
+        assert!(bundles_match(&without, &[]));
+    }
+
+    #[test]
+    fn azure_guest_refused_status_is_a_failed_build_naming_the_flag() {
+        let s = azure_guest_refused_status("img-build", BuildArtifactKind::CloudImage);
+        assert_eq!(s.phase, BuildArtifactPhase::Failed);
+        assert_eq!(s.reason.as_deref(), Some(REASON_AZURE_GUEST_IMAGE_UNSET));
+        assert!(
+            s.message
+                .as_deref()
+                .is_some_and(|m| m.contains("--azure-guest-image"))
+        );
+        assert_eq!(s.checksum, None);
     }
 }

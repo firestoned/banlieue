@@ -166,6 +166,7 @@ mod tests {
             FIELD_MANAGER_PROVIDER_PROXMOX,
             FIELD_MANAGER_PROVIDER_LIBVIRT,
             FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR,
+            FIELD_MANAGER_PROVIDER_AZURE,
         ] {
             let scoped = provider_field_manager(class, "ns", "p");
             assert_ne!(
@@ -189,7 +190,7 @@ mod tests {
         }
     }
 
-    /// All six base managers must be distinct, or two binaries would collide
+    /// All seven base managers must be distinct, or two binaries would collide
     /// before per-writer scoping even applies.
     #[test]
     fn the_base_managers_are_all_distinct() {
@@ -200,6 +201,7 @@ mod tests {
             FIELD_MANAGER_PROVIDER_PROXMOX,
             FIELD_MANAGER_PROVIDER_LIBVIRT,
             FIELD_MANAGER_PROVIDER_CLOUD_HYPERVISOR,
+            FIELD_MANAGER_PROVIDER_AZURE,
         ];
         let unique: std::collections::BTreeSet<&str> = all.iter().copied().collect();
         assert_eq!(unique.len(), all.len());

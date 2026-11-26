@@ -202,6 +202,47 @@ spec:
                     items:
                       type: string
                     type: array
+                  instanceSizes:
+                    description: |-
+                      Cloud `Provider`s only: which instance size each `VMClass` runs as
+                      (ADR-0160 Decision 1). A `VMClass` with no entry is not schedulable on
+                      this `Provider`; nothing is guessed from vCPU and memory.
+                    items:
+                      description: One `VMClass` mapped to a cloud instance size (ADR-0160 Decision 1).
+                      properties:
+                        perZone:
+                          description: Per-zone overrides of `size`, for a zone that does not offer it.
+                          items:
+                            description: An instance size for one availability zone (ADR-0160 Decision 1).
+                            properties:
+                              size:
+                                description: The cloud's size name in that zone.
+                                type: string
+                              zone:
+                                description: Zone name as the cloud reports it (`1`, `2`).
+                                type: string
+                            required:
+                            - size
+                            - zone
+                            type: object
+                          type: array
+                          x-kubernetes-list-map-keys:
+                          - zone
+                          x-kubernetes-list-type: map
+                        size:
+                          description: The cloud's size name, such as `Standard_D2s_v5`.
+                          type: string
+                        vmClass:
+                          description: The `VMClass` name.
+                          type: string
+                      required:
+                      - size
+                      - vmClass
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - vmClass
+                    x-kubernetes-list-type: map
                   networkClasses:
                     description: Network classes the admin asserts are available on this backend.
                     items:
@@ -226,12 +267,16 @@ spec:
                               admin-renamed) display name, which would make the mapping fragile to a
                               rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
+
+                              A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
+                              availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
+                              and `cluster` empty (ADR-0158 Decision 3).
                             properties:
                               cluster:
-                                description: Cluster name as vCenter reports it.
+                                description: Cluster name as vCenter reports it. Empty on a cloud `Provider`.
                                 type: string
                               datacenter:
-                                description: Datacenter name as vCenter reports it.
+                                description: Datacenter name as vCenter reports it. Empty on a cloud `Provider`.
                                 type: string
                               target:
                                 additionalProperties:
@@ -240,9 +285,13 @@ spec:
                                   Concrete backend target for this zone, same shape as
                                   `StorageClassMapping::target` / `NetworkClassMapping::target`.
                                 type: object
+                              zone:
+                                description: |-
+                                  Availability zone name as the cloud reports it (`1`, `2`), on a cloud
+                                  `Provider` (ADR-0158 Decision 3).
+                                nullable: true
+                                type: string
                             required:
-                            - cluster
-                            - datacenter
                             - target
                             type: object
                           type: array
@@ -351,12 +400,16 @@ spec:
                               admin-renamed) display name, which would make the mapping fragile to a
                               rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
+
+                              A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
+                              availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
+                              and `cluster` empty (ADR-0158 Decision 3).
                             properties:
                               cluster:
-                                description: Cluster name as vCenter reports it.
+                                description: Cluster name as vCenter reports it. Empty on a cloud `Provider`.
                                 type: string
                               datacenter:
-                                description: Datacenter name as vCenter reports it.
+                                description: Datacenter name as vCenter reports it. Empty on a cloud `Provider`.
                                 type: string
                               target:
                                 additionalProperties:
@@ -365,9 +418,13 @@ spec:
                                   Concrete backend target for this zone, same shape as
                                   `StorageClassMapping::target` / `NetworkClassMapping::target`.
                                 type: object
+                              zone:
+                                description: |-
+                                  Availability zone name as the cloud reports it (`1`, `2`), on a cloud
+                                  `Provider` (ADR-0158 Decision 3).
+                                nullable: true
+                                type: string
                             required:
-                            - cluster
-                            - datacenter
                             - target
                             type: object
                           type: array
@@ -384,6 +441,7 @@ spec:
                                         { tagCategory: "tier", tag: "gold" }
                               proxmox:  { storage: "ceph-pool-1" }
                               libvirt:  { pool: "nvme-pool" }
+                              azure:    { sku: "Premium_LRS" }   (a managed-disk SKU, ADR-0160)
                           nullable: true
                           type: object
                       required:
@@ -394,6 +452,98 @@ spec:
               connection:
                 description: Connection details for the backend.
                 properties:
+                  azure:
+                    description: |-
+                      `azure` only: the subscription, region and resource group this
+                      `Provider` creates into, and the Entra ID identity it federates to
+                      (ADR-0158 Decision 1, ADR-0159 Decision 1). `endpoint` is the ARM
+                      endpoint (`https://management.azure.com`) and `credentialsRef` is
+                      not set: the provider's ServiceAccount token is its only credential.
+                    nullable: true
+                    properties:
+                      authorityHost:
+                        description: |-
+                          Entra ID authority host. Defaults to the public cloud
+                          (`https://login.microsoftonline.com/`).
+                        nullable: true
+                        type: string
+                      clientId:
+                        description: |-
+                          Client ID of the user-assigned managed identity or app registration
+                          whose federated credential trusts this provider's ServiceAccount.
+                        minLength: 1
+                        type: string
+                      imageGallery:
+                        description: |-
+                          The admin's existing Compute Gallery this `Provider` publishes a
+                          `VMImage`'s `Url` source into (ADR-0162 Decisions 4 and 8). banlieue
+                          never creates or deletes the gallery; it creates and deletes only the
+                          image definitions and versions it tags. Unset: no `Url` source is
+                          published to this `Provider`, and its rows report
+                          `GalleryNotConfigured`. `Template` sources need no gallery here.
+                        nullable: true
+                        properties:
+                          name:
+                            description: The gallery's name.
+                            minLength: 1
+                            type: string
+                          resourceGroup:
+                            description: |-
+                              The resource group the gallery is in. It may differ from the
+                              `Provider`'s `resourceGroup`.
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
+                        - resourceGroup
+                        type: object
+                      location:
+                        description: |-
+                          The region (`location`), such as `canadacentral`. One `Provider` is
+                          one region; its availability zones are the failure domains
+                          (ADR-0158 Decisions 1 and 3).
+                        minLength: 1
+                        type: string
+                      publisher:
+                        description: |-
+                          The image publisher's own identity (ADR-0159 Decision 3, ADR-0162
+                          Decision 1), separate from `clientId`: the publish Job federates to it,
+                          and only it holds the rights to create and delete images. Its tenant
+                          is `tenantId`. Unset: no `Url` source is published to this `Provider`
+                          (`PublisherNotConfigured`).
+                        nullable: true
+                        properties:
+                          clientId:
+                            description: |-
+                              Client ID of the publisher's user-assigned managed identity or app
+                              registration.
+                            minLength: 1
+                            type: string
+                        required:
+                        - clientId
+                        type: object
+                      resourceGroup:
+                        description: |-
+                          The resource group VMs, NICs and disks are created in. Must exist;
+                          banlieue never creates or deletes it, and never touches anything in
+                          it that does not carry its ownership tags (ADR-0158 Decision 4).
+                        minLength: 1
+                        type: string
+                      subscriptionId:
+                        description: Subscription ID.
+                        minLength: 1
+                        type: string
+                      tenantId:
+                        description: Entra ID tenant (directory) ID.
+                        minLength: 1
+                        type: string
+                    required:
+                    - clientId
+                    - location
+                    - resourceGroup
+                    - subscriptionId
+                    - tenantId
+                    type: object
                   caBundle:
                     description: |-
                       Optional CA bundle to validate the endpoint's TLS certificate.
@@ -464,6 +614,7 @@ spec:
                         vsphere:  https://vcenter.example.com/sdk
                         proxmox:  https://pve.example.com:8006
                         libvirt:  qemu+ssh://kvm-host.example.com/system
+                        azure:    https://management.azure.com
                     type: string
                   insecureSkipTLSVerify:
                     description: |-
@@ -571,7 +722,8 @@ spec:
                   Reference to a ProviderClass that identifies the backend type.
 
                   For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
-                  drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`. A future
+                  drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
+                  `cloud-hypervisor`, `azure`. A future
                   ProviderClass CRD will provide install metadata (image, RBAC) without
                   changing this reference.
                 properties:

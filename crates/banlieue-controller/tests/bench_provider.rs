@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
 //! Provider benchmark: the same `VirtualMachine`, measured the same way, on
-//! any backend (docs/src/reference/provider-comparison.md).
+//! any backend (docs/src/providers/comparison.md).
 //!
 //! It uses only banlieue's API and SSH, so one run against libvirt, vSphere,
 //! Proxmox or Cloud Hypervisor is directly comparable with another. Each run

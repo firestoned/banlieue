@@ -45,14 +45,16 @@ rules:
     resources: ["secrets"]
     verbs: ["get", "list", "watch", "create", "patch"]
   # The registry push Job (ADR-0064): a build a host-resident provider needs
-  # is pushed to an OCI registry by a Job beside the artifacts PVC. Created
+  # is pushed to an OCI registry by a Job beside the artifacts PVC. The same
+  # verbs cover the pre-lay Job (ADR-0113) and the digest Job that measures
+  # every finished build (ADR-0010, amendment 2026-11-26). Created
   # by server-side apply (create + patch), deleted when a previous build's
   # Job or one whose result was lost must be replaced. The Job itself runs
   # with no ServiceAccount token.
   - apiGroups: ["batch"]
     resources: ["jobs"]
     verbs: ["get", "create", "patch", "delete"]
-  # The push Job's only output is its pod's termination message.
+  # Each helper Job's only output is its pod's termination message.
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list"]

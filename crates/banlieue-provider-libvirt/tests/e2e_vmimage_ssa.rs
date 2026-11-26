@@ -96,6 +96,9 @@ fn row(name: &str, ready: bool, reason: &str) -> ImagePerProviderStatus {
         reason: Some(reason.to_string()),
         message: None,
         zones: vec![],
+        source_digest: None,
+        min_os_disk_size_gib: None,
+        superseded_refs: Vec::new(),
     }
 }
 

@@ -40,12 +40,11 @@ pub trait ProxmoxClientFactory: Send + Sync {
     ) -> Result<Arc<dyn ProxmoxApi>>;
 }
 
-/// Install the process-default rustls crypto provider (ring), which reqwest's
-/// `rustls-no-provider` needs before its first TLS use (ADR-0009). Idempotent:
-/// an already-installed provider is not an error.
-pub fn install_default_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
+/// Install the process-default rustls crypto provider, which reqwest's
+/// `rustls-no-provider` needs before its first TLS use: banlieue's one
+/// provider, aws-lc-rs with X25519MLKEM768 offered first (ADR-0170).
+/// Idempotent: an already-installed provider is not an error.
+pub use banlieue_tls::install_default_crypto_provider;
 
 /// The real factory: HTTPS with an API token.
 ///

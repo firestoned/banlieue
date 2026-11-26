@@ -106,6 +106,20 @@ plugins:
   # CHANGELOG files into the site, so each has one source of truth.
   - include-markdown
 
+  # Pages moved into the Providers section (2026-11-25); old URLs keep working.
+  - redirects:
+      redirect_maps:
+        guides/cloud-hypervisor-host.md: providers/cloud-hypervisor.md
+        guides/cloud-hypervisor-host-systemd.md: providers/cloud-hypervisor-host-systemd.md
+        guides/cloud-hypervisor-sandbox-segment.md: providers/cloud-hypervisor-sandbox-segment.md
+        guides/vsphere-provider.md: providers/vsphere.md
+        guides/alpine-vsphere-template.md: providers/alpine-vsphere-template.md
+        guides/libvirt-provider.md: providers/libvirt.md
+        guides/cloud-init-on-libvirt.md: providers/cloud-init-on-libvirt.md
+        guides/proxmox-provider.md: providers/proxmox.md
+        guides/provider-lifecycle.md: providers/lifecycle.md
+        reference/provider-comparison.md: providers/comparison.md
+
 # Extensions
 markdown_extensions:
   # Python Markdown
@@ -184,27 +198,32 @@ nav:
           - Comparisons: reasoning/comparisons.md
           - Non-Goals: reasoning/non-goals.md
 
+  - Providers:
+      - Overview: providers/index.md
+      - Choosing a Provider (Comparison): providers/comparison.md
+      - Provider Lifecycle & Install: providers/lifecycle.md
+      - Cloud Hypervisor:
+          - Install and Connect a Host: providers/cloud-hypervisor.md
+          - Automating the Install: providers/cloud-hypervisor-automation.md
+          - 'Host Internals: systemd, polkit, identities': providers/cloud-hypervisor-host-systemd.md
+          - 'Sandbox Segment: bridges, host rules, isolation': providers/cloud-hypervisor-sandbox-segment.md
+      - vSphere:
+          - vSphere Provider: providers/vsphere.md
+          - Building an Alpine VM Template: providers/alpine-vsphere-template.md
+      - libvirt:
+          - libvirt Provider: providers/libvirt.md
+          - cloud-init on libvirt: providers/cloud-init-on-libvirt.md
+      - Proxmox VE: providers/proxmox.md
+      - Firecracker (in progress): providers/firecracker.md
+      - Azure (alpha): providers/azure.md
+
   - Guides:
       - Overview: guides/index.md
       - Getting Started:
           - Host Bootstrap (Bare Metal to a k0s Cluster): guides/host-bootstrap.md
           - End-to-End Setup (Bootstrap to Running VMs): guides/end-to-end-setup.md
           - Core Controller: guides/core-controller.md
-          - Provider Lifecycle & Install: guides/provider-lifecycle.md
           - Upgrading from 0.5.x to 0.6.0: guides/upgrading-to-0.6.md
-      - Providers:
-          - Cloud Hypervisor:
-              - Cloud Hypervisor Provider: guides/cloud-hypervisor-host.md
-              - 'Host Internals: systemd, polkit, identities': guides/cloud-hypervisor-host-systemd.md
-              - 'Sandbox Segment: bridges, host rules, isolation': guides/cloud-hypervisor-sandbox-segment.md
-          - vSphere:
-              - vSphere Provider: guides/vsphere-provider.md
-              - Building an Alpine VM Template: guides/alpine-vsphere-template.md
-          - libvirt:
-              - libvirt Provider: guides/libvirt-provider.md
-              - cloud-init on libvirt: guides/cloud-init-on-libvirt.md
-          - Proxmox VE:
-              - Proxmox VE Provider: guides/proxmox-provider.md
       - Workloads:
           - VirtualMachine Pools: guides/virtualmachine-pools.md
           - VirtualMachine Claims: guides/virtualmachine-claims.md
@@ -259,7 +278,6 @@ nav:
 
   - Reference:
       - API Reference (CRDs): reference/api.md
-      - Provider Comparison: reference/provider-comparison.md
       - Cloud Hypervisor Pool Timings: reference/cloud-hypervisor-pool-timings.md
       - License: reference/license.md
       - Changelog: changelog.md

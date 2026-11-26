@@ -238,8 +238,8 @@ hardcodes a cluster, and neither needs a second `Provider`.
 
 ## See also
 
-- [vSphere Provider](vsphere-provider.md) — the base install/registration guide.
-- [Provider Lifecycle & Install](provider-lifecycle.md) — how a `Provider`
+- [vSphere Provider](../providers/vsphere.md): the base install/registration guide.
+- [Provider Lifecycle & Install](../providers/lifecycle.md): how a `Provider`
   becomes a running workload.
 - [ADR-0003](https://github.com/firestoned/banlieue/blob/main/docs/adr/0003-provider-deployment-topology.md) —
   why Providers are per-instance, not per-class.

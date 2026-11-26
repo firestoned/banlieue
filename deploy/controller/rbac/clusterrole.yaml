@@ -100,6 +100,9 @@ rules:
       - proxmoxmachines
       - proxmoxmachines/status
       - proxmoxmachinetemplates
+      - azurevirtualmachines
+      - azurevirtualmachines/status
+      - azurevirtualmachinetemplates
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # VSphereCluster (CAPI InfraCluster) — the operator/CAPI owns its lifecycle;
   # the controller only watches it and writes its status (least privilege:
@@ -118,6 +121,7 @@ rules:
       - libvirtmachines/finalizers
       - cloudhypervisormachines/finalizers
       - proxmoxmachines/finalizers
+      - azurevirtualmachines/finalizers
     verbs: ["update"]
 
   # ---------------------------------------------------------------------------

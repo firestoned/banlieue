@@ -44,3 +44,8 @@ data:
   # build node, so pair it with a build node selector. Empty: pre-laying is
   # off and such a VMImage fails with PrelayImageUnset.
   # BANLIEUE_PRELAY_IMAGE: "registry.internal:5000/banlieue-prelay:v0.0.0@sha256:<digest>"
+  # Azure guest helper (ADR-0171): the digest-pinned banlieue-azure-guest
+  # bundle image unpacked into every build of a VMImage with an azure source.
+  # Must be <repository>@sha256:<digest>; a tag refuses to start. Empty: such
+  # a VMImage fails with AzureGuestImageUnset.
+  # BANLIEUE_AZURE_GUEST_IMAGE: "ghcr.io/firestoned/banlieue-azure-guest@sha256:<digest>"

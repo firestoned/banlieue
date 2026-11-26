@@ -118,4 +118,19 @@ mod tests {
             .collect();
         assert!(ownership().merged_with(&too_many).is_err());
     }
+
+    #[test]
+    fn owner_namespace_is_tagged_only_when_set_and_reads_back() {
+        let plain = OwnershipTags::new("uid-1", "AzureVirtualMachine", "banlieue-system", "az");
+        assert!(!plain.to_map().contains_key(TAG_OWNER_NAMESPACE));
+
+        let scoped = plain.with_owner_namespace("team-a");
+        let map = scoped.to_map();
+        assert_eq!(
+            map.get(TAG_OWNER_NAMESPACE).map(String::as_str),
+            Some("team-a")
+        );
+        assert_eq!(OwnershipTags::from_tags(&map), Some(scoped));
+        assert!(validate_tags(&map).is_ok());
+    }
 }

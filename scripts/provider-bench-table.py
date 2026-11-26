@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Erick Bourgeois, banlieue
 # SPDX-License-Identifier: Apache-2.0
 """Render provider benchmark results as the markdown table in
-docs/src/reference/provider-comparison.md.
+docs/src/providers/comparison.md.
 
 Input: JSON lines written by crates/banlieue-controller/tests/bench_provider.rs
 (`make provider-bench`), one file per provider or all in one. Output: one

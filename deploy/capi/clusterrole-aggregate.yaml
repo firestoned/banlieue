@@ -48,6 +48,9 @@ rules:
       - proxmoxmachines
       - proxmoxmachines/status
       - proxmoxmachinetemplates
+      - azurevirtualmachines
+      - azurevirtualmachines/status
+      - azurevirtualmachinetemplates
       - libvirtmachines
       - libvirtmachines/status
       - libvirtmachinetemplates

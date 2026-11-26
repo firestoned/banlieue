@@ -9,7 +9,8 @@ mod tests {
     /// Every backend with a shipped `deploy/provider-<backend>/rbac/` manifest.
     /// Add a backend here when its ClusterRole lands, so the RBAC-coverage
     /// guards below start policing it too.
-    const BACKENDS_WITH_ROLES: [&str; 4] = ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"];
+    const BACKENDS_WITH_ROLES: [&str; 5] =
+        ["vsphere", "libvirt", "proxmox", "cloud-hypervisor", "azure"];
 
     fn opts() -> InstallOptions {
         InstallOptions {
@@ -596,7 +597,8 @@ mod tests {
                 "vsphere".to_string(),
                 "libvirt".to_string(),
                 "proxmox".to_string(),
-                "cloud-hypervisor".to_string()
+                "cloud-hypervisor".to_string(),
+                "azure".to_string()
             ]
         );
 
@@ -731,7 +733,8 @@ mod tests {
         let manifests =
             build_role_install(&InstallRole::Provider("vsphere".to_string()), &opts()).unwrap();
 
-        assert_eq!(non_lease_count(&manifests.roles), 1);
+        // The credentials Role, and the Job Role in the build namespace.
+        assert_eq!(non_lease_count(&manifests.roles), 2);
         let role = &manifests.roles[0];
         assert_eq!(role.metadata.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
         let rules = role.rules.as_ref().expect("the Role has rules");
@@ -749,7 +752,7 @@ mod tests {
             );
         }
 
-        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 1);
+        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 2);
         let binding = &manifests.role_bindings[0];
         assert_eq!(binding.role_ref.kind, "Role");
         assert_eq!(binding.role_ref.name, "banlieue-provider-vsphere");
@@ -944,10 +947,10 @@ mod tests {
 
         assert_eq!(
             non_lease_count(&manifests.roles),
-            1,
-            "expected one namespaced Role besides the leader-election one"
+            2,
+            "expected the credentials Role and the Job Role besides the leader-election one"
         );
-        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 1);
+        assert_eq!(non_lease_binding_count(&manifests.role_bindings), 2);
 
         let role = &manifests.roles[0];
         assert_eq!(role.metadata.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
@@ -1024,57 +1027,116 @@ mod tests {
 
     // ---------- per-backend additional Role rules ------------------------
 
+    /// No backend's per-instance Role (the Provider's own namespace) carries
+    /// `jobs`: every provider's Jobs run in the build namespace, which that
+    /// Role cannot reach, and Job create in the Provider's namespace would let
+    /// a pod run as the operator's ServiceAccount there.
     #[test]
-    fn only_libvirt_gets_the_job_grant() {
-        // Creating a Job is the ability to run an arbitrary pod as the
-        // provider's own ServiceAccount. libvirt needs it for image import
-        // (ADR-0011) in the Provider's OWN namespace, which this per-instance
-        // Role is scoped to. vSphere's own per-zone import Jobs (ADR-0020)
-        // live in a different namespace (`banlieue-imagebuild`) — a rule
-        // here could never reach them — so its Jobs access comes entirely
-        // from the cluster-wide ClusterRole instead; empty here does NOT
-        // mean vSphere has no Jobs access, see `backend_additional_rules`'s
-        // doc comment.
-        assert!(backend_additional_rules("vsphere").is_empty());
-        assert!(backend_additional_rules("proxmox").is_empty());
-
-        let rules = backend_additional_rules("libvirt");
-        assert_eq!(rules.len(), 1);
-        assert_eq!(
-            rules[0].api_groups.as_deref(),
-            Some(["batch".to_string()].as_slice())
-        );
-        assert_eq!(
-            rules[0].resources.as_deref(),
-            Some(["jobs".to_string()].as_slice())
-        );
-    }
-
-    #[test]
-    fn the_job_grant_is_the_minimum_the_reconciler_uses() {
-        // Reads are by the deterministic name from import_job_name, so no
-        // list/watch; finished Jobs are reaped by ttlSecondsAfterFinished, so
-        // no delete.
-        let verbs = backend_additional_rules("libvirt")[0].verbs.clone();
-        assert_eq!(verbs, vec!["get", "create", "patch"]);
-        for forbidden in ["list", "watch", "delete", "*"] {
+    fn no_backend_gets_a_job_grant_in_its_per_instance_role() {
+        for backend in ["vsphere", "libvirt", "proxmox", "azure", "cloud-hypervisor"] {
+            let t = triples(&backend_additional_rules(backend));
             assert!(
-                !verbs.iter().any(|v| v == forbidden),
-                "{forbidden} is not needed and widens the grant"
+                !t.iter()
+                    .any(|(_, r, _)| r == "jobs" || r.starts_with("pods")),
+                "{backend}: {t:?}"
+            );
+            assert!(
+                !triples(&build_provider_class(backend, &opts()).spec.additional_rules)
+                    .iter()
+                    .any(|(_, r, _)| r == "jobs"),
+                "{backend}: the seeded class carries no Job grant"
             );
         }
     }
 
+    /// No provider's shared ClusterRole grants `jobs` or `pods`: it is bound
+    /// cluster-wide, where Job create is pod create in every namespace, as any
+    /// ServiceAccount there.
     #[test]
-    fn a_seeded_libvirt_class_carries_the_job_grant() {
-        // The seeded ProviderClass is what the operator turns into a Role; a
-        // class without these rules produces a provider that 403s on its first
-        // import.
-        let class = build_provider_class("libvirt", &opts());
-        assert_eq!(
-            class.spec.additional_rules,
-            backend_additional_rules("libvirt")
-        );
+    fn no_provider_cluster_role_grants_jobs_or_pods() {
+        for backend in ["vsphere", "libvirt", "proxmox", "azure", "cloud-hypervisor"] {
+            let granted = granted_triples(&InstallRole::Provider(backend.to_string()));
+            assert!(
+                !granted
+                    .iter()
+                    .any(|(_, r, _)| r == "jobs" || r == "cronjobs" || r.starts_with("pods")),
+                "{backend}: {granted:?}"
+            );
+        }
+    }
+
+    /// The operator renders each Provider's Job Role, so it must hold every
+    /// rule in it (RBAC refuses a grantor what it lacks).
+    #[test]
+    fn the_operator_holds_every_job_rule_it_grants() {
+        let operator = granted_triples(&InstallRole::Operator);
+        for backend in ["vsphere", "libvirt", "azure"] {
+            let rules = crate::workload::job_rules(backend).expect("runs Jobs");
+            for triple in triples(&rules) {
+                assert!(operator.contains(&triple), "{backend}: {triple:?}");
+            }
+        }
+    }
+
+    /// A standalone provider of a backend that runs Jobs gets the same Job
+    /// verbs the operator renders, as a Role in the build namespace bound to
+    /// its ServiceAccount in the install namespace; the others get none.
+    #[test]
+    fn a_standalone_provider_gets_its_job_role_in_the_build_namespace() {
+        for backend in ["vsphere", "libvirt", "azure"] {
+            let role = InstallRole::Provider(backend.to_string());
+            let manifests = build_role_install(&role, &opts()).unwrap();
+            let name = format!("{}-jobs", role.name());
+            let jobs = manifests
+                .roles
+                .iter()
+                .find(|r| r.metadata.name.as_deref() == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("{backend}: no {name} Role"));
+            assert_eq!(
+                jobs.metadata.namespace.as_deref(),
+                Some(DEFAULT_IMAGEBUILD_NAMESPACE)
+            );
+            assert_eq!(jobs.rules, crate::workload::job_rules(backend));
+            let binding = manifests
+                .role_bindings
+                .iter()
+                .find(|b| b.metadata.name.as_deref() == Some(name.as_str()))
+                .unwrap_or_else(|| panic!("{backend}: no {name} RoleBinding"));
+            assert_eq!(
+                binding.metadata.namespace.as_deref(),
+                Some(DEFAULT_IMAGEBUILD_NAMESPACE)
+            );
+            assert_eq!(binding.role_ref.name, name);
+            let subject = &binding.subjects.as_ref().unwrap()[0];
+            assert_eq!(subject.name, role.name());
+            assert_eq!(subject.namespace.as_deref(), Some(DEFAULT_NAMESPACE));
+        }
+        for backend in ["proxmox", "cloud-hypervisor"] {
+            let role = InstallRole::Provider(backend.to_string());
+            assert!(
+                build_provider_jobs_role(&role, &opts()).is_none(),
+                "{backend}"
+            );
+        }
+        assert!(build_provider_jobs_role(&InstallRole::Imagebuilder, &opts()).is_none());
+    }
+
+    /// The static vSphere manifest grants what bootstrap grants.
+    #[test]
+    fn the_static_vsphere_job_role_matches_what_bootstrap_builds() {
+        let manifest = include_str!("../../../deploy/provider-vsphere/rbac/role-jobs.yaml");
+        let mut docs = manifest.split("\n---\n");
+        let declared: Role = serde_saphyr::from_str(docs.next().unwrap()).unwrap();
+        let declared_binding: RoleBinding =
+            serde_saphyr::from_str(docs.next().expect("a RoleBinding document")).unwrap();
+        let (built, binding) =
+            build_provider_jobs_role(&InstallRole::Provider("vsphere".to_string()), &opts())
+                .expect("vSphere runs Jobs");
+        assert_eq!(built.metadata.name, declared.metadata.name);
+        assert_eq!(built.metadata.namespace, declared.metadata.namespace);
+        assert_eq!(built.rules, declared.rules);
+        assert_eq!(binding.role_ref, declared_binding.role_ref);
+        assert_eq!(binding.subjects, declared_binding.subjects);
     }
 
     /// Server-side apply to an object that does not exist yet is a **create**.
@@ -2291,6 +2353,169 @@ mod tests {
                 declared_binding.subjects.as_ref().unwrap()[0].name,
                 role.name()
             );
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // azure: Managed, federated token, no Secrets (ADR-0159, ADR-0164)
+    // ----------------------------------------------------------------------
+
+    #[test]
+    fn the_azure_class_is_managed_and_grants_no_extra_rules() {
+        let class = build_provider_class("azure", &opts());
+        assert_eq!(class.spec.backend, "azure");
+        assert!(
+            class.spec.image.is_some(),
+            "the operator runs it in-cluster"
+        );
+        assert!(class.spec.deployment.is_none(), "Managed, not External");
+        assert!(class.spec.additional_rules.is_empty());
+    }
+
+    #[test]
+    fn the_azure_provider_cluster_role_grants_no_secret_or_configmap() {
+        let granted = granted_triples(&InstallRole::Provider("azure".to_string()));
+        assert!(
+            !granted
+                .iter()
+                .any(|(g, r, _)| g.is_empty() && (r == "secrets" || r == "configmaps")),
+            "{granted:?}"
+        );
+        for (resource, verb) in [
+            ("azurevirtualmachines", "patch"),
+            ("azurevirtualmachines/status", "patch"),
+            ("azurevirtualmachines/finalizers", "update"),
+        ] {
+            assert!(
+                granted.contains(&(
+                    "infrastructure.banlieue.io".to_string(),
+                    resource.to_string(),
+                    verb.to_string()
+                )),
+                "{resource} {verb}"
+            );
+        }
+        assert!(
+            !granted
+                .iter()
+                .any(|(_, r, v)| r == "azurevirtualmachines" && (v == "create" || v == "delete")),
+            "the controller owns the machine lifecycle"
+        );
+    }
+
+    /// ADR-0162 Decision 1: the Azure provider holds the finalizer on a
+    /// VMImage it published. Its Job and pod verbs are not here: they are a
+    /// Role in the build namespace (`crate::workload::job_rules`).
+    #[test]
+    fn the_azure_provider_cluster_role_finalizes_vmimages_and_runs_no_jobs() {
+        let granted = granted_triples(&InstallRole::Provider("azure".to_string()));
+        assert!(
+            !granted
+                .iter()
+                .any(|(_, r, _)| r == "jobs" || r.starts_with("pods")),
+            "jobs and pods are granted in the build namespace only"
+        );
+        let jobs = crate::workload::job_rules("azure").expect("azure runs Jobs");
+        let t = triples(&jobs);
+        for verb in ["get", "list", "watch", "create", "patch", "delete"] {
+            assert!(
+                t.contains(&("batch".to_string(), "jobs".to_string(), verb.to_string())),
+                "jobs {verb}"
+            );
+        }
+        assert!(t.contains(&(String::new(), "pods".to_string(), "list".to_string())));
+        assert!(
+            !t.iter()
+                .any(|(g, r, v)| g.is_empty() && r.starts_with("pods") && v != "list"),
+            "pods: list only, no logs or exec"
+        );
+        for verb in ["update", "patch"] {
+            assert!(
+                granted.contains(&(
+                    "banlieue.io".to_string(),
+                    "vmimages".to_string(),
+                    verb.to_string()
+                )),
+                "vmimages {verb} (finalizer)"
+            );
+        }
+    }
+
+    /// The publish Job's identity ships beside the import identity, with no
+    /// API server token (ADR-0162 Decision 1).
+    #[test]
+    fn an_imagebuilder_install_ships_the_azure_publisher_identity() {
+        let manifests = build_role_install(&InstallRole::Imagebuilder, &opts()).unwrap();
+        let publisher = manifests
+            .service_accounts
+            .iter()
+            .find(|sa| sa.metadata.name.as_deref() == Some(AZURE_PUBLISHER_SERVICE_ACCOUNT))
+            .expect("publisher ServiceAccount");
+        assert_eq!(
+            publisher.metadata.namespace.as_deref(),
+            Some(DEFAULT_IMAGEBUILD_NAMESPACE)
+        );
+        assert_eq!(publisher.automount_service_account_token, Some(false));
+        assert!(
+            manifests
+                .service_accounts
+                .iter()
+                .any(|sa| sa.metadata.name.as_deref()
+                    == Some(crate::workload::IMPORT_SERVICE_ACCOUNT))
+        );
+        // No Role or binding names it: it holds no Kubernetes RBAC.
+        assert!(manifests.role_bindings.iter().all(|b| {
+            b.subjects
+                .iter()
+                .flatten()
+                .all(|s| s.name != AZURE_PUBLISHER_SERVICE_ACCOUNT)
+        }));
+        assert!(manifests.cluster_role_bindings.iter().all(|b| {
+            b.subjects
+                .iter()
+                .flatten()
+                .all(|s| s.name != AZURE_PUBLISHER_SERVICE_ACCOUNT)
+        }));
+    }
+
+    /// A statically installed Azure provider gets the same projected token
+    /// the operator mounts; every other role's pod is unchanged.
+    #[test]
+    fn only_a_static_azure_provider_mounts_the_federated_token() {
+        let azure = build_deployment(&InstallRole::Provider("azure".to_string()), &opts());
+        let pod = azure.spec.template.spec.as_ref().unwrap();
+        let volumes = pod.volumes.as_ref().expect("token volume");
+        assert_eq!(volumes[0].name, crate::workload::AZURE_TOKEN_VOLUME);
+        let c = &pod.containers[0];
+        assert_eq!(
+            c.volume_mounts.as_ref().expect("mount")[0].mount_path,
+            crate::workload::AZURE_TOKEN_MOUNT_PATH
+        );
+        assert!(
+            c.env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .any(|e| e.name == crate::workload::AZURE_FEDERATED_TOKEN_FILE_ENV)
+        );
+
+        for role in [
+            InstallRole::Controller,
+            InstallRole::Operator,
+            InstallRole::Provider("proxmox".to_string()),
+        ] {
+            let d = build_deployment(&role, &opts());
+            let pod = d.spec.template.spec.as_ref().unwrap();
+            assert!(pod.volumes.is_none(), "{}", role.name());
+            assert!(pod.containers[0].volume_mounts.is_none(), "{}", role.name());
+            let names: Vec<&str> = pod.containers[0]
+                .env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .map(|e| e.name.as_str())
+                .collect();
+            assert_eq!(names, ["POD_NAME", "POD_NAMESPACE"], "{}", role.name());
         }
     }
 }

@@ -25,7 +25,8 @@ use banlieue_api::banlieue::{
     Provider, VMClass, VMImage, VirtualMachine, VirtualMachineClaim, VirtualMachinePool,
 };
 use banlieue_api::infrastructure::{
-    CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereCluster, VSphereMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereCluster,
+    VSphereMachine,
 };
 use banlieue_provider_sdk::audit::{self, AuditConfig};
 use banlieue_provider_sdk::bootstrap::{
@@ -263,6 +264,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     // And the Proxmox counterpart (ADR-0075), for the same reason.
     let proxmox_api: Api<ProxmoxMachine> = scope.api(&client);
 
+    // And the Azure counterpart (ADR-0164), for the same reason.
+    let azure_api: Api<AzureVirtualMachine> = scope.api(&client);
+
     // VMImage is cluster-scoped; the image watcher requeues every VM
     // referencing an image whose status flipped.
     let image_api: Api<VMImage> = Api::all(client.clone());
@@ -315,6 +319,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         .owns(libvirt_api, Config::default())
         .owns(cloud_hypervisor_api, Config::default())
         .owns(proxmox_api, Config::default())
+        .owns(azure_api, Config::default())
         .watches(image_api, Config::default(), move |image: VMImage| {
             // Requeue every VM whose spec.image_ref.name matches this image.
             // VMImage updates are rare (operator-driven template imports), so

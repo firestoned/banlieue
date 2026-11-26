@@ -19,6 +19,14 @@ pub const TAG_OWNER_UID: &str = "banlieue-owner-uid";
 pub const TAG_OWNER_KIND: &str = "banlieue-owner-kind";
 /// `<namespace>.<name>` of the `Provider` the resource belongs to.
 pub const TAG_PROVIDER: &str = "banlieue-provider";
+/// The owning object's namespace (ADR-0158 Decision 4, amended 2026-11-25):
+/// lets a provider that can list only its home namespace sweep exactly the
+/// resources it can prove are orphans, and nothing a tenant namespace owns.
+pub const TAG_OWNER_NAMESPACE: &str = "banlieue-owner-namespace";
+/// On a published image version: the SHA-256 (lowercase hex) of the raw
+/// disk it was published from (ADR-0162 Decision 6). A provider boots only
+/// a version whose recorded digest matches the `VMImage` it was asked for.
+pub const TAG_SOURCE_SHA256: &str = "banlieue-source-sha256";
 
 /// Azure's limit on a tag name.
 pub const MAX_TAG_NAME_LEN: usize = 512;
@@ -39,6 +47,8 @@ pub struct OwnershipTags {
     pub owner_kind: String,
     /// `<namespace>.<name>` of the `Provider`.
     pub provider: String,
+    /// The owning object's namespace, when it has one.
+    pub owner_namespace: Option<String>,
 }
 
 impl OwnershipTags {
@@ -55,17 +65,30 @@ impl OwnershipTags {
             owner_uid: owner_uid.to_string(),
             owner_kind: owner_kind.to_string(),
             provider: format!("{provider_namespace}.{provider_name}"),
+            owner_namespace: None,
         }
+    }
+
+    /// The same tags, also naming the owning object's namespace
+    /// ([`TAG_OWNER_NAMESPACE`]).
+    #[must_use]
+    pub fn with_owner_namespace(mut self, namespace: &str) -> Self {
+        self.owner_namespace = Some(namespace.to_string());
+        self
     }
 
     /// The tags as Azure's `tags` object.
     #[must_use]
     pub fn to_map(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([
+        let mut map = BTreeMap::from([
             (TAG_OWNER_UID.to_string(), self.owner_uid.clone()),
             (TAG_OWNER_KIND.to_string(), self.owner_kind.clone()),
             (TAG_PROVIDER.to_string(), self.provider.clone()),
-        ])
+        ]);
+        if let Some(namespace) = &self.owner_namespace {
+            map.insert(TAG_OWNER_NAMESPACE.to_string(), namespace.clone());
+        }
+        map
     }
 
     /// Reads the ownership tags back from a resource's tags; `None` unless
@@ -76,6 +99,7 @@ impl OwnershipTags {
             owner_uid: tags.get(TAG_OWNER_UID)?.clone(),
             owner_kind: tags.get(TAG_OWNER_KIND)?.clone(),
             provider: tags.get(TAG_PROVIDER)?.clone(),
+            owner_namespace: tags.get(TAG_OWNER_NAMESPACE).cloned(),
         })
     }
 

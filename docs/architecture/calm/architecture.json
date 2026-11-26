@@ -1169,7 +1169,7 @@
       "unique-id": "service-azure-image-publisher",
       "node-type": "service",
       "name": "Azure image publish Job",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162). A Job in the imagebuild namespace with its own federated identity, separate from the provider's: verifies the VMImage's source digest, writes a fixed VHD (raw disk plus a 512-byte footer, no qemu-img), uploads it to a managed disk opened for upload through a one-hour write SAS with Put Page (all-zero chunks skipped, parallel streams), snapshots it with diskControllerTypes SCSI,NVMe, registers a Compute Gallery image version (TrustedLaunch when the image needs a vTPM, explicit end-of-life, deletion not blocked), deletes the upload disk and snapshot, and records the version ID, source digest and minimum OS disk size on the VMImage's per-Provider status."
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162). A Job in the imagebuild namespace with its own federated identity, separate from the provider's: verifies the VMImage's source digest, writes a fixed VHD (raw disk plus a 512-byte footer, no qemu-img), uploads it to a managed disk opened for upload through a one-hour write SAS with Put Page (all-zero chunks skipped, parallel streams), snapshots it with diskControllerTypes SCSI,NVMe, registers a Compute Gallery image version (TrustedLaunch when the image needs a vTPM, explicit end-of-life, deletion not blocked), deletes the upload disk and snapshot, and records the version ID, source digest and minimum OS disk size on the VMImage's per-Provider status. Amended 2026-11-26 (ADR-0162 Decisions 4 and 8): started by the Azure provider for every azure Provider serving a VMImage whose azure source is kind Url, as vSphere imports are; the gallery is reconciled to the declared VMImages (a missing version is re-published, an owned version for a superseded digest or a deleted VMImage is removed once no machine references it); restarted Jobs adopt the step in flight by its deterministic name."
     },
     {
       "unique-id": "network-azure-arm",
@@ -1229,7 +1229,23 @@
       "unique-id": "system-azure-guest",
       "node-type": "system",
       "name": "Azure Trusted Launch guest",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163, ADR-0165). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. The image reads customData from the local provisioning disk, never configures the accelerated-networking VF, and reports Ready to the host-local WireServer only from active mode after user data is applied. No public IP; the subnet has no default outbound access."
+      "description": "IMPLEMENTED for banlieue-built images, NOT VERIFIED LIVE (ADR-0163, ADR-0165, ADR-0171). A Gen2 Trusted Launch VM booted from a banlieue-published gallery image: Secure Boot on, a Microsoft vTPM with no EK certificate but an Azure-issued AK certificate at NV 0x01C101D0 chaining to Azure Virtual TPM Root Certificate Authority 2023. Every build of a VMImage with an azure source carries the Azure guest layer and helper (ADR-0171): banlieue-imagebuilder lists the digest-pinned banlieue-azure-guest bundle image in the OSArtifact's spec.artifacts.bundles (kairos-operator unpacks it onto the build rootfs at /usr/bin/banlieue-azure-guest; crates/banlieue-imagebuilder/src/reconciler/vmimage.rs, --azure-guest-image must be repository@sha256) and merges a generated cloud-config layer last (crates/banlieue-imagebuilder/src/azure_guest.rs): the accelerated-networking VF (mana, mlx4_core, mlx5_core) left unmanaged in the initramfs and the real root, qemu-guest-agent masked on Hyper-V, banlieue-azure-guest customdata in the boot stage (crates/banlieue-guest-azure/src/customdata.rs, src/ovf.rs: the local UDF provisioning disk mounted read-only nosuid nodev noexec, a strict ovf-env.xml parser, at most 64 KiB and only a #cloud-config document, written to /oem/91_azure_customdata.yaml 0600 atomically), and banlieue-azure-ready.service after cos-setup-network.service on active or passive boots only. Every step is gated on the Azure DMI chassis asset tag, so the same image is unchanged on other backends. Logs go to /dev/kmsg; customData is never logged. No public IP; the subnet has no default outbound access."
+    },
+    {
+      "unique-id": "network-azure-disk-upload",
+      "node-type": "network",
+      "name": "Azure managed-disk upload endpoint (external)",
+      "description": "The blob endpoint a managed disk opened for upload exposes through a write SAS returned by ARM's beginGetAccess (ADR-0162 Decision 2). The SAS is the credential: no Entra token is sent there. Valid one hour, revoked when the upload ends. External to banlieue.",
+      "interfaces": [
+        {
+          "unique-id": "azure-disk-upload-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -1533,7 +1549,7 @@
       "protocol": "HTTPS",
       "controls": {
         "tls-trust-byoc": {
-          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end \u2014 honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls ring provider shared with kube, installed once as the process default (ADR-0009). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
+          "description": "The vSphere provider owns the HTTP transport (Bring-Your-Own-Client): it builds the reqwest::Client and injects it via vim_rs ClientBuilder::http_client, rather than letting vim_rs construct one. banlieue therefore controls TLS trust establishment end to end \u2014 honouring Provider.spec.connection.caBundle (a value-or-source: inline PEM, or a configMapRef / secretRef key defaulting to ca.crt; exactly one, enforced controller-side and by a ValidatingAdmissionPolicy per ADR-0007), added as root certificate(s); insecureSkipTLSVerify is a separate, explicit opt-out (gated behind the banlieue.io/allow-insecure-tls annotation by an admission policy, security review 2026-07-31). Credentials and caBundle sources are read by name in the Provider's namespace through the operator-built per-instance Role (resourceNames-scoped, ADR-0003); the shared provider ClusterRole grants no Secret/ConfigMap access at all (security review 2026-07-31 CHAIN-002). The transport is OpenSSL-free: vim_rs 0.5 (reqwest 0.13/rustls) is consumed in BYOC mode and the reqwest client uses the rustls aws-lc-rs provider shared with kube, X25519MLKEM768 offered first, installed once as the process default by banlieue-tls (ADR-0009, provider choice superseded by ADR-0170). See ADR-0008 (BYOC runtime design) and ADR-0009 (0.5 migration + build end state).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -1654,7 +1670,7 @@
       "protocol": "TLS",
       "controls": {
         "libvirt-mutual-tls": {
-          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism \u2014 no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the ring provider, no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
+          "description": "Mutual TLS is the only supported libvirt transport: the client certificate is the authentication mechanism \u2014 no password, no SASL, no DIGEST-MD5. The crypto posture is inherited unchanged from the vSphere BYOC work (rustls with the aws-lc-rs provider offering X25519MLKEM768 first, ADR-0170; no OpenSSL), so libvirt support adds no new TLS stack. Client credentials are provisioned by scripts/bootstrap-libvirt-tls.sh and delivered as a Kubernetes Secret.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -3777,7 +3793,7 @@
     },
     {
       "unique-id": "rel-provider-azure-kube-api",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): watches its Provider, AzureVirtualMachines and VMImages; server-side-applies Provider status (failure domains, quota headroom, throttling), machine status and its perProvider VMImage row. Same CRD-only contract as every provider.",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): watches its Provider, AzureVirtualMachines and VMImages; server-side-applies Provider status (failure domains, quota headroom, throttling), machine status and its perProvider VMImage row. Same CRD-only contract as every provider. Also creates the Azure image publish Job in the imagebuild namespace for each VMImage with an azure Url source (ADR-0162 Decision 4, amended 2026-11-26), as the vSphere provider creates its import Jobs.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3901,7 +3917,7 @@
     },
     {
       "unique-id": "rel-provider-azure-arm",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0164): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
+      "description": "IMPLEMENTED (ADR-0164, crates/banlieue-provider-azure): NIC then VM by PUT (NVMe controller, osDisk diskSizeGB, deleteOption Delete on disk and NIC, TrustedLaunch, managed boot diagnostics, customData), observe through the instance view, deallocate for PoweredOff, delete then confirm by tag; resource SKUs and usages for failure domains and quota; the tag-scoped orphan sweep.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -3918,7 +3934,7 @@
       "protocol": "HTTPS",
       "controls": {
         "azure-ownership-tags": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0158 Decision 4-5): every resource carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider; the provider deletes only what carries its owner's UID, adopts instead of duplicating, and sweeps tagged orphans after a grace period. Tag names avoid '/', which Azure rejects.",
+          "description": "IMPLEMENTED (ADR-0158 Decision 4-5): every resource carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider; the provider deletes only what carries its owner's UID, adopts instead of duplicating, and sweeps tagged orphans after a grace period. Tag names avoid '/', which Azure rejects.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -3934,7 +3950,7 @@
           ]
         },
         "azure-rg-scoped-role": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159 Decision 3): the provider's identity holds a custom role scoped to the Provider's resource group with only the actions ADR-0164 lists; it cannot create or delete images (the publisher's identity can).",
+          "description": "IMPLEMENTED (ADR-0159 Decision 3): the provider's identity holds a custom role scoped to the Provider's resource group with only the actions ADR-0164 lists; it cannot create or delete images (the publisher's identity can).",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -4019,7 +4035,7 @@
     },
     {
       "unique-id": "rel-azure-guest-wireserver-ready",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163): the guest posts Ready to the host-local WireServer (168.63.129.16, goal state then health) once in active mode with its user data applied; Azure then marks the VM Succeeded, which the provider reads through ARM as GuestReady. banlieue's side is read-only; no credential in the guest. Verified on real VMs 2026-11-23/24.",
+      "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0163, ADR-0171): banlieue-azure-guest ready (crates/banlieue-guest-azure/src/ready.rs, src/goalstate.rs, src/http.rs), run by banlieue-azure-ready.service after Kairos's network stage so every stage of customData has applied, only on an active or passive boot, GETs the goal state from the host-local WireServer (168.63.129.16:80, a constant, plain HTTP as Azure designs it, x-ms-version 2012-11-30) and POSTs a Health document with State Ready, echoing Incarnation, ContainerId and InstanceId after checking each against a narrow character set; retried with back-off (1 s doubling to 30 s) for at most 15 minutes. Azure then marks the VM Succeeded, which the provider reads through ARM as GuestReady. The guest only reports; it receives no credential from WireServer, and banlieue's side is read-only. The spike's shell version was verified on real VMs 2026-11-23/24.",
       "relationship-type": {
         "connects": {
           "source": {
@@ -4033,7 +4049,7 @@
       "protocol": "HTTP",
       "controls": {
         "azure-guestready-read-only": {
-          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163 Decision 1): banlieue only reads provisioningState through ARM; it opens no channel into the guest.",
+          "description": "IMPLEMENTED (ADR-0163 Decision 1): banlieue only reads provisioningState through ARM (crates/banlieue-provider-azure/src/reconciler/azurevirtualmachine.rs); it opens no channel into the guest.",
           "requirements": [
             {
               "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
@@ -4044,6 +4060,23 @@
                   "AC-4"
                 ],
                 "evidence": "docs/adr/0163-guestready-on-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "azure-guest-helper-local-only": {
+          "description": "IMPLEMENTED, NOT VERIFIED LIVE (ADR-0171): the helper is baked into the image at build time from a digest-pinned bundle (crates/banlieue-imagebuilder/src/azure_guest.rs validate_helper_image; a tag refuses to start), fetches nothing at boot, reads customData only from the local provisioning disk, and its WireServer address is a compile-time constant with no flag or environment override (crates/banlieue-guest-azure/src/cli.rs).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SR-4",
+                  "SI-7",
+                  "CM-14"
+                ],
+                "evidence": "docs/adr/0171-azure-guest-layer.md"
               }
             }
           ]
@@ -4062,6 +4095,24 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-azure-image-publisher-disk-upload",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 2): the fixed VHD is written with Put Page in 4 MiB ranges, all-zero ranges skipped, to the write SAS URL ARM returned; the SAS is held in memory only and revoked when the upload ends.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-azure-image-publisher"
+          },
+          "destination": {
+            "node": "network-azure-disk-upload",
+            "interfaces": [
+              "azure-disk-upload-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS"
     }
   ],
   "flows": [
@@ -4603,7 +4654,7 @@
                   "CM-3",
                   "CM-4"
                 ],
-                "evidence": "docs/adr/0012-providerclass-crd-and-operator-role.md, docs/src/guides/provider-lifecycle.md"
+                "evidence": "docs/adr/0012-providerclass-crd-and-operator-role.md, docs/src/providers/lifecycle.md"
               }
             }
           ]

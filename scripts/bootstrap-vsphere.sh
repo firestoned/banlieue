@@ -22,7 +22,7 @@
 # written to a file, or passed on a command line by this script.
 #
 # Templates are NOT built here -- see docs/src/guides/building-kairos-hadron-template.md
-# and docs/src/guides/alpine-vsphere-template.md.
+# and docs/src/providers/alpine-vsphere-template.md.
 set -euo pipefail
 
 BANLIEUE_ENV_FILE="${BANLIEUE_ENV_FILE:-}"

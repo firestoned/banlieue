@@ -1,0 +1,58 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# VMImage install mode on a cloud (ADR-0162 Decision 7). A cloud Provider has
+# no install-media path: there is no ISO to attach to a cloud VM, so an image
+# whose clones finish their install from an attached ISO on first boot
+# (`spec.template.installMode: deferred`, ADR-0040) cannot run there. This
+# policy refuses that combination at admission instead of letting every
+# machine fail at create time.
+#
+# The ISO half of Decision 7 needs no rule of its own: no `sources[].kind`
+# names an ISO (the build artifact kind is status, chosen by the
+# imagebuilder), and a cloud image is a `Template` (a published gallery image
+# version) or, once ADR-0162's publisher lands, a published `Url` build.
+#
+# The cloud classes are listed by name, as provider-connection.yaml does.
+# Add a class here in the same change that ships it.
+#
+# Requires Kubernetes 1.30+ (ValidatingAdmissionPolicy GA).
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-vmimage-cloud-install-mode
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["vmimages"]
+  # Only images that can land on a cloud class carry anything to check.
+  matchConditions:
+    - name: has-cloud-source
+      expression: "object.spec.sources.exists(s, s.providerClass in ['azure'])"
+  validations:
+    - expression: >-
+        !has(object.spec.template)
+          || !has(object.spec.template.installMode)
+          || object.spec.template.installMode != 'deferred'
+      message: >-
+        spec.template.installMode: deferred cannot be combined with a cloud
+        source (azure): a cloud VM has no install-media path (ADR-0162).
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-vmimage-cloud-install-mode
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-vmimage-cloud-install-mode
+  validationActions: ["Deny"]

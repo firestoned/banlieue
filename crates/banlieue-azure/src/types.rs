@@ -483,6 +483,23 @@ pub fn parse_resources(body: &[u8]) -> Result<Vec<TaggedResource>> {
         .collect())
 }
 
+/// The `tags` of one resource read by `GET .../{type}/{name}`.
+#[derive(Deserialize)]
+struct RawTagged {
+    #[serde(default)]
+    tags: BTreeMap<String, String>,
+}
+
+/// Parses the tags out of `GET .../virtualMachines/{vm}`. ARM omits `tags`
+/// on an untagged resource, which parses as no tags.
+///
+/// # Errors
+/// [`Error::Decode`] if the body is not a JSON object.
+pub fn parse_vm_tags(body: &[u8]) -> Result<BTreeMap<String, String>> {
+    let raw: RawTagged = decode("virtual machine", body)?;
+    Ok(raw.tags)
+}
+
 /// The resources the orphan sweep may delete: tagged for `provider`, owned
 /// by a UID not in `live_uids`, and created at least `grace` before `now`
 /// (ADR-0158 Decision 5). A resource with no creation time is never

@@ -182,6 +182,33 @@ mod tests {
     }
 
     #[test]
+    fn a_vm_read_yields_its_tags() {
+        let tags = parse_vm_tags(br#"{"name":"vm","tags":{"banlieue-owner-uid":"u1","x":"y"}}"#)
+            .expect("parses");
+        assert_eq!(
+            tags.get("banlieue-owner-uid").map(String::as_str),
+            Some("u1")
+        );
+        assert_eq!(tags.len(), 2);
+    }
+
+    /// ARM omits `tags` on an untagged resource: that is no tags, not an
+    /// error, so an untagged VM is seen as untagged (and so not ours).
+    #[test]
+    fn a_vm_without_tags_has_none() {
+        assert!(
+            parse_vm_tags(br#"{"name":"vm"}"#)
+                .expect("parses")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_vm_read_that_is_not_json_is_a_decode_error() {
+        assert!(parse_vm_tags(b"not json").is_err());
+    }
+
+    #[test]
     fn listed_resources_parse_with_creation_time() {
         let resources = parse_resources(RESOURCES).expect("parses");
         let vm = resources

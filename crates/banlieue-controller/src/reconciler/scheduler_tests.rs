@@ -176,6 +176,9 @@ mod tests {
                         reason: None,
                         message: None,
                         zones: vec![],
+                        source_digest: None,
+                        min_os_disk_size_gib: None,
+                        superseded_refs: Vec::new(),
                     })
                     .collect(),
                 build_artifact: None,
@@ -210,6 +213,7 @@ mod tests {
                     }),
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
+                    azure: None,
                 },
                 capabilities: caps,
                 paused: false,
@@ -271,6 +275,7 @@ mod tests {
     ) -> ProviderCapabilities {
         // each tuple: (class_name, target_key, target_value)
         ProviderCapabilities {
+            instance_sizes: Vec::new(),
             storage_classes: storage
                 .iter()
                 .map(|(name, k, v)| StorageClassMapping {
@@ -2556,5 +2561,291 @@ mod tests {
             placed_member("m2", "a", "h2"),
         ];
         assert_eq!(host_of(&me, &existing), "h3");
+    }
+
+    // --- Filter: instance sizes (ADR-0160 Decision 1) -------------------------
+
+    /// An `azure` Provider with one failure domain per zone it is given, each
+    /// offering `gold` and `prod`, and `sizes` as its `instanceSizes`.
+    fn azure_provider(
+        name: &str,
+        zones: &[&str],
+        sizes: Vec<banlieue_api::banlieue::InstanceSizeMapping>,
+    ) -> Provider {
+        let fds = zones
+            .iter()
+            .map(|z| {
+                let mut f = fd(
+                    &format!("{name}-zone-{z}"),
+                    lbls([("zone", z)]),
+                    &["gold"],
+                    &["prod"],
+                    &[],
+                );
+                f.attributes.raw = lbls([("zone", z)]);
+                f
+            })
+            .collect();
+        let mut caps = caps_with(
+            &[("gold", "sku", "Premium_LRS")],
+            &[("prod", "subnetId", "/subscriptions/s/subnets/a")],
+        );
+        caps.instance_sizes = sizes;
+        let mut p = provider(name, BTreeMap::new(), fds, caps);
+        p.spec.provider_class_ref.name = "azure".into();
+        p
+    }
+
+    // --- Filter: cloud quota (ADR-0161 Decision 1) ---------------------------
+
+    /// `azure_provider` with `headroom` vCPUs of quota published in every
+    /// zone, as the provider does (the regional figure, repeated).
+    fn azure_with_headroom(zones: &[&str], headroom: u32) -> Provider {
+        let mut p = azure_provider("az1", zones, vec![size_of("c", "Standard_D2s_v5")]);
+        let fds = &mut p.status.as_mut().expect("status").failure_domains;
+        for f in fds.iter_mut() {
+            f.attributes.capacity = Some(cap(Some(headroom), None, None));
+        }
+        p
+    }
+
+    fn on_azure(name: &str, zone: &str, provisioned: bool) -> VirtualMachine {
+        let mut v = scheduled_vm(
+            name,
+            "ns",
+            BTreeMap::new(),
+            "az1",
+            &format!("az1-zone-{zone}"),
+        );
+        if let Some(status) = v.status.as_mut() {
+            status.initialization.provisioned = Some(provisioned);
+        }
+        v
+    }
+
+    /// Quota is never overcommitted: 1 vCPU of headroom refuses a 2-vCPU
+    /// class, where a host's 1 CPU at the default ratio of 4 would take it.
+    #[test]
+    fn quota_headroom_is_not_overcommitted() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = gold_prod_class();
+        let img = image_ready_on(&["az1"]);
+        let err = schedule(
+            &v,
+            &cls,
+            &img,
+            &[azure_with_headroom(&["1"], 1)],
+            &[],
+            std::slice::from_ref(&cls),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("quota headroom 1"), "{err}");
+
+        let ok = schedule(
+            &v,
+            &cls,
+            &img,
+            &[azure_with_headroom(&["1"], 2)],
+            &[],
+            std::slice::from_ref(&cls),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
+    /// Running VMs are already inside the headroom the cloud reported, so
+    /// they are not subtracted a second time.
+    #[test]
+    fn provisioned_vms_are_not_subtracted_from_quota_headroom() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = gold_prod_class();
+        let img = image_ready_on(&["az1"]);
+        let existing: Vec<_> = (0..3)
+            .map(|i| on_azure(&format!("old-{i}"), "1", true))
+            .collect();
+        let d = schedule(
+            &v,
+            &cls,
+            &img,
+            &[azure_with_headroom(&["1"], 2)],
+            &existing,
+            std::slice::from_ref(&cls),
+        );
+        assert!(d.is_ok(), "{d:?}");
+    }
+
+    /// Quota is regional: VMs placed but not yet provisioned count against
+    /// it whichever zone they went to, so two zones repeating the same
+    /// figure cannot together take twice the quota.
+    #[test]
+    fn in_flight_vms_in_every_zone_count_against_regional_quota() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = gold_prod_class();
+        let img = image_ready_on(&["az1"]);
+        let existing = vec![on_azure("old-a", "1", false), on_azure("old-b", "2", false)];
+
+        let err = schedule(
+            &v,
+            &cls,
+            &img,
+            &[azure_with_headroom(&["1", "2"], 4)],
+            &existing,
+            std::slice::from_ref(&cls),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("in flight 4"), "{err}");
+
+        let d = schedule(
+            &v,
+            &cls,
+            &img,
+            &[azure_with_headroom(&["1", "2"], 6)],
+            &existing,
+            std::slice::from_ref(&cls),
+        );
+        assert!(d.is_ok(), "{d:?}");
+    }
+
+    #[test]
+    fn quota_shortfall_is_none_without_published_headroom() {
+        assert_eq!(
+            quota_shortfall(8, &InFlight::default(), &cap(None, None, None)),
+            None
+        );
+    }
+
+    fn size_of(vm_class: &str, size: &str) -> banlieue_api::banlieue::InstanceSizeMapping {
+        banlieue_api::banlieue::InstanceSizeMapping {
+            vm_class: vm_class.into(),
+            size: size.into(),
+            per_zone: vec![],
+        }
+    }
+
+    #[test]
+    fn azure_provider_without_a_size_for_the_class_is_not_a_candidate() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let cls = gold_prod_class();
+        let img = image_ready_on(&["az1"]);
+        let p = azure_provider(
+            "az1",
+            &["1", "2"],
+            vec![size_of("other", "Standard_D2s_v5")],
+        );
+
+        let err = schedule(&v, &cls, &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceSizeUnmapped("c".into()));
+        assert_eq!(err.reason(), reasons::INSTANCE_SIZE_UNMAPPED);
+        assert!(err.to_string().contains("instanceSizes"), "{err}");
+    }
+
+    #[test]
+    fn azure_provider_with_no_instance_sizes_at_all_takes_nothing() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["az1"]);
+        let p = azure_provider("az1", &["1"], vec![]);
+
+        let err = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceSizeUnmapped("c".into()));
+    }
+
+    #[test]
+    fn azure_provider_with_a_size_for_the_class_is_accepted() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["az1"]);
+        let p = azure_provider("az1", &["1"], vec![size_of("c", "Standard_D2s_v5")]);
+
+        let d = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
+        assert_eq!(d.provider_name, "az1");
+        assert_eq!(d.provider_class, "azure");
+        assert_eq!(d.failure_domain_name, "az1-zone-1");
+    }
+
+    /// The rule is generic: any Provider that declares `instanceSizes` maps
+    /// classes explicitly, so EC2 (or anything else) reuses it.
+    #[test]
+    fn any_provider_declaring_instance_sizes_rejects_an_unmapped_class() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["vc1"]);
+        let mut p = gold_prod_provider("vc1");
+        p.spec.capabilities.instance_sizes = vec![size_of("other", "m7i.large")];
+
+        let err = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceSizeUnmapped("c".into()));
+    }
+
+    #[test]
+    fn an_unmapped_azure_provider_does_not_block_another_candidate() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["az1", "vc1"]);
+        let az = azure_provider("az1", &["1"], vec![]);
+        let vc = gold_prod_provider("vc1");
+
+        let d = schedule(&v, &gold_prod_class(), &img, &[az, vc], &[], &[]).expect("scheduled");
+        assert_eq!(d.provider_name, "vc1");
+    }
+
+    /// When other candidates failed for other reasons, the compound message
+    /// still names the unmapped class among them.
+    #[test]
+    fn mixed_rejections_report_the_unmapped_class_in_the_compound_message() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["az1", "vc1"]);
+        let az = azure_provider("az1", &["1"], vec![]);
+        let mut vc = gold_prod_provider("vc1");
+        vc.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_storage_classes
+            .clear();
+
+        let err = schedule(&v, &gold_prod_class(), &img, &[az, vc], &[], &[]).unwrap_err();
+        let ScheduleError::NoFailureDomainMatched(msg) = &err else {
+            panic!("expected NoFailureDomainMatched, got {err:?}");
+        };
+        assert!(msg.contains("az1/az1-zone-1"), "{msg}");
+        assert!(msg.contains("instanceSizes"), "{msg}");
+        assert!(msg.contains("storage class 'gold'"), "{msg}");
+    }
+
+    /// A placed VM keeps running at the size it was created with: removing
+    /// the mapping stops new placements, it does not move the VM (ADR-0125).
+    #[test]
+    fn a_placed_vm_keeps_its_azure_placement_when_its_size_mapping_goes() {
+        let mut v = vm("db-01", "ns", BTreeMap::new());
+        v.status = Some(VirtualMachineStatus {
+            scheduled: Some(ScheduledPlacement {
+                provider_name: "az1".into(),
+                provider_class: "azure".into(),
+                failure_domain: "az1-zone-1".into(),
+                resolved_storage: vec![],
+                resolved_networks: vec![],
+                scheduled_at: None,
+            }),
+            ..Default::default()
+        });
+        let img = image_ready_on(&["az1"]);
+        let p = azure_provider("az1", &["1"], vec![]);
+
+        let d = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("kept");
+        assert_eq!(d.failure_domain_name, "az1-zone-1");
+    }
+
+    /// The row the Azure provider writes for a hand-published `Template`
+    /// source: ready, with no `zones[]` (a gallery image version is regional),
+    /// is enough for every zone.
+    #[test]
+    fn an_azure_template_row_without_zones_is_ready_in_every_zone() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_ready_on(&["az1"]);
+        img.spec.sources = vec![ImageSource {
+            provider_class: "azure".into(),
+            kind: ImageSourceKind::Template,
+            reference: "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/galleries/g/images/i/versions/1.0.0".into(),
+            import_from: None,
+            checksum: None,
+        }];
+        let p = azure_provider("az1", &["1", "2"], vec![size_of("c", "Standard_D2s_v5")]);
+
+        let d = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
+        assert_eq!(d.provider_name, "az1");
     }
 }

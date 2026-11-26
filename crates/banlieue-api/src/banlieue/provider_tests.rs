@@ -45,6 +45,7 @@ mod tests {
             storage_classes: vec![sample_storage_class("gold")],
             network_classes: Vec::new(),
             features: Vec::new(),
+            instance_sizes: vec![],
         };
         assert!(!c.is_empty());
     }
@@ -55,6 +56,7 @@ mod tests {
             storage_classes: Vec::new(),
             network_classes: vec![sample_network_class("prod")],
             features: Vec::new(),
+            instance_sizes: vec![],
         };
         assert!(!c.is_empty());
     }
@@ -65,6 +67,7 @@ mod tests {
             storage_classes: Vec::new(),
             network_classes: Vec::new(),
             features: vec!["hotAddCPU".to_string()],
+            instance_sizes: vec![],
         };
         assert!(!c.is_empty());
     }
@@ -75,6 +78,7 @@ mod tests {
             storage_classes: vec![sample_storage_class("gold")],
             network_classes: vec![sample_network_class("prod")],
             features: vec!["efiSecureBoot".to_string()],
+            instance_sizes: vec![],
         };
         assert!(!c.is_empty());
     }
@@ -92,6 +96,7 @@ mod tests {
             }),
             insecure_skip_tls_verify: false,
             ca_bundle: None,
+            azure: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(
@@ -108,6 +113,7 @@ mod tests {
     #[test]
     fn provider_connection_with_optional_ca_and_insecure_round_trip() {
         let c = ProviderConnection {
+            azure: None,
             endpoint: "https://pve:8006".to_string(),
             credentials_ref: Some(LocalObjectReference {
                 name: "pve-creds".to_string(),
@@ -181,6 +187,7 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -217,6 +224,7 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: true,
@@ -245,11 +253,13 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities {
                 storage_classes: vec![sample_storage_class("gold")],
                 network_classes: vec![sample_network_class("prod")],
                 features: vec!["hotAddCPU".to_string()],
+                instance_sizes: vec![],
             },
             paused: false,
             use_content_library: true,
@@ -381,8 +391,131 @@ mod tests {
         ScopedTarget {
             datacenter: datacenter.to_string(),
             cluster: cluster.to_string(),
+            zone: None,
             target,
         }
+    }
+
+    // ----------------------------------------------------------------------
+    // Cloud zones (ADR-0158 Decision 3) and instance sizes (ADR-0160)
+    // ----------------------------------------------------------------------
+
+    fn zoned(zone: &str, key: &str, value: &str) -> ScopedTarget {
+        ScopedTarget {
+            zone: Some(zone.to_string()),
+            target: BTreeMap::from([(key.to_string(), value.to_string())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn target_for_zone_prefers_the_zone_entry() {
+        let m = NetworkClassMapping {
+            name: "lan".to_string(),
+            target: Some(BTreeMap::from([(
+                "subnetId".to_string(),
+                "default".to_string(),
+            )])),
+            per_zone: vec![zoned("2", "subnetId", "zone-two")],
+            ..Default::default()
+        };
+        assert_eq!(m.target_for_zone("2").unwrap()["subnetId"], "zone-two");
+        assert_eq!(m.target_for_zone("1").unwrap()["subnetId"], "default");
+    }
+
+    #[test]
+    fn target_for_zone_ignores_vsphere_scoped_entries() {
+        let m = StorageClassMapping {
+            name: "fast".to_string(),
+            target: None,
+            per_zone: vec![scoped("dc", "cl", "sku", "Premium_LRS")],
+        };
+        assert_eq!(m.target_for_zone("1"), None);
+    }
+
+    #[test]
+    fn zoned_scoped_target_serializes_without_datacenter_or_cluster() {
+        let json = serde_json::to_value(zoned("1", "sku", "Premium_LRS")).unwrap();
+        assert_eq!(json["zone"], "1");
+        assert!(json.get("datacenter").is_none());
+        assert!(json.get("cluster").is_none());
+    }
+
+    #[test]
+    fn instance_size_for_uses_per_zone_override_then_default() {
+        let caps = ProviderCapabilities {
+            instance_sizes: vec![InstanceSizeMapping {
+                vm_class: "small".to_string(),
+                size: "Standard_D2s_v5".to_string(),
+                per_zone: vec![ZonedInstanceSize {
+                    zone: "2".to_string(),
+                    size: "Standard_D2as_v5".to_string(),
+                }],
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            caps.instance_size_for("small", "1"),
+            Some("Standard_D2s_v5")
+        );
+        assert_eq!(
+            caps.instance_size_for("small", "2"),
+            Some("Standard_D2as_v5")
+        );
+        assert_eq!(caps.instance_size_for("large", "1"), None);
+        assert!(!caps.is_empty());
+    }
+
+    #[test]
+    fn azure_connection_round_trips_in_camel_case() {
+        let conn = AzureConnection {
+            tenant_id: "t".to_string(),
+            client_id: "c".to_string(),
+            subscription_id: "s".to_string(),
+            location: "canadacentral".to_string(),
+            resource_group: "rg".to_string(),
+            authority_host: None,
+            image_gallery: None,
+            publisher: None,
+        };
+        let json = serde_json::to_value(&conn).unwrap();
+        assert_eq!(json["resourceGroup"], "rg");
+        assert_eq!(json["location"], "canadacentral");
+        assert!(json.get("authorityHost").is_none());
+        assert!(json.get("imageGallery").is_none());
+        assert!(json.get("publisher").is_none());
+        let back: AzureConnection = serde_json::from_value(json).unwrap();
+        assert_eq!(back, conn);
+    }
+
+    /// ADR-0162 Decision 8: the gallery and the publisher identity a Url
+    /// source is published with, in camelCase.
+    #[test]
+    fn azure_connection_carries_the_image_gallery_and_publisher() {
+        let json = serde_json::json!({
+            "tenantId": "t",
+            "clientId": "c",
+            "subscriptionId": "s",
+            "location": "canadacentral",
+            "resourceGroup": "rg",
+            "imageGallery": { "resourceGroup": "rg-img", "name": "banlieue" },
+            "publisher": { "clientId": "p" },
+        });
+        let conn: AzureConnection = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            conn.image_gallery,
+            Some(AzureImageGallery {
+                resource_group: "rg-img".to_string(),
+                name: "banlieue".to_string(),
+            })
+        );
+        assert_eq!(
+            conn.publisher,
+            Some(AzurePublisherIdentity {
+                client_id: "p".to_string(),
+            })
+        );
+        assert_eq!(serde_json::to_value(&conn).unwrap(), json);
     }
 
     #[test]
@@ -659,6 +792,7 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -691,6 +825,7 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -726,6 +861,7 @@ mod tests {
                 }),
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
+                azure: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,

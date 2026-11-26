@@ -1,0 +1,45 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Per-zone image import Jobs (ADR-0020) for the STATICALLY deployed (dev)
+# provider, in the build namespace only.
+#
+# The import Jobs run in the build namespace (ADR-0016), beside the artifacts
+# PVC. The shared ClusterRole carries no `jobs` rule: it is bound cluster-wide,
+# where Job create is pod create in every namespace, as any ServiceAccount
+# there. This Role is what `banlieue bootstrap provider vsphere` and the
+# operator (crates/banlieue-operator/src/workload.rs, job_rules) grant:
+# `get` to adopt an existing Job, `create`+`patch` for the server-side apply
+# that creates it, `delete` for `banlieue.io/force-reimport` and a failed
+# Job's retry, `list`+`watch` for the VMImage controller's watch on its Jobs.
+# No `update`. deploy/admission/provider-jobs.yaml confines what these Jobs
+# may run. Apply after the build namespace exists (deploy/imagebuilder/).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: banlieue-provider-vsphere-jobs
+  namespace: banlieue-imagebuild
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: banlieue-provider-vsphere-jobs
+  namespace: banlieue-imagebuild
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-vsphere
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: banlieue-provider-vsphere-jobs
+subjects:
+  - kind: ServiceAccount
+    name: banlieue-provider-vsphere
+    namespace: banlieue-system

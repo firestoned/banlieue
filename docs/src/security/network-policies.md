@@ -31,6 +31,7 @@ what that component needs, selected by `app.kubernetes.io/name=banlieue` plus
 | `vsphere-import` | Job in the image-build namespace | DNS, API server, TCP 443 (vCenter and the ESXi hosts behind each datastore) | none |
 | `libvirt-import` | Job in the image-build namespace | DNS, API server, TCP 16514 | none |
 | `registry-push` | Job in the image-build namespace | DNS, registry TCP 443 | none |
+| `azure-publish` | Job in the image-build namespace | DNS, TCP 443 (Entra ID, Azure Resource Manager, the upload disk's blob endpoint); no API server | none |
 
 The rules behind those words:
 

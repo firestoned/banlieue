@@ -255,7 +255,7 @@ drop-in (`k0s-vm-<name>.service.d/50-slice.conf`) rather than rewriting its
 units, and the node moves into the slice at its next restart; nothing is
 restarted for it. To see what each node costs
 the host, run `banlieue host cloud-hypervisor overhead` on it
-([Measuring VM overhead](cloud-hypervisor-host.md#measuring-vm-overhead)).
+([Measuring VM overhead](../providers/cloud-hypervisor.md#measuring-vm-overhead)).
 
 ```sh
 # Three Cloud Hypervisor controllers on a LAN bridge, on one host.
@@ -499,10 +499,10 @@ provider introspects its backend and publishes `status.failureDomains[]`,
 with capacity where it can measure it (ADR-0107).
 
 **Output:** one or more reachable failure domains, ready for scheduling.
-See **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)** (the reference
-backend) / **[vSphere Provider](vsphere-provider.md)** /
-**[libvirt Provider](libvirt-provider.md)** /
-**[Proxmox VE Provider](proxmox-provider.md)**, and
+See **[Cloud Hypervisor Provider](../providers/cloud-hypervisor.md)** (the reference
+backend) / **[vSphere Provider](../providers/vsphere.md)** /
+**[libvirt Provider](../providers/libvirt.md)** /
+**[Proxmox VE Provider](../providers/proxmox.md)**, and
 **[Environment / Provider Isolation](environment-provider-isolation.md)**
 before you reach for a *second* `Provider` for what's actually the same
 backend.
@@ -542,7 +542,7 @@ real VM from the image resolved in step 3.
 
 **Output:** a running VM, with `VirtualMachine.status` mirroring the infra
 CR's own status. See the provider guide for your backend, for example
-**[vSphere Provider](vsphere-provider.md)** step 6.
+**[vSphere Provider](../providers/vsphere.md)** step 6.
 
 ### 6. Optional: use these VMs as a k0s workload cluster
 
@@ -579,9 +579,9 @@ cluster in phase 6 — goes through banlieue's own CRD-only contract.
 | --- | --- |
 | 0: Bootstrap | `scripts/bootstrap-k0s-cluster.sh --help`; ADR-0017, ADR-0018 |
 | 1: Install banlieue | [Core Controller](core-controller.md) |
-| 2: Register a backend | [Cloud Hypervisor Provider](cloud-hypervisor-host.md), [vSphere Provider](vsphere-provider.md), [libvirt Provider](libvirt-provider.md), [Proxmox VE Provider](proxmox-provider.md), [Provider Lifecycle & Install](provider-lifecycle.md), [Environment / Provider Isolation](environment-provider-isolation.md) |
-| 3: Build an image | [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md), [Setting up the Kairos Operator](kairos-operator-setup.md), [Building an Alpine VM Template](alpine-vsphere-template.md), [Building a Kairos Hadron VM Template](building-kairos-hadron-template.md) |
-| 4 / 5: VMClass / VirtualMachine | [vSphere Provider](vsphere-provider.md) steps 4–7 |
+| 2: Register a backend | [Cloud Hypervisor Provider](../providers/cloud-hypervisor.md), [vSphere Provider](../providers/vsphere.md), [libvirt Provider](../providers/libvirt.md), [Proxmox VE Provider](../providers/proxmox.md), [Provider Lifecycle & Install](../providers/lifecycle.md), [Environment / Provider Isolation](environment-provider-isolation.md) |
+| 3: Build an image | [Using banlieue-imagebuilder](using-banlieue-imagebuilder.md), [Setting up the Kairos Operator](kairos-operator-setup.md), [Building an Alpine VM Template](../providers/alpine-vsphere-template.md), [Building a Kairos Hadron VM Template](building-kairos-hadron-template.md) |
+| 4 / 5: VMClass / VirtualMachine | [vSphere Provider](../providers/vsphere.md) steps 4–7 |
 | 6: CAPI workload cluster | [Cluster API](cluster-api.md), [Infrastructure CRDs & CAPI](../concepts/infra-crds-capi.md) |
 
 Every field of every CRD used along the way: **[API Reference](../reference/api.md)**.

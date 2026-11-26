@@ -165,7 +165,8 @@ Hypervisor) to turn it on:
 
 The transport is OTLP over HTTP/protobuf (port 4318 on a standard collector).
 gRPC is not compiled in. TLS to an `https://` collector uses the same rustls
-crypto provider as every other banlieue connection and the system trust store.
+crypto provider as every other banlieue connection (aws-lc-rs, offering the
+post-quantum hybrid X25519MLKEM768 first; ADR-0170) and the system trust store.
 
 ```yaml
 env:

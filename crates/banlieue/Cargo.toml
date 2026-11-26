@@ -18,7 +18,7 @@ path = "src/main.rs"
 [features]
 # All available providers are bundled by default. Build a slim binary with
 # `--no-default-features --features <provider>` to drop other backends' deps.
-default = ["vsphere", "imagebuilder", "libvirt", "proxmox", "cloud-hypervisor", "host"]
+default = ["vsphere", "imagebuilder", "libvirt", "proxmox", "cloud-hypervisor", "azure", "host"]
 # Bundle the vSphere provider (`banlieue provider vsphere`). Pulls in vim_rs
 # transitively via banlieue-provider-vsphere.
 vsphere = ["dep:banlieue-provider-vsphere"]
@@ -28,6 +28,10 @@ libvirt = ["dep:banlieue-provider-libvirt"]
 # Bundle the Proxmox VE provider (`banlieue provider proxmox`, ADR-0075). Uses
 # the first-party banlieue-proxmox REST client; no native library (ADR-0074).
 proxmox = ["dep:banlieue-provider-proxmox"]
+# Bundle the Azure provider (`banlieue provider azure`, ADR-0164). Uses the
+# first-party banlieue-azure ARM client; the credential is a federated
+# ServiceAccount token, no Secret (ADR-0159).
+azure = ["dep:banlieue-provider-azure"]
 # Bundle the host-resident Cloud Hypervisor provider (`banlieue provider
 # cloud-hypervisor`, ADR-0060). Linux-only at runtime: it talks to systemd
 # over D-Bus and creates taps on the KVM host it runs on.
@@ -50,6 +54,7 @@ banlieue-operator = { path = "../banlieue-operator" }
 banlieue-imagebuilder = { path = "../banlieue-imagebuilder", optional = true }
 banlieue-provider-libvirt = { path = "../banlieue-provider-libvirt", optional = true }
 banlieue-provider-proxmox = { path = "../banlieue-provider-proxmox", optional = true }
+banlieue-provider-azure = { path = "../banlieue-provider-azure", optional = true }
 banlieue-provider-cloud-hypervisor = { path = "../banlieue-provider-cloud-hypervisor", optional = true }
 banlieue-host = { path = "../banlieue-host", optional = true }
 banlieue-provider-vsphere = { path = "../banlieue-provider-vsphere", optional = true }

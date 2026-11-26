@@ -3,9 +3,12 @@
 //! `banlieue-imagebuilder` reconcilers.
 //!
 //! One reconciler: [`vmimage`] drives the shared raw-disk build for
-//! `VMImage`'s `Url`-kind sources, and [`push`] builds the Job that pushes
-//! the result to a registry for host-resident providers (ADR-0064).
+//! `VMImage`'s `Url`-kind sources, [`digest`] builds the Job that measures
+//! the result (ADR-0010, amendment 2026-11-26), [`prelay`] the one that
+//! pre-lays it (ADR-0113), and [`push`] the one that pushes it to a
+//! registry for host-resident providers (ADR-0064).
 
+pub mod digest;
 mod job;
 pub mod prelay;
 pub mod push;

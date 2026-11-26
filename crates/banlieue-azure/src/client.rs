@@ -9,6 +9,7 @@
 //! checked to sit under the configured endpoint (operation URLs, `nextLink`,
 //! and handles read back from a CR's status).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -18,9 +19,15 @@ use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::api::{ArmApi, PowerAction};
+use crate::api::{ArmApi, DiskAccess, PowerAction, PublishApi};
 use crate::auth::TokenProvider;
-use crate::error::{Error, Result, classify, error_code_and_message};
+use crate::error::{Error, Result, classify, error_code_and_message, operation_failure};
+use crate::gallery::{
+    GalleryImageDefinition, GalleryImageVersion, GalleryImageVersionRequest,
+    ImageDefinitionRequest, ManagedDisk, Snapshot, SnapshotRequest, UploadDiskRequest,
+    check_version_name, parse_access_sas, parse_gallery_image_definition,
+    parse_gallery_image_version, parse_gallery_image_versions, parse_managed_disk, parse_snapshot,
+};
 use crate::operation::{
     OperationHandle, OperationKind, OperationStatus, RETRY_AFTER_HEADER, ensure_under_endpoint,
     is_trusted_base, parse_operation_status,
@@ -28,8 +35,9 @@ use crate::operation::{
 use crate::retry::parse_retry_after;
 use crate::types::{
     InstanceView, ResourceSku, TaggedResource, Usage, parse_instance_view, parse_resource_skus,
-    parse_resources, parse_usages, primary_private_ip,
+    parse_resources, parse_usages, parse_vm_tags, primary_private_ip,
 };
+use crate::upload::SasUrl;
 use crate::vm::{NicRequest, VmRequest};
 
 /// Public Azure's Resource Manager.
@@ -46,6 +54,9 @@ pub const SKU_API_VERSION: &str = "2021-07-01";
 pub const USAGE_API_VERSION: &str = "2024-07-01";
 /// `resourceGroups/{rg}/resources`.
 pub const RESOURCES_API_VERSION: &str = "2021-04-01";
+/// `Microsoft.Compute/galleries` (images and versions): the first version
+/// with `safetyProfile.blockDeletionBeforeEndOfLife` (ADR-0162).
+pub const GALLERY_API_VERSION: &str = "2024-03-03";
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -58,6 +69,8 @@ const BEARER_PREFIX: &str = "Bearer ";
 const USER_AGENT: &str = concat!("banlieue-azure/", env!("CARGO_PKG_VERSION"));
 const CODE_INVALID_NAME: &str = "InvalidName";
 const CODE_RESOURCE_GROUP_NOT_FOUND: &str = "ResourceGroupNotFound";
+const ACCESS_WRITE: &str = "Write";
+const HTTP_OK: u16 = 200;
 const HTTP_SUCCESS_MIN: u16 = 200;
 const HTTP_SUCCESS_END: u16 = 300;
 const HTTP_ACCEPTED: u16 = 202;
@@ -337,6 +350,47 @@ impl ArmClient {
             .map_err(|e| Error::Decode(e.to_string()))
     }
 
+    /// A GET whose 404 means "absent" (`None`), unless it names the
+    /// resource group, which is a configuration error to surface.
+    async fn get_optional(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        match self.get_json(url).await {
+            Ok(body) => Ok(Some(body)),
+            Err(e) if e.is_not_found() && e.code() != Some(CODE_RESOURCE_GROUP_NOT_FOUND) => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn image_url(&self, rg: &str, gallery: &str, image: &str) -> Result<String> {
+        let image = segment("image definition", image)?;
+        Ok(format!(
+            "{}/images/{image}",
+            self.resource_url(rg, COMPUTE, "galleries", gallery)?
+        ))
+    }
+
+    fn version_url(&self, rg: &str, gallery: &str, image: &str, version: &str) -> Result<String> {
+        check_version_name(version)?;
+        Ok(format!(
+            "{}/versions/{version}",
+            self.image_url(rg, gallery, image)?
+        ))
+    }
+
+    fn disk_url(&self, rg: &str, name: &str) -> Result<String> {
+        self.resource_url(rg, COMPUTE, "disks", name)
+    }
+
+    fn snapshot_url(&self, rg: &str, name: &str) -> Result<String> {
+        self.resource_url(rg, COMPUTE, "snapshots", name)
+    }
+
+    async fn put(&self, url: &str, body: &Value) -> Result<Option<OperationHandle>> {
+        let reply = self.send(Method::PUT, url, Some(body)).await?;
+        self.operation(&reply)
+    }
+
     fn vm_url(&self, rg: &str, name: &str) -> Result<String> {
         self.resource_url(rg, COMPUTE, "virtualMachines", name)
     }
@@ -405,6 +459,23 @@ impl ArmApi for ArmClient {
             COMPUTE_API_VERSION,
         );
         parse_instance_view(&self.get_json(&url).await?)
+    }
+
+    async fn vm_tags(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>> {
+        let url = Self::api(&self.vm_url(resource_group, name)?, COMPUTE_API_VERSION);
+        match self.get_json(&url).await {
+            Ok(body) => parse_vm_tags(&body).map(Some),
+            // A 404 for the VM is "no VM"; for its group it is a
+            // configuration error the provider must surface.
+            Err(e) if e.is_not_found() && e.code() != Some(CODE_RESOURCE_GROUP_NOT_FOUND) => {
+                Ok(None)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     async fn delete_vm(&self, resource_group: &str, name: &str) -> Result<Option<OperationHandle>> {
@@ -499,6 +570,222 @@ impl ArmApi for ArmClient {
             ],
         );
         parse_resources(&self.get_all_pages(url).await?)
+    }
+
+    async fn get_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+    ) -> Result<Option<GalleryImageVersion>> {
+        let url = Self::api(
+            &self.version_url(resource_group, gallery, image, version)?,
+            GALLERY_API_VERSION,
+        );
+        self.get_optional(&url)
+            .await?
+            .map(|body| parse_gallery_image_version(&body))
+            .transpose()
+    }
+
+    async fn delete_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(
+            &self.version_url(resource_group, gallery, image, version)?,
+            GALLERY_API_VERSION,
+        );
+        self.delete(&url).await
+    }
+}
+
+#[async_trait]
+impl PublishApi for ArmClient {
+    async fn get_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Option<GalleryImageDefinition>> {
+        let url = Self::api(
+            &self.image_url(resource_group, gallery, image)?,
+            GALLERY_API_VERSION,
+        );
+        self.get_optional(&url)
+            .await?
+            .map(|body| parse_gallery_image_definition(&body))
+            .transpose()
+    }
+
+    async fn put_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        request: &ImageDefinitionRequest,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(
+            &self.image_url(resource_group, gallery, image)?,
+            GALLERY_API_VERSION,
+        );
+        self.put(&url, &request.to_body()?).await
+    }
+
+    async fn delete_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(
+            &self.image_url(resource_group, gallery, image)?,
+            GALLERY_API_VERSION,
+        );
+        self.delete(&url).await
+    }
+
+    async fn list_gallery_image_versions(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Vec<GalleryImageVersion>> {
+        let url = Self::api(
+            &format!(
+                "{}/versions",
+                self.image_url(resource_group, gallery, image)?
+            ),
+            GALLERY_API_VERSION,
+        );
+        parse_gallery_image_versions(&self.get_all_pages(url).await?)
+    }
+
+    async fn put_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+        request: &GalleryImageVersionRequest,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(
+            &self.version_url(resource_group, gallery, image, version)?,
+            GALLERY_API_VERSION,
+        );
+        self.put(&url, &request.to_body()?).await
+    }
+
+    async fn get_disk(&self, resource_group: &str, name: &str) -> Result<Option<ManagedDisk>> {
+        let url = Self::api(&self.disk_url(resource_group, name)?, DISK_API_VERSION);
+        self.get_optional(&url)
+            .await?
+            .map(|body| parse_managed_disk(&body))
+            .transpose()
+    }
+
+    async fn put_upload_disk(
+        &self,
+        resource_group: &str,
+        name: &str,
+        request: &UploadDiskRequest,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(&self.disk_url(resource_group, name)?, DISK_API_VERSION);
+        self.put(&url, &request.to_body()?).await
+    }
+
+    async fn grant_disk_write_access(
+        &self,
+        resource_group: &str,
+        name: &str,
+        duration_secs: u32,
+    ) -> Result<DiskAccess> {
+        let url = Self::api(
+            &format!("{}/beginGetAccess", self.disk_url(resource_group, name)?),
+            DISK_API_VERSION,
+        );
+        let body =
+            serde_json::json!({ "access": ACCESS_WRITE, "durationInSeconds": duration_secs });
+        let reply = self.send(Method::POST, &url, Some(&body)).await?;
+        if reply.status == HTTP_OK && !reply.body.is_empty() {
+            return parse_access_sas(&reply.body).map(|sas| DiskAccess::Granted(SasUrl::new(sas)));
+        }
+        match self.operation(&reply)? {
+            Some(handle) => Ok(DiskAccess::Pending(handle)),
+            None => Err(Error::Decode(
+                "beginGetAccess returned neither a SAS nor an operation".to_string(),
+            )),
+        }
+    }
+
+    async fn disk_access_result(&self, handle: &OperationHandle) -> Result<Option<SasUrl>> {
+        // `send` checks the URL is under the endpoint: the ARM token goes
+        // with it. The SAS comes back in the body, never in a URL we follow.
+        let reply = self.send(Method::GET, &handle.url, None).await?;
+        if !reply.is_success() {
+            return Err(reply.error());
+        }
+        if handle.kind == OperationKind::Location {
+            if reply.status == HTTP_ACCEPTED {
+                return Ok(None);
+            }
+            return parse_access_sas(&reply.body).map(|sas| Some(SasUrl::new(sas)));
+        }
+        match parse_operation_status(&reply.body)? {
+            OperationStatus::InProgress => Ok(None),
+            OperationStatus::Succeeded => {
+                parse_access_sas(&reply.body).map(|sas| Some(SasUrl::new(sas)))
+            }
+            OperationStatus::Failed { code, message } => Err(operation_failure(&code, &message)),
+            OperationStatus::Canceled => Err(operation_failure(
+                "Canceled",
+                "the disk access operation was canceled",
+            )),
+        }
+    }
+
+    async fn revoke_disk_access(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(
+            &format!("{}/endGetAccess", self.disk_url(resource_group, name)?),
+            DISK_API_VERSION,
+        );
+        let reply = self.send(Method::POST, &url, None).await?;
+        self.operation(&reply)
+    }
+
+    async fn get_snapshot(&self, resource_group: &str, name: &str) -> Result<Option<Snapshot>> {
+        let url = Self::api(&self.snapshot_url(resource_group, name)?, DISK_API_VERSION);
+        self.get_optional(&url)
+            .await?
+            .map(|body| parse_snapshot(&body))
+            .transpose()
+    }
+
+    async fn put_snapshot(
+        &self,
+        resource_group: &str,
+        name: &str,
+        request: &SnapshotRequest,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(&self.snapshot_url(resource_group, name)?, DISK_API_VERSION);
+        self.put(&url, &request.to_body()?).await
+    }
+
+    async fn delete_snapshot(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let url = Self::api(&self.snapshot_url(resource_group, name)?, DISK_API_VERSION);
+        self.delete(&url).await
     }
 }
 

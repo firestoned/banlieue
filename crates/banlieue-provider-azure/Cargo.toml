@@ -1,0 +1,55 @@
+[package]
+name = "banlieue-provider-azure"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "banlieue provider for Microsoft Azure. Watches Provider, VMImage and AzureVirtualMachine CRs and reconciles them against Azure Resource Manager through the first-party banlieue-azure client (ADR-0164)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Library only: the unified `banlieue` binary drives this via
+# `banlieue_provider_azure::run` for the `provider azure` subcommand
+# (ADR-0004).
+
+[dependencies]
+banlieue-api = { path = "../banlieue-api" }
+banlieue-azure = { path = "../banlieue-azure" }
+banlieue-provider-sdk = { path = "../banlieue-provider-sdk" }
+
+kube.workspace = true
+k8s-openapi.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+# Timestamps for the orphan sweep's grace period and the create back-off,
+# the same crate banlieue-azure and k8s-openapi use.
+jiff.workspace = true
+# Encodes the throwaway SSH public key (OpenSSH wire format is base64).
+base64.workspace = true
+
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time", "fs", "io-util"] }
+futures.workspace = true
+tracing.workspace = true
+clap.workspace = true
+async-trait.workspace = true
+# Installs the process crypto provider reqwest's `rustls-no-provider` needs
+# (aws-lc-rs, X25519MLKEM768 first, ADR-0170), before the first TLS handshake.
+banlieue-tls.workspace = true
+# Ed25519 key generation for the throwaway SSH public key Azure requires on
+# a Linux VM (ADR-0164). Already in the graph as rustls' crypto provider
+# (ADR-0170), so this compiles no new third-party code.
+aws-lc-rs = "1"
+# The publish Job (ADR-0162): the fixed VHD footer, and the source digest
+# checked before upload and again while streaming. sha2 is the SDK's
+# checksum hash, already in the lockfile.
+banlieue-diskformat.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+# Scratch raw disks for the publish tests.
+tempfile.workspace = true

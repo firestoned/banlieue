@@ -9,16 +9,20 @@ members = [
     "crates/banlieue-oci",
     "crates/banlieue-proxmox",
     "crates/banlieue-controller",
+    "crates/banlieue-diskformat",
+    "crates/banlieue-guest-azure",
     "crates/banlieue-host",
     "crates/banlieue-imagebuilder",
     "crates/banlieue-libvirt",
     "crates/banlieue-operator",
+    "crates/banlieue-provider-azure",
     "crates/banlieue-provider-cloud-hypervisor",
     "crates/banlieue-provider-firecracker",
     "crates/banlieue-provider-libvirt",
     "crates/banlieue-provider-proxmox",
     "crates/banlieue-provider-sdk",
     "crates/banlieue-provider-vsphere",
+    "crates/banlieue-tls",
     "crates/banlieue-vex",
 ]
 # cargo-fuzz crates are built by ClusterFuzzLite (CI) or `cargo +nightly fuzz`,
@@ -40,8 +44,11 @@ authors = ["Erick Bourgeois <erick@jeb.ca>"]
 # Kubernetes: kube 5.0 pairs with k8s-openapi 0.29 (Kubernetes v1.37 types).
 # The two move together; a k8s-openapi bump alone leaves two versions in the
 # lock and the types stop matching. kube 5.2 (the RUSTSEC-2026-0600 fix)
-# needs Rust 1.95, the workspace MSRV.
-kube = { version = "~5.2", features = ["derive", "client", "runtime"] }
+# needs Rust 1.95, the workspace MSRV. Default features are off because they
+# include `ring` (ADR-0170): `rustls-tls` plus `aws-lc-rs` gives hyper-rustls
+# the aws-lc-rs provider, and the client config is built from the process
+# default that `banlieue-tls` installs, X25519MLKEM768 first.
+kube = { version = "~5.2", default-features = false, features = ["derive", "client", "runtime", "rustls-tls", "aws-lc-rs"] }
 k8s-openapi = { version = "0.29", features = ["latest", "schemars"] }
 schemars = "1"
 
@@ -84,7 +91,8 @@ prometheus-client = "0.26"
 # (ADR-0092). OTLP over HTTP/protobuf only: no `grpc-tonic`, so no tonic and
 # no second HTTP/2 stack. `reqwest-blocking-client` makes the exporter use the
 # workspace's reqwest 0.13 (same major, so the `rustls-no-provider` feature set
-# below applies and TLS uses the process's installed `ring` provider); the
+# below applies and TLS uses the process provider `banlieue-tls` installs:
+# aws-lc-rs, X25519MLKEM768 first, ADR-0170); the
 # blocking client suits the SDK's thread-based batch span processor, which
 # exports off the tokio runtime. Default features are off so the metrics/logs
 # signals and the gRPC transport are never compiled in.
@@ -114,6 +122,11 @@ getrandom = "0.4"
 # as base64 (ADR-0043). Well-known, actively maintained, decode-only use.
 base64 = "0.23"
 
+# mount(2)/umount2(2) for the Azure guest helper's read-only mount of the
+# provisioning disk (ADR-0171). Already in the lockfile through tokio and
+# getrandom; pinned here so the helper does not shell out to mount(8).
+libc = "0.2"
+
 # Parsing vTPM endorsement key certificates (ADR-0045). A guest reports its own
 # EK certificate on libvirt, so banlieue must confirm the bytes really are an
 # X.509 certificate issued to the domain it defined before publishing them into
@@ -124,7 +137,8 @@ x509-parser = "0.18"
 
 # vSphere (provider-vsphere only; pinned here so the long compile is cached at
 # workspace level and any future provider that needs it gets the same pin).
-# `default-features = false` turns OFF vim_rs's `default-client` feature so we use# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the
+# `default-features = false` turns OFF vim_rs's `default-client` feature so we use
+# it in Bring-Your-Own-Client mode (ADR-0008/0009): banlieue supplies the
 # reqwest::Client and vim_rs never builds one (so `reqwest/default` is never
 # pulled in). vim_rs 0.5 is plain crates.io — the old 0.4.x vendor/patch pipeline
 # that flipped reqwest to rustls is gone (noclue/vim_rs#37 shipped in 0.5).
@@ -134,8 +148,9 @@ vim_rs = { version = "0.7", default-features = false, features = ["defaults"] }
 # banlieue builds the reqwest::Client (CA bundle, insecure flag) and injects it
 # into vim_rs. Must track vim_rs 0.5's reqwest major (0.13) so the injected
 # Client type matches. `rustls-no-provider` links rustls WITHOUT a crypto
-# provider; we install `ring` as the process default at startup (ADR-0009),
-# sharing the single ring provider kube already uses (no aws-lc-rs, no OpenSSL).
+# provider; every binary installs `banlieue-tls`'s aws-lc-rs provider, with
+# X25519MLKEM768 first, as the process default at startup (ADR-0170, which
+# replaced ADR-0009's `ring`: ring has no ML-KEM). No OpenSSL.
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider", "charset", "http2", "stream"] }
 
 # tokio-util `io`: `ReaderStream` wraps a tokio file as a byte stream so the
@@ -143,11 +158,34 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # (ADR-0020).
 tokio-util = { version = "0.7", default-features = false, features = ["io"] }
 
-# rustls — direct dep so the binary can install the ring CryptoProvider as the
-# process default before any TLS use (reqwest's `rustls-no-provider` panics with
-# "No provider set" otherwise). Version tracks the one kube/hyper-rustls resolve.
-rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# rustls: direct dep so `banlieue-tls` can install the aws-lc-rs CryptoProvider
+# as the process default before any TLS use (reqwest's `rustls-no-provider`
+# panics with "No provider set" otherwise). `prefer-post-quantum` puts
+# X25519MLKEM768 first in aws-lc-rs's own default order too, so a provider
+# installed by a dependency agrees with ours (ADR-0170). `ring` is never
+# enabled: it has no ML-KEM, and deny.toml bans it. Version tracks the one
+# kube/hyper-rustls resolve.
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs", "prefer-post-quantum", "std", "tls12"] }
+
+# The one process crypto provider (ADR-0170). Every binary and every test that
+# makes a TLS connection installs it through `install_default_crypto_provider`.
+banlieue-tls = { path = "crates/banlieue-tls" }
+
+# Disk container formats banlieue writes itself: the fixed VHD for Azure
+# (ADR-0162 Decision 2) and, later, roadmap 15's VMDK.
+banlieue-diskformat = { path = "crates/banlieue-diskformat" }
 
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+# The Azure guest helper (ADR-0171) ships inside every Azure-bound image,
+# so it is built for size: `cargo build -p banlieue-guest-azure --profile
+# guest --target x86_64-unknown-linux-musl`. Only that binary uses it.
+[profile.guest]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

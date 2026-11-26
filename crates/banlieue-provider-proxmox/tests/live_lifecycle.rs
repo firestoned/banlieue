@@ -53,7 +53,7 @@ fn var_or(name: &str, default: &str) -> String {
 }
 
 fn client() -> Client {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
     let token = ApiToken::new(
         &var("PROXMOX_TOKEN_ID", "'banlieue@pve!provider'"),
         &var("PROXMOX_TOKEN_SECRET", "<uuid>"),

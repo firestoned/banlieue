@@ -27,7 +27,7 @@ mod tests {
             file: Some("kairos-build.raw".to_string()),
             reason: Some("Ready".to_string()),
             message: None,
-            checksum: Some(DIGEST.replace("0123", "aaaa")),
+            checksum: None,
             oci_artifact: None,
             first_boot_sealing_layer: true,
             prelaid_disk_size_gi_b: None,
@@ -45,6 +45,9 @@ mod tests {
         }
     }
 
+    const DECLARED: &str =
+        "sha256:aaaa456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
     fn inputs<'a>(a: &'a BuildArtifactStatus) -> PrelayJobInputs<'a> {
         PrelayJobInputs {
             job_name: "kairos-build-prelay",
@@ -54,6 +57,7 @@ mod tests {
             artifact: a,
             os_artifact_uid: UID,
             disk_size_gib: 20,
+            verify_checksum: Some(DECLARED),
             tolerations: &[],
             node_selector: NO_SELECTOR,
         }
@@ -139,17 +143,19 @@ mod tests {
         assert_eq!(container(&j)["image"], IMAGE);
     }
 
-    /// SEC-004: the built file is checked against the source's checksum
-    /// before anything is done to it.
+    /// SEC-004: the built file is checked against the source's declared
+    /// checksum before anything is done to it. Passed explicitly: since
+    /// ADR-0010's 2026-11-26 amendment `buildArtifact.checksum` is only ever
+    /// a measured value, and a pre-laid build is measured by this Job.
     #[test]
-    fn the_job_verifies_the_built_file_first_when_a_checksum_is_set() {
+    fn the_job_verifies_the_built_file_first_when_a_checksum_is_declared() {
         let a = artifact();
         let j = build_prelay_job(&inputs(&a));
-        assert_eq!(env(&j, "PRELAY_VERIFY_CHECKSUM"), a.checksum);
+        assert_eq!(env(&j, "PRELAY_VERIFY_CHECKSUM").as_deref(), Some(DECLARED));
 
-        let mut unchecked = artifact();
-        unchecked.checksum = None;
-        let j = build_prelay_job(&inputs(&unchecked));
+        let mut unchecked = inputs(&a);
+        unchecked.verify_checksum = None;
+        let j = build_prelay_job(&unchecked);
         assert_eq!(env(&j, "PRELAY_VERIFY_CHECKSUM"), None);
     }
 

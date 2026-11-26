@@ -25,12 +25,16 @@ form_urlencoded = "1"
 jiff.workspace = true
 reqwest.workspace = true
 serde.workspace = true
+# Deterministic names for a publish's temporaries and over-long image
+# definitions (ADR-0162). Already in the lockfile.
+sha2.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs", "sync"] }
+tokio = { workspace = true, features = ["fs", "sync", "io-util", "time"] }
 
 [dev-dependencies]
 # reqwest's `rustls-no-provider` panics at client build without a process
-# default provider; the binary installs it, tests do it themselves.
-rustls.workspace = true
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time"] }
+# default provider; the binary installs it (aws-lc-rs, X25519MLKEM768 first,
+# ADR-0170), tests do it themselves.
+banlieue-tls.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time", "test-util"] }

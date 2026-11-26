@@ -14,21 +14,41 @@
 //! The VM size catalogue and quota come from real responses captured on the
 //! spike subscription (`fixtures/`); quota is generous unless
 //! [`FakeArm::use_captured_quota`] switches to the captured figures.
+//!
+//! For the publish Job (ADR-0162) it models the image definition, the
+//! upload disk with its write SAS and page blob ([`FakePageBlob`]), the
+//! snapshot and the image version, and refuses what ARM refused: an upload
+//! size that is not whole 512-byte pages or whose virtual size is not a
+//! whole MiB; write access to a disk that is not awaiting an upload; a
+//! snapshot of a disk still being uploaded; a version name that is not
+//! `int.int.int`; a version from a source lacking NVMe when its definition
+//! declares it (the spike's `does not have a matching diskControllerType`);
+//! changing a definition's features; deleting a definition that still has
+//! versions; and a SAS on a host that is not the cloud's upload host.
 
 use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::api::{ArmApi, PowerAction};
+use crate::api::{ArmApi, DiskAccess, PowerAction, PublishApi};
 use crate::error::{Error, Result};
+use crate::fake_blob::FakePageBlob;
+use crate::gallery::{
+    DISK_STATE_ACTIVE_UPLOAD, DISK_STATE_READY_TO_UPLOAD, DISK_STATE_UNATTACHED,
+    FEATURE_DISK_CONTROLLER_TYPES, GalleryImageDefinition, GalleryImageVersion,
+    GalleryImageVersionRequest, ImageDefinitionRequest, ManagedDisk, PROVISIONING_CREATING,
+    PROVISIONING_SUCCEEDED, Snapshot, SnapshotRequest, UploadDiskRequest, check_version_name,
+    declares_nvme,
+};
 use crate::operation::{OperationHandle, OperationStatus};
 use crate::tags::validate_tags;
 use crate::types::{
     InstanceView, Power, Provisioning, ResourceSku, TaggedResource, Usage, parse_resource_skus,
     parse_usages,
 };
+use crate::upload::{PAGE_ALIGNMENT, PageWriter, PageWriterFactory, SasUrl, validate_upload_url};
 use crate::vm::{NicRequest, VmRequest};
 
 const CAPTURED_SKUS: &[u8] = include_bytes!("../fixtures/resource-skus.json");
@@ -48,12 +68,42 @@ const OS_DISK_SUFFIX: &str = "_OsDisk";
 const NIC_TYPE: &str = "Microsoft.Network/networkInterfaces";
 const VM_TYPE: &str = "Microsoft.Compute/virtualMachines";
 const DISK_TYPE: &str = "Microsoft.Compute/disks";
+const SNAPSHOT_TYPE: &str = "Microsoft.Compute/snapshots";
+const GALLERY_TYPE: &str = "Microsoft.Compute/galleries";
+/// The managed-disk upload domain of public Azure; the fake's SAS URLs
+/// live under it unless [`FakeArm::set_upload_host`] says otherwise.
+pub const FAKE_UPLOAD_HOST_SUFFIX: &str = "blob.storage.azure.net";
+const FAKE_UPLOAD_HOST: &str = "md-fake.z1.blob.storage.azure.net";
+const FAKE_SAS_QUERY: &str = "sv=2018-03-28&sr=b&si=fake&sig=FAKE";
+/// Azure requires a VHD's virtual size to be a whole MiB.
+const MIB: u64 = 1024 * 1024;
+const CODE_INVALID_PARAMETER: &str = "InvalidParameter";
+const CODE_OPERATION_NOT_ALLOWED: &str = "OperationNotAllowed";
 
 /// The resource ID the fake gives NIC `name` in `resource_group`.
 #[must_use]
 pub fn fake_nic_id(resource_group: &str, name: &str) -> String {
     format!(
         "/subscriptions/{FAKE_SUBSCRIPTION}/resourceGroups/{resource_group}/providers/{NIC_TYPE}/{name}"
+    )
+}
+
+fn compute_id(resource_group: &str, kind: &str, name: &str) -> String {
+    format!(
+        "/subscriptions/{FAKE_SUBSCRIPTION}/resourceGroups/{resource_group}/providers/Microsoft.Compute/{kind}/{name}"
+    )
+}
+
+fn definition_id(resource_group: &str, gallery: &str, image: &str) -> String {
+    format!(
+        "/subscriptions/{FAKE_SUBSCRIPTION}/resourceGroups/{resource_group}/providers/{GALLERY_TYPE}/{gallery}/images/{image}"
+    )
+}
+
+fn version_id(resource_group: &str, gallery: &str, image: &str, version: &str) -> String {
+    format!(
+        "{}/versions/{version}",
+        definition_id(resource_group, gallery, image)
     )
 }
 
@@ -96,6 +146,64 @@ struct FakeImage {
     controllers: Vec<String>,
 }
 
+type GalleryKey = (String, String, String);
+type VersionKey = (String, String, String, String);
+
+fn gallery_key(rg: &str, gallery: &str, image: &str) -> GalleryKey {
+    (
+        rg.to_ascii_lowercase(),
+        gallery.to_ascii_lowercase(),
+        image.to_ascii_lowercase(),
+    )
+}
+
+fn version_key(rg: &str, gallery: &str, image: &str, version: &str) -> VersionKey {
+    let (r, g, i) = gallery_key(rg, gallery, image);
+    (r, g, i, version.to_string())
+}
+
+struct FakeDefinition {
+    id: String,
+    features: BTreeMap<String, String>,
+    tags: BTreeMap<String, String>,
+}
+
+struct FakeVersion {
+    id: String,
+    state: String,
+    tags: BTreeMap<String, String>,
+    /// Reads left before a `Creating` version reports `Succeeded`.
+    creating_reads: u32,
+}
+
+struct FakeUploadDisk {
+    id: String,
+    state: String,
+    upload_size: u64,
+    controllers: Option<String>,
+    tags: BTreeMap<String, String>,
+    blob: Arc<FakePageBlob>,
+}
+
+struct FakeSnapshot {
+    id: String,
+    controllers: Option<String>,
+    tags: BTreeMap<String, String>,
+}
+
+/// The gallery side of the fake: definitions, versions, upload disks,
+/// snapshots, and the knobs tests turn.
+#[derive(Default)]
+struct Gallery {
+    definitions: BTreeMap<GalleryKey, FakeDefinition>,
+    versions: BTreeMap<VersionKey, FakeVersion>,
+    upload_disks: BTreeMap<Key, FakeUploadDisk>,
+    snapshots: BTreeMap<Key, FakeSnapshot>,
+    version_creating_reads: u32,
+    upload_host: Option<String>,
+    calls: u32,
+}
+
 struct State {
     skus: Vec<ResourceSku>,
     captured_usages: Vec<Usage>,
@@ -107,6 +215,7 @@ struct State {
     delete_burst: Option<u32>,
     deletes_used: u32,
     next_host: u16,
+    gallery: Gallery,
 }
 
 /// In-memory [`ArmApi`].
@@ -148,6 +257,7 @@ impl FakeArm {
                 delete_burst: None,
                 deletes_used: 0,
                 next_host: FIRST_HOST_OCTET,
+                gallery: Gallery::default(),
             }),
         })
     }
@@ -196,6 +306,14 @@ impl FakeArm {
         }
     }
 
+    /// Someone else retagged the VM (or created one with this name): its
+    /// tags become `tags`, so ownership checks can be exercised.
+    pub fn set_vm_tags(&self, resource_group: &str, name: &str, tags: BTreeMap<String, String>) {
+        if let Some(vm) = self.lock().vms.get_mut(&key(resource_group, name)) {
+            vm.tags = tags;
+        }
+    }
+
     /// Provisioning failed with `reason` (`OSProvisioningTimedOut`).
     pub fn fail_provisioning(&self, resource_group: &str, name: &str, reason: &str) {
         if let Some(vm) = self.lock().vms.get_mut(&key(resource_group, name)) {
@@ -204,6 +322,171 @@ impl FakeArm {
             };
             vm.power = Power::Running;
         }
+    }
+
+    // ----- Gallery publishing (ADR-0162) -----
+
+    /// Newly created image versions report `Creating` for the next `reads`
+    /// reads, then `Succeeded`, as a 7 to 22 minute create would.
+    pub fn hold_versions_creating(&self, reads: u32) {
+        self.lock().gallery.version_creating_reads = reads;
+    }
+
+    /// The host the fake's write SAS URLs name. Default: a host under
+    /// [`FAKE_UPLOAD_HOST_SUFFIX`].
+    pub fn set_upload_host(&self, host: &str) {
+        self.lock().gallery.upload_host = Some(host.to_string());
+    }
+
+    /// Calls made to any gallery, upload-disk or snapshot method.
+    #[must_use]
+    pub fn publish_calls(&self) -> u32 {
+        self.lock().gallery.calls
+    }
+
+    /// Puts an image version in place directly, as another Job or an admin
+    /// would have: `state` and `tags` as given (a `Creating` one honours
+    /// [`FakeArm::hold_versions_creating`]).
+    pub fn insert_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+        state: &str,
+        tags: BTreeMap<String, String>,
+    ) {
+        let id = version_id(resource_group, gallery, image, version);
+        let mut s = self.lock();
+        let creating_reads = s.gallery.version_creating_reads;
+        s.gallery.versions.insert(
+            version_key(resource_group, gallery, image, version),
+            FakeVersion {
+                id,
+                state: state.to_string(),
+                tags,
+                creating_reads,
+            },
+        );
+    }
+
+    /// Changes an existing version's provisioning state.
+    pub fn set_gallery_image_version_state(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+        state: &str,
+    ) {
+        if let Some(v) = self.lock().gallery.versions.get_mut(&version_key(
+            resource_group,
+            gallery,
+            image,
+            version,
+        )) {
+            v.state = state.to_string();
+            v.creating_reads = 0;
+        }
+    }
+
+    /// Puts an image definition in place directly, with `features` and
+    /// `tags` as given.
+    pub fn insert_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        features: BTreeMap<String, String>,
+        tags: BTreeMap<String, String>,
+    ) {
+        self.lock().gallery.definitions.insert(
+            gallery_key(resource_group, gallery, image),
+            FakeDefinition {
+                id: definition_id(resource_group, gallery, image),
+                features,
+                tags,
+            },
+        );
+    }
+
+    /// Puts a snapshot in place directly, declaring `controllers`.
+    pub fn insert_snapshot(
+        &self,
+        resource_group: &str,
+        name: &str,
+        controllers: Option<&str>,
+        tags: BTreeMap<String, String>,
+    ) {
+        self.lock().gallery.snapshots.insert(
+            key(resource_group, name),
+            FakeSnapshot {
+                id: compute_id(resource_group, "snapshots", name),
+                controllers: controllers.map(ToString::to_string),
+                tags,
+            },
+        );
+    }
+
+    /// Forces an upload disk's `diskState`, as a Job killed mid-upload
+    /// leaves it.
+    pub fn set_disk_state(&self, resource_group: &str, name: &str, state: &str) {
+        if let Some(d) = self
+            .lock()
+            .gallery
+            .upload_disks
+            .get_mut(&key(resource_group, name))
+        {
+            d.state = state.to_string();
+        }
+    }
+
+    /// The page blob behind an upload disk.
+    #[must_use]
+    pub fn upload_blob(&self, resource_group: &str, name: &str) -> Option<Arc<FakePageBlob>> {
+        self.lock()
+            .gallery
+            .upload_disks
+            .get(&key(resource_group, name))
+            .map(|d| d.blob.clone())
+    }
+
+    /// Whether a snapshot exists.
+    #[must_use]
+    pub fn has_snapshot(&self, resource_group: &str, name: &str) -> bool {
+        self.lock()
+            .gallery
+            .snapshots
+            .contains_key(&key(resource_group, name))
+    }
+
+    /// Whether an upload disk exists.
+    #[must_use]
+    pub fn has_upload_disk(&self, resource_group: &str, name: &str) -> bool {
+        self.lock()
+            .gallery
+            .upload_disks
+            .contains_key(&key(resource_group, name))
+    }
+
+    /// Whether an image definition exists.
+    #[must_use]
+    pub fn has_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> bool {
+        self.lock()
+            .gallery
+            .definitions
+            .contains_key(&gallery_key(resource_group, gallery, image))
+    }
+
+    fn gallery_call(&self) -> MutexGuard<'_, State> {
+        let mut s = self.lock();
+        s.gallery.calls += 1;
+        s
     }
 
     fn consume_delete(state: &mut State) -> Result<()> {
@@ -438,6 +721,18 @@ impl ArmApi for FakeArm {
             .ok_or_else(|| not_found("ResourceNotFound", "The virtual machine"))
     }
 
+    async fn vm_tags(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<BTreeMap<String, String>>> {
+        Ok(self
+            .lock()
+            .vms
+            .get(&key(resource_group, name))
+            .map(|vm| vm.tags.clone()))
+    }
+
     async fn delete_vm(&self, resource_group: &str, name: &str) -> Result<Option<OperationHandle>> {
         let mut s = self.lock();
         Self::consume_delete(&mut s)?;
@@ -482,6 +777,7 @@ impl ArmApi for FakeArm {
         let mut s = self.lock();
         Self::consume_delete(&mut s)?;
         s.disks.remove(&key(resource_group, name));
+        s.gallery.upload_disks.remove(&key(resource_group, name));
         Ok(None)
     }
 
@@ -540,7 +836,457 @@ impl ArmApi for FakeArm {
                 tags: BTreeMap::new(),
                 created_time: Some(d.created),
             });
-        Ok(nics.chain(vms).chain(disks).collect())
+        let upload_disks = s
+            .gallery
+            .upload_disks
+            .iter()
+            .filter(|((r, _), _)| *r == rg)
+            .map(|((_, n), d)| TaggedResource {
+                id: d.id.clone(),
+                name: n.clone(),
+                resource_type: DISK_TYPE.to_string(),
+                tags: d.tags.clone(),
+                created_time: None,
+            });
+        let snapshots = s
+            .gallery
+            .snapshots
+            .iter()
+            .filter(|((r, _), _)| *r == rg)
+            .map(|((_, n), d)| TaggedResource {
+                id: d.id.clone(),
+                name: n.clone(),
+                resource_type: SNAPSHOT_TYPE.to_string(),
+                tags: d.tags.clone(),
+                created_time: None,
+            });
+        Ok(nics
+            .chain(vms)
+            .chain(disks)
+            .chain(upload_disks)
+            .chain(snapshots)
+            .collect())
+    }
+
+    async fn get_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+    ) -> Result<Option<GalleryImageVersion>> {
+        check_version_name(version)?;
+        let mut s = self.gallery_call();
+        let Some(v) =
+            s.gallery
+                .versions
+                .get_mut(&version_key(resource_group, gallery, image, version))
+        else {
+            return Ok(None);
+        };
+        if v.state == PROVISIONING_CREATING {
+            if v.creating_reads == 0 {
+                v.state = PROVISIONING_SUCCEEDED.to_string();
+            } else {
+                v.creating_reads -= 1;
+            }
+        }
+        Ok(Some(GalleryImageVersion {
+            id: v.id.clone(),
+            provisioning_state: v.state.clone(),
+            tags: v.tags.clone(),
+        }))
+    }
+
+    async fn delete_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+    ) -> Result<Option<OperationHandle>> {
+        check_version_name(version)?;
+        let mut s = self.gallery_call();
+        Self::consume_delete(&mut s)?;
+        s.gallery
+            .versions
+            .remove(&version_key(resource_group, gallery, image, version));
+        Ok(None)
+    }
+}
+
+fn refuse(code: &str, message: String) -> Error {
+    Error::Conflict {
+        code: code.to_string(),
+        message,
+    }
+}
+
+#[async_trait]
+impl PublishApi for FakeArm {
+    async fn get_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Option<GalleryImageDefinition>> {
+        let s = self.gallery_call();
+        Ok(s.gallery
+            .definitions
+            .get(&gallery_key(resource_group, gallery, image))
+            .map(|d| GalleryImageDefinition {
+                id: d.id.clone(),
+                tags: d.tags.clone(),
+                features: d.features.clone(),
+            }))
+    }
+
+    async fn put_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        request: &ImageDefinitionRequest,
+    ) -> Result<Option<OperationHandle>> {
+        request.to_body()?;
+        let mut s = self.gallery_call();
+        let k = gallery_key(resource_group, gallery, image);
+        let features = request.features();
+        if let Some(existing) = s.gallery.definitions.get_mut(&k) {
+            if existing.features != features {
+                return Err(refuse(
+                    "PropertyChangeNotAllowed",
+                    "Changing property 'features' is not allowed.".to_string(),
+                ));
+            }
+            existing.tags.clone_from(&request.tags);
+            return Ok(None);
+        }
+        s.gallery.definitions.insert(
+            k,
+            FakeDefinition {
+                id: definition_id(resource_group, gallery, image),
+                features,
+                tags: request.tags.clone(),
+            },
+        );
+        Ok(None)
+    }
+
+    async fn delete_gallery_image_definition(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let mut s = self.gallery_call();
+        Self::consume_delete(&mut s)?;
+        let k = gallery_key(resource_group, gallery, image);
+        let nested = s
+            .gallery
+            .versions
+            .keys()
+            .any(|(r, g, i, _)| (r, g, i) == (&k.0, &k.1, &k.2));
+        if nested {
+            return Err(refuse(
+                "CannotDeleteResource",
+                format!("Gallery image {image} has nested resources and cannot be deleted."),
+            ));
+        }
+        s.gallery.definitions.remove(&k);
+        Ok(None)
+    }
+
+    async fn list_gallery_image_versions(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+    ) -> Result<Vec<GalleryImageVersion>> {
+        let s = self.gallery_call();
+        let k = gallery_key(resource_group, gallery, image);
+        Ok(s.gallery
+            .versions
+            .iter()
+            .filter(|((r, g, i, _), _)| (r, g, i) == (&k.0, &k.1, &k.2))
+            .map(|(_, v)| GalleryImageVersion {
+                id: v.id.clone(),
+                provisioning_state: v.state.clone(),
+                tags: v.tags.clone(),
+            })
+            .collect())
+    }
+
+    async fn put_gallery_image_version(
+        &self,
+        resource_group: &str,
+        gallery: &str,
+        image: &str,
+        version: &str,
+        request: &GalleryImageVersionRequest,
+    ) -> Result<Option<OperationHandle>> {
+        check_version_name(version)?;
+        request.to_body()?;
+        let mut s = self.gallery_call();
+        let def = s
+            .gallery
+            .definitions
+            .get(&gallery_key(resource_group, gallery, image))
+            .ok_or_else(|| not_found("ParentResourceNotFound", "The gallery image"))?;
+        let wants_nvme = def
+            .features
+            .get(FEATURE_DISK_CONTROLLER_TYPES)
+            .is_some_and(|c| declares_nvme(c));
+        let source = s
+            .gallery
+            .snapshots
+            .values()
+            .find(|snap| snap.id.eq_ignore_ascii_case(&request.snapshot_id))
+            .ok_or_else(|| {
+                invalid(
+                    "InvalidResourceReference",
+                    format!("Resource {} was not found.", request.snapshot_id),
+                )
+            })?;
+        let source_nvme = source.controllers.as_deref().is_some_and(declares_nvme);
+        if wants_nvme && !source_nvme {
+            return Err(refuse(
+                "Conflict",
+                format!(
+                    "The source {} does not have a matching diskControllerType feature support; target image 'SCSI, NVMe', source '{}'.",
+                    request.snapshot_id,
+                    source.controllers.clone().unwrap_or_default()
+                ),
+            ));
+        }
+        let reads = s.gallery.version_creating_reads;
+        let k = version_key(resource_group, gallery, image, version);
+        if s.gallery.versions.contains_key(&k) {
+            return Ok(None);
+        }
+        s.gallery.versions.insert(
+            k,
+            FakeVersion {
+                id: version_id(resource_group, gallery, image, version),
+                state: PROVISIONING_CREATING.to_string(),
+                tags: request.tags.clone(),
+                creating_reads: reads,
+            },
+        );
+        Ok(None)
+    }
+
+    async fn get_disk(&self, resource_group: &str, name: &str) -> Result<Option<ManagedDisk>> {
+        let s = self.gallery_call();
+        Ok(s.gallery
+            .upload_disks
+            .get(&key(resource_group, name))
+            .map(|d| ManagedDisk {
+                id: d.id.clone(),
+                disk_state: d.state.clone(),
+                upload_size_bytes: Some(d.upload_size),
+                disk_controller_types: d.controllers.clone(),
+                tags: d.tags.clone(),
+            }))
+    }
+
+    async fn put_upload_disk(
+        &self,
+        resource_group: &str,
+        name: &str,
+        request: &UploadDiskRequest,
+    ) -> Result<Option<OperationHandle>> {
+        request.to_body()?;
+        let size = request.upload_size_bytes;
+        if !size.is_multiple_of(PAGE_ALIGNMENT) || size <= PAGE_ALIGNMENT {
+            return Err(invalid(
+                CODE_INVALID_PARAMETER,
+                format!("uploadSizeBytes {size} must be a multiple of {PAGE_ALIGNMENT}."),
+            ));
+        }
+        if !(size - PAGE_ALIGNMENT).is_multiple_of(MIB) {
+            return Err(invalid(
+                CODE_INVALID_PARAMETER,
+                format!(
+                    "The VHD's virtual size {} is not a multiple of 1 MiB.",
+                    size - PAGE_ALIGNMENT
+                ),
+            ));
+        }
+        let mut s = self.gallery_call();
+        let k = key(resource_group, name);
+        if let Some(existing) = s.gallery.upload_disks.get(&k) {
+            if existing.upload_size != size {
+                return Err(refuse(
+                    "PropertyChangeNotAllowed",
+                    "Changing property 'uploadSizeBytes' is not allowed.".to_string(),
+                ));
+            }
+            return Ok(None);
+        }
+        s.gallery.upload_disks.insert(
+            k,
+            FakeUploadDisk {
+                id: compute_id(resource_group, "disks", name),
+                state: DISK_STATE_READY_TO_UPLOAD.to_string(),
+                upload_size: size,
+                controllers: Some(crate::gallery::DISK_CONTROLLER_TYPES.to_string()),
+                tags: request.tags.clone(),
+                blob: Arc::new(FakePageBlob::new(size)),
+            },
+        );
+        Ok(None)
+    }
+
+    async fn grant_disk_write_access(
+        &self,
+        resource_group: &str,
+        name: &str,
+        _duration_secs: u32,
+    ) -> Result<DiskAccess> {
+        let mut s = self.gallery_call();
+        let host = s
+            .gallery
+            .upload_host
+            .clone()
+            .unwrap_or_else(|| FAKE_UPLOAD_HOST.to_string());
+        let disk = s
+            .gallery
+            .upload_disks
+            .get_mut(&key(resource_group, name))
+            .ok_or_else(|| not_found("ResourceNotFound", "The disk"))?;
+        if disk.state != DISK_STATE_READY_TO_UPLOAD && disk.state != DISK_STATE_ACTIVE_UPLOAD {
+            return Err(refuse(
+                CODE_OPERATION_NOT_ALLOWED,
+                format!(
+                    "Disk {name} is in state {} and cannot be opened for upload.",
+                    disk.state
+                ),
+            ));
+        }
+        disk.state = DISK_STATE_ACTIVE_UPLOAD.to_string();
+        Ok(DiskAccess::Granted(SasUrl::new(format!(
+            "https://{host}/{}/{}/abcd?{FAKE_SAS_QUERY}",
+            resource_group.to_ascii_lowercase(),
+            name.to_ascii_lowercase()
+        ))))
+    }
+
+    async fn disk_access_result(&self, _handle: &OperationHandle) -> Result<Option<SasUrl>> {
+        Err(invalid(
+            CODE_OPERATION_NOT_ALLOWED,
+            "the fake grants access synchronously; there is no operation".to_string(),
+        ))
+    }
+
+    async fn revoke_disk_access(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let mut s = self.gallery_call();
+        if let Some(disk) = s.gallery.upload_disks.get_mut(&key(resource_group, name))
+            && disk.state == DISK_STATE_ACTIVE_UPLOAD
+        {
+            disk.state = DISK_STATE_UNATTACHED.to_string();
+        }
+        Ok(None)
+    }
+
+    async fn get_snapshot(&self, resource_group: &str, name: &str) -> Result<Option<Snapshot>> {
+        let s = self.gallery_call();
+        Ok(s.gallery
+            .snapshots
+            .get(&key(resource_group, name))
+            .map(|snap| Snapshot {
+                id: snap.id.clone(),
+                provisioning_state: PROVISIONING_SUCCEEDED.to_string(),
+                tags: snap.tags.clone(),
+            }))
+    }
+
+    async fn put_snapshot(
+        &self,
+        resource_group: &str,
+        name: &str,
+        request: &SnapshotRequest,
+    ) -> Result<Option<OperationHandle>> {
+        request.to_body()?;
+        let mut s = self.gallery_call();
+        let source = s
+            .gallery
+            .upload_disks
+            .values()
+            .find(|d| d.id.eq_ignore_ascii_case(&request.source_disk_id))
+            .ok_or_else(|| {
+                invalid(
+                    "InvalidResourceReference",
+                    format!("Resource {} was not found.", request.source_disk_id),
+                )
+            })?;
+        if source.state == DISK_STATE_ACTIVE_UPLOAD || source.state == DISK_STATE_READY_TO_UPLOAD {
+            return Err(refuse(
+                CODE_OPERATION_NOT_ALLOWED,
+                format!(
+                    "The disk is in state {} and cannot be copied until its upload is finished.",
+                    source.state
+                ),
+            ));
+        }
+        let controllers = source.controllers.clone();
+        let k = key(resource_group, name);
+        if s.gallery.snapshots.contains_key(&k) {
+            return Ok(None);
+        }
+        s.gallery.snapshots.insert(
+            k,
+            FakeSnapshot {
+                id: compute_id(resource_group, "snapshots", name),
+                controllers,
+                tags: request.tags.clone(),
+            },
+        );
+        Ok(None)
+    }
+
+    async fn delete_snapshot(
+        &self,
+        resource_group: &str,
+        name: &str,
+    ) -> Result<Option<OperationHandle>> {
+        let mut s = self.gallery_call();
+        Self::consume_delete(&mut s)?;
+        s.gallery.snapshots.remove(&key(resource_group, name));
+        Ok(None)
+    }
+}
+
+impl PageWriterFactory for FakeArm {
+    /// Checks the SAS against public Azure's upload domain, then hands out
+    /// the page blob of the disk it names, while that disk is open for
+    /// upload.
+    fn writer(&self, sas: &SasUrl) -> Result<Arc<dyn PageWriter>> {
+        validate_upload_url(sas, FAKE_UPLOAD_HOST_SUFFIX)?;
+        let url = reqwest::Url::parse(sas.expose())
+            .map_err(|_| Error::UntrustedUploadHost("an unparseable URL".to_string()))?;
+        let mut path = url.path_segments().into_iter().flatten();
+        let (Some(rg), Some(disk)) = (path.next(), path.next()) else {
+            return Err(not_found("BlobNotFound", "The blob"));
+        };
+        let s = self.lock();
+        let d = s
+            .gallery
+            .upload_disks
+            .get(&key(rg, disk))
+            .ok_or_else(|| not_found("BlobNotFound", "The blob"))?;
+        if d.state != DISK_STATE_ACTIVE_UPLOAD {
+            return Err(Error::Forbidden {
+                code: "AuthenticationFailed".to_string(),
+                message: "The SAS is not valid for this disk now.".to_string(),
+            });
+        }
+        let blob: Arc<dyn PageWriter> = d.blob.clone();
+        Ok(blob)
     }
 }
 

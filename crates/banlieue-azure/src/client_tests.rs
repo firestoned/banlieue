@@ -351,6 +351,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_vm_tags_are_read_from_the_vm_itself() {
+        let body = r#"{"name":"banlieue-uid","tags":{"banlieue-owner-uid":"uid"}}"#;
+        let (endpoint, server) = serve(vec![ok(body)]).await;
+        let tags = client(&endpoint)
+            .vm_tags(RG, VM)
+            .await
+            .expect("read")
+            .expect("exists");
+        assert_eq!(
+            tags.get("banlieue-owner-uid").map(String::as_str),
+            Some("uid")
+        );
+        let seen = server.await.unwrap();
+        assert_eq!(
+            seen[0].target(),
+            format!(
+                "GET {}?api-version={COMPUTE_API_VERSION}",
+                rg_path(&format!("Microsoft.Compute/virtualMachines/{VM}"))
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn the_tags_of_a_missing_vm_are_none() {
+        let body = r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#;
+        let (endpoint, _s) = serve(vec![respond(404, &[], body)]).await;
+        assert!(
+            client(&endpoint)
+                .vm_tags(RG, VM)
+                .await
+                .expect("read")
+                .is_none()
+        );
+    }
+
+    /// A missing group is a configuration error, never "the VM is gone".
+    #[tokio::test]
+    async fn a_missing_resource_group_is_not_a_missing_vm() {
+        let body = r#"{"error":{"code":"ResourceGroupNotFound","message":"Resource group 'rg' could not be found."}}"#;
+        let (endpoint, _s) = serve(vec![respond(404, &[], body)]).await;
+        let err = client(&endpoint).vm_tags(RG, VM).await.unwrap_err();
+        assert_eq!(err.code(), Some("ResourceGroupNotFound"));
+    }
+
+    #[tokio::test]
     async fn a_missing_vm_is_not_found() {
         let body = r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#;
         let (endpoint, _s) = serve(vec![respond(404, &[], body)]).await;
@@ -561,5 +606,236 @@ mod tests {
         let err = c.operation_status(&h).await.unwrap_err();
         assert!(matches!(err, Error::UntrustedUrl(_)), "{err}");
         assert!(server.await.unwrap().is_empty());
+    }
+}
+
+/// The publish Job's calls (ADR-0162), against the local server.
+#[cfg(test)]
+mod publish_tests {
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    use async_trait::async_trait;
+
+    use super::super::*;
+    use crate::api::{ArmApi, DiskAccess, PublishApi};
+    use crate::auth::TokenProvider;
+    use crate::error::Result;
+    use crate::gallery::ImageDefinitionRequest;
+    use crate::tags::OwnershipTags;
+    use crate::test_server::{install_provider, ok, respond, serve, serve_with};
+    use crate::token::{AccessToken, parse_token_response};
+
+    const SUB: &str = "00000000-0000-0000-0000-000000000003";
+    const RG: &str = "rg-gallery";
+    const GAL: &str = "gal";
+    const DEF: &str = "kairos-tl";
+    const VER: &str = "1.2.3";
+
+    struct Token;
+
+    #[async_trait]
+    impl TokenProvider for Token {
+        async fn token(&self) -> Result<AccessToken> {
+            parse_token_response(
+                br#"{"access_token":"arm-token","expires_in":3600}"#,
+                Instant::now(),
+            )
+        }
+    }
+
+    fn client(endpoint: &str) -> ArmClient {
+        install_provider();
+        let mut config = ArmConfig::new(SUB);
+        config.endpoint = endpoint.to_string();
+        ArmClient::new(config, Arc::new(Token)).expect("client")
+    }
+
+    fn version_path() -> String {
+        format!(
+            "/subscriptions/{SUB}/resourceGroups/{RG}/providers/Microsoft.Compute/galleries/{GAL}/images/{DEF}/versions/{VER}?api-version={GALLERY_API_VERSION}"
+        )
+    }
+
+    #[tokio::test]
+    async fn get_version_reads_it_and_a_404_is_none() {
+        let (base, server) = serve(vec![
+            ok(r#"{"id":"/v","tags":{"banlieue-source-sha256":"ab"},"properties":{"provisioningState":"Succeeded"}}"#),
+            respond(404, &[], r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#),
+        ])
+        .await;
+        let c = client(&base);
+        let v = c
+            .get_gallery_image_version(RG, GAL, DEF, VER)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(v.provisioning_state, "Succeeded");
+        assert_eq!(v.tags["banlieue-source-sha256"], "ab");
+        assert!(
+            c.get_gallery_image_version(RG, GAL, DEF, VER)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let seen = server.await.unwrap();
+        assert_eq!(seen[0].target(), format!("GET {}", version_path()));
+        assert_eq!(
+            seen[0].header("authorization").as_deref(),
+            Some("Bearer arm-token")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_missing_resource_group_is_an_error_not_none() {
+        let (base, server) = serve(vec![respond(
+            404,
+            &[],
+            r#"{"error":{"code":"ResourceGroupNotFound","message":"x"}}"#,
+        )])
+        .await;
+        assert!(client(&base).get_disk(RG, "d").await.is_err());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_version_of_nothing_is_success() {
+        let (base, server) = serve(vec![respond(
+            404,
+            &[],
+            r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#,
+        )])
+        .await;
+        let h = client(&base)
+            .delete_gallery_image_version(RG, GAL, DEF, VER)
+            .await
+            .unwrap();
+        assert_eq!(h, None);
+        assert_eq!(
+            server.await.unwrap()[0].target(),
+            format!("DELETE {}", version_path())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_version_name_is_refused_before_any_request() {
+        let (base, server) = serve(vec![]).await;
+        assert!(
+            client(&base)
+                .get_gallery_image_version(RG, GAL, DEF, "1.2")
+                .await
+                .is_err()
+        );
+        assert!(server.await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_definition_sends_the_features() {
+        let (base, server) = serve(vec![respond(201, &[], "{}")]).await;
+        let request = ImageDefinitionRequest {
+            location: "eastus2".into(),
+            offer: "kairos".into(),
+            trusted_launch: true,
+            tags: OwnershipTags::new("uid", "VMImage", "ns", "p").to_map(),
+        };
+        client(&base)
+            .put_gallery_image_definition(RG, GAL, DEF, &request)
+            .await
+            .unwrap();
+        let seen = server.await.unwrap();
+        assert!(seen[0].target().starts_with("PUT /subscriptions/"));
+        assert!(seen[0].body_str().contains("DiskControllerTypes"));
+        assert!(seen[0].body_str().contains("TrustedLaunch"));
+    }
+
+    #[tokio::test]
+    async fn grant_access_synchronously_returns_the_sas() {
+        let (base, server) = serve(vec![ok(
+            r#"{"accessSAS":"https://md-x.z1.blob.storage.azure.net/a?sig=S"}"#,
+        )])
+        .await;
+        let access = client(&base)
+            .grant_disk_write_access(RG, "d", 3600)
+            .await
+            .unwrap();
+        let DiskAccess::Granted(sas) = access else {
+            panic!("granted");
+        };
+        assert_eq!(
+            sas.host().as_deref(),
+            Some("md-x.z1.blob.storage.azure.net")
+        );
+        let seen = server.await.unwrap();
+        assert!(seen[0].target().contains("/disks/d/beginGetAccess?"));
+        assert!(seen[0].body_str().contains(r#""access":"Write""#));
+        assert!(seen[0].body_str().contains(r#""durationInSeconds":3600"#));
+    }
+
+    #[tokio::test]
+    async fn grant_access_as_an_operation_is_polled_for_the_sas() {
+        let (base, server) = serve_with(|base| {
+            let op = format!("{base}/op/1");
+            vec![
+                respond(202, &[("Location", op.as_str())], ""),
+                respond(202, &[], ""),
+                ok(r#"{"accessSAS":"https://md-x.z1.blob.storage.azure.net/a?sig=S"}"#),
+            ]
+        })
+        .await;
+        let c = client(&base);
+        let DiskAccess::Pending(handle) = c.grant_disk_write_access(RG, "d", 3600).await.unwrap()
+        else {
+            panic!("pending");
+        };
+        assert!(c.disk_access_result(&handle).await.unwrap().is_none());
+        assert!(c.disk_access_result(&handle).await.unwrap().is_some());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_async_operation_status_carries_the_sas_in_its_output() {
+        let (base, server) = serve_with(|base| {
+            let op = format!("{base}/op/2");
+            vec![
+                respond(202, &[("Azure-AsyncOperation", op.as_str())], ""),
+                ok(r#"{"status":"InProgress"}"#),
+                ok(r#"{"status":"Succeeded","properties":{"output":{"accessSAS":"https://md-x.z1.blob.storage.azure.net/a?sig=S"}}}"#),
+            ]
+        })
+        .await;
+        let c = client(&base);
+        let DiskAccess::Pending(handle) = c.grant_disk_write_access(RG, "d", 3600).await.unwrap()
+        else {
+            panic!("pending");
+        };
+        assert!(c.disk_access_result(&handle).await.unwrap().is_none());
+        assert!(c.disk_access_result(&handle).await.unwrap().is_some());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn revoke_and_snapshot_and_list_use_the_documented_paths() {
+        let (base, server) = serve(vec![
+            respond(200, &[], ""),
+            ok(r#"{"value":[{"id":"/v/1","properties":{"provisioningState":"Succeeded"}}]}"#),
+        ])
+        .await;
+        let c = client(&base);
+        c.revoke_disk_access(RG, "d").await.unwrap();
+        assert_eq!(
+            c.list_gallery_image_versions(RG, GAL, DEF)
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let seen = server.await.unwrap();
+        assert!(seen[0].target().starts_with("POST "));
+        assert!(seen[0].target().contains("/disks/d/endGetAccess?"));
+        assert!(
+            seen[1]
+                .target()
+                .contains(&format!("/images/{DEF}/versions?"))
+        );
     }
 }

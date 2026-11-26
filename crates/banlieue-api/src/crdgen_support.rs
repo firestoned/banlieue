@@ -80,9 +80,10 @@ pub fn all_crds() -> Vec<CustomResourceDefinition> {
         VirtualMachineMove, VirtualMachinePool,
     };
     use crate::infrastructure::{
-        CloudHypervisorMachine, CloudHypervisorMachineTemplate, FirecrackerMachine,
-        FirecrackerMachineTemplate, LibvirtMachine, LibvirtMachineTemplate, ProxmoxMachine,
-        ProxmoxMachineTemplate, VSphereCluster, VSphereMachine, VSphereMachineTemplate,
+        AzureVirtualMachine, AzureVirtualMachineTemplate, CloudHypervisorMachine,
+        CloudHypervisorMachineTemplate, FirecrackerMachine, FirecrackerMachineTemplate,
+        LibvirtMachine, LibvirtMachineTemplate, ProxmoxMachine, ProxmoxMachineTemplate,
+        VSphereCluster, VSphereMachine, VSphereMachineTemplate,
     };
     use kube::CustomResourceExt;
 
@@ -95,6 +96,8 @@ pub fn all_crds() -> Vec<CustomResourceDefinition> {
         prepared(VirtualMachineMove::crd()),
         prepared(VMClass::crd()),
         prepared(VMImage::crd()),
+        prepared(AzureVirtualMachine::crd()),
+        prepared(AzureVirtualMachineTemplate::crd()),
         prepared(CloudHypervisorMachine::crd()),
         prepared(CloudHypervisorMachineTemplate::crd()),
         prepared(FirecrackerMachine::crd()),

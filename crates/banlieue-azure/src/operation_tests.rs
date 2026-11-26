@@ -141,4 +141,20 @@ mod tests {
         assert!(parse_operation_status(b"{}").is_err());
         assert!(parse_operation_status(b"not json").is_err());
     }
+
+    #[test]
+    fn a_kind_round_trips_through_its_stored_name() {
+        for kind in [OperationKind::AsyncOperation, OperationKind::Location] {
+            assert_eq!(OperationKind::from_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(OperationKind::AsyncOperation.as_str(), "AsyncOperation");
+        assert_eq!(OperationKind::Location.as_str(), "Location");
+    }
+
+    #[test]
+    fn an_unknown_stored_kind_is_refused() {
+        assert_eq!(OperationKind::from_name(""), None);
+        assert_eq!(OperationKind::from_name("asyncoperation"), None);
+        assert_eq!(OperationKind::from_name("Azure-AsyncOperation"), None);
+    }
 }

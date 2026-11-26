@@ -3,7 +3,8 @@
 //! `VirtualMachine` status mirror.
 //!
 //! Pulls status fields from the provider's infrastructure CR ([`VSphereMachine`],
-//! [`LibvirtMachine`], [`CloudHypervisorMachine`] or [`ProxmoxMachine`]) and
+//! [`LibvirtMachine`], [`CloudHypervisorMachine`], [`ProxmoxMachine`] or
+//! [`AzureVirtualMachine`]) and
 //! projects them onto the parent [`VirtualMachine`]:
 //!
 //! - `status.initialization` ← infra.status.initialization
@@ -20,7 +21,8 @@ use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
 use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
 use banlieue_api::infrastructure::{
-    CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine,
+    ProxmoxMachine, VSphereMachine,
 };
 use banlieue_provider_sdk::status::{
     condition_status, find_condition, is_condition_true, set_condition,
@@ -173,6 +175,12 @@ impl_infra_machine_read!(
     ProxmoxMachine,
     /// Proxmox publishes no EK certificate: its vTPM is a `tpmstate0`
     /// volume with no host-side certificate read (ADR-0075 Decision 6).
+    |_this| &[]
+);
+impl_infra_machine_read!(
+    AzureVirtualMachine,
+    /// Azure exposes no EK certificate in v1: a Trusted Launch vTPM attests
+    /// with its attestation key only (ADR-0165, AK-only).
     |_this| &[]
 );
 

@@ -1,0 +1,696 @@
+# Guide: vSphere Provider
+
+This guide takes you from a cluster that already runs the
+[core controller](../guides/core-controller.md) to a **scheduled `VirtualMachine` on
+vCenter** — installing the vSphere provider, registering a vCenter, and applying
+every `VMClass`, `VMImage`, and `VirtualMachine` along the way. Everything uses
+a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION` (see
+[Conventions](../guides/index.md#conventions-used-in-these-guides)); nothing is built
+locally and there is no simulator. (For `vcsim`/local development, see
+[Developer → Local Development](../developer/local-development.md).)
+
+```mermaid
+flowchart LR
+    sec[Secret: vsphere-creds] --> prov[Provider: prod-vsphere]
+    prov -->|provider controller logs in| vc[(vCenter)]
+    vmc[VMClass: db-prod-large] --> vm[VirtualMachine: db-prod-01]
+    vmi[VMImage: ubuntu-22.04-cloudinit] --> vm
+    prov --> vm
+    vm -->|controller schedules| vsm[VSphereMachine]
+```
+
+## Prerequisites
+
+- The **[core controller](../guides/core-controller.md) installed** (CRDs + controller
+  running in `banlieue-system`).
+- A reachable **vCenter** and credentials with read access to inventory
+  (datacenters, clusters, datastores, networks, and the VM templates you'll
+  reference).
+- A **VM template** present in vCenter for the image you'll register (this guide
+  uses one named `ubuntu-22.04-cloudinit`).
+- The repo checked out at the release tag (for the provider manifests):
+
+    ```sh
+    git clone --branch "$BANLIEUE_VERSION" --depth 1 https://github.com/firestoned/banlieue
+    cd banlieue
+    ```
+
+## 1. Install the vSphere provider
+
+The provider is the same `banlieue` image run with the `provider vsphere`
+subcommand. It needs its own ServiceAccount/RBAC, a ConfigMap, and a Deployment
+(all in `banlieue-system`, reusing the namespace from the controller guide).
+
+```sh
+kubectl apply -R -f deploy/provider-vsphere/rbac/
+kubectl apply -f deploy/provider-vsphere/configmap.yaml
+kubectl apply -f deploy/provider-vsphere/deployment.yaml
+kubectl apply -f deploy/provider-vsphere/service.yaml
+# The manifest's tag is a reference only; run the release you cloned.
+kubectl -n banlieue-system set image deployment/banlieue-provider-vsphere \
+  provider=ghcr.io/firestoned/banlieue:"$BANLIEUE_VERSION"
+```
+
+!!! note "Operator-managed installs are the norm"
+    Applying a `Provider` against a cluster installed with
+    `banlieue bootstrap operator` spawns a dedicated provider workload
+    automatically: see [Provider lifecycle](lifecycle.md). This
+    static install is the standalone shape: it serves every `Provider` **in
+    `banlieue-system`** (its watch and its credential reads are scoped to the
+    install namespace, security review 2026-07-31).
+
+The Deployment (excerpt) — single binary, role-selected by `args`, pinned to the
+release:
+
+```yaml
+# deploy/provider-vsphere/deployment.yaml (excerpt)
+containers:
+  - name: provider
+    image: ghcr.io/firestoned/banlieue:<release>
+    args: ["provider", "vsphere", "--namespace", "banlieue-system"]
+    envFrom:
+      - configMapRef: { name: banlieue-provider-vsphere-config }
+```
+
+The provider's ClusterRole is read-only on `providers` (it only patches their
+`status`) and reconciles `vmimages/status` and `vspheremachines`. Credentials
+and CA bundles are read by name through a **namespaced** Role in
+`banlieue-system` (`rbac/role.yaml`) — no provider identity holds cluster-wide
+Secret access (security review 2026-07-31 CHAIN-002). Leader election reaches
+only its own Lease, through `rbac/role-leader-election.yaml`; no Lease rule is
+granted cluster-wide (ADR-0102). Wait for it:
+
+```sh
+kubectl -n banlieue-system rollout status deploy/banlieue-provider-vsphere --timeout=120s
+```
+
+## 2. Create the vCenter credentials Secret
+
+The provider never embeds credentials in the `Provider` CR — it reads a `Secret`
+referenced by `spec.connection.credentialsRef`. vSphere needs `username` and
+`password` keys:
+
+```sh
+kubectl -n banlieue-system create secret generic vsphere-creds \
+  --from-literal=username='administrator@vsphere.local' \
+  --from-literal=password='REPLACE-ME'
+```
+
+!!! tip "Already use `govc`?"
+    If your shell has `GOVC_URL` / `GOVC_USERNAME` / `GOVC_PASSWORD` set, you can
+    derive the Secret and `Provider` straight from them — see the mapping table
+    in [Developer → Local Development](../developer/local-development.md#from-your-govc-environment).
+
+## 3. Register the `Provider`
+
+A `Provider` declares one vCenter and the storage/network classes it exposes.
+The `capabilities` block is the explicit contract the scheduler matches a
+`VMClass` against — every class a workload requests must be listed here.
+
+```yaml title="provider.yaml"
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: prod-vsphere
+  namespace: banlieue-system
+  labels:
+    dc: dc1
+    env: prod
+spec:
+  providerClassRef:
+    name: vsphere
+  connection:
+    endpoint: https://vcenter.example.com/sdk
+    credentialsRef:
+      name: vsphere-creds
+    # insecureSkipTLSVerify: true     # self-signed only; prefer caBundle below
+    # Validate against a private CA — set EXACTLY ONE of inline/configMapRef/secretRef
+    # (key defaults to ca.crt). See ADR-0008.
+    # caBundle:
+    #   configMapRef:
+    #     name: corp-ca-bundle
+    #   # secretRef: { name: vcenter-ca }
+    #   # inline: |
+    #   #   -----BEGIN CERTIFICATE-----
+    #   #   ...
+  capabilities:
+    storageClasses:
+      - name: gold
+        target: { datastore: ds-fast-01 }
+    networkClasses:
+      - name: prod
+        target: { portGroup: vmnet-prod }
+    features: [hotAddCPU, hotAddMemory, efiSecureBoot]
+```
+
+```sh
+kubectl apply -f provider.yaml
+```
+
+Within a few seconds the provider controller logs into vCenter, walks the
+inventory, and populates `status.failureDomains[]` (one per datacenter/cluster):
+
+```sh
+kubectl -n banlieue-system get providers.banlieue.io prod-vsphere
+# NAME           CLASS     ENDPOINT                          READY   HEARTBEAT   AGE
+# prod-vsphere   vsphere   https://vcenter.example.com/sdk   True    Alive       1m
+
+kubectl -n banlieue-system get providers.banlieue.io prod-vsphere -o yaml | yq '.status.failureDomains'
+```
+
+If `READY` is not `True`, jump to [Troubleshooting](#troubleshooting).
+
+!!! info "Simpler failure-domain names (ADR-0023)"
+    The auto-computed name is `<provider>-<datacenter>-<cluster>`, hashed
+    when too long — real enterprise cluster names routinely produce
+    something like `prod-vsphere-dc-east-compute-cluster-a1b2c3d4`. If you
+    already have a simpler convention for these zones, override it per
+    `(datacenter, cluster)` pair:
+
+    ```yaml
+    spec:
+      failureDomainNameOverrides:
+        - datacenter: DC-East
+          cluster: Compute-Cluster-A
+          name: cluster-01
+    ```
+
+    Opt-in only — any `(datacenter, cluster)` pair not listed here still
+    gets the auto-computed name. Two overrides resolving to the same `name`
+    fail the whole Provider reconcile (`Ready=False`), since that name is
+    now also a vCenter template folder segment (ADR-0020) and a Job name.
+
+    The resolved name (override or auto-computed) is also mirrored into
+    `status.failureDomains[].labels.name`, so a `VirtualMachine` can target
+    this exact zone by its friendly name instead of the raw, backend-reported
+    `cluster` label:
+
+    ```yaml
+    placement:
+      failureDomainSelector:
+        matchLabels:
+          name: cluster-01
+    ```
+
+## 4. Define a `VMClass`
+
+A `VMClass` is the reusable hardware "shape" plus the abstract classes/features a
+backend must satisfy. It is cluster-scoped (no namespace). The classes named here
+(`gold`, `prod`) and the features must be advertised by a candidate `Provider`.
+
+```yaml title="vmclass.yaml"
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  name: db-prod-large
+spec:
+  hardware:
+    cpus: 8
+    memoryMiB: 32768
+    disks:
+      - { name: root, sizeGiB: 80,  storageClass: gold, provisioning: thin }
+      - { name: data, sizeGiB: 500, storageClass: gold, provisioning: eagerZeroed }
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: prod
+        ipam: {}                   # omit static/pool for DHCP — see the API reference
+  firmware: efi-secure
+  features: [hotAddCPU, hotAddMemory, efiSecureBoot]
+```
+
+```sh
+kubectl apply -f vmclass.yaml
+```
+
+### More than one network adapter
+
+A class may declare several interfaces. A VM created from it gets **one NIC per
+declared interface** (ADR-0111): the template's own NIC is moved onto the first
+interface's port group, and each further interface is added as a new NIC of the
+same adapter type, in declared order. Every interface's network class must resolve
+from the VM's cluster, or the VM is not created and the error names the
+interface. Give each VM its own addresses with `VirtualMachine.spec.networkOverrides`,
+keyed by interface name; an interface with no gateway is a bare layer 2 segment.
+
+```yaml title="vmclass-two-nics.yaml"
+spec:
+  network:
+    interfaces:
+      - { name: uplink,  networkClass: prod,    ipam: { static: {} } }   # the default route
+      - { name: private, networkClass: private, ipam: { static: {} } }   # an isolated segment
+```
+
+```yaml title="in the VirtualMachine"
+spec:
+  networkOverrides:
+    - name: uplink
+      static: { address: 192.0.2.10, prefix: 24, gateway: 192.0.2.1, nameservers: ["192.0.2.53"] }
+    - name: private
+      static: { address: 198.51.100.1, prefix: 24 }          # no gateway
+```
+
+The addresses reach the guest as `guestinfo.network.*` for the first interface and
+`guestinfo.network.<i>.*` for interface `i` (see
+[guest configuration](../security/guest-configuration.md)). The guest image must carry a
+`configure-network` that reads them: NIC `i` is the `i`-th ethernet interface in PCI
+address order. An image built before this change configures the first NIC only, so
+rebuild the image. A VM that bridges two segments must have IP forwarding off in the guest.
+Changing the interface list of a VM that already exists is not reconciled.
+
+## 5. Register a `VMImage`
+
+A `VMImage` maps a backend-agnostic OS name to a per-backend source. For vSphere
+the source `kind: Template` adopts a template that **already exists in vCenter**:
+`ref` is its name, and banlieue never builds, modifies or deletes it.
+
+The template is looked up **once per failure domain**, in the folder
+`<spec.template.rootFolder>/<failure-domain-name>`. When `rootFolder` is unset
+the folder is just `<failure-domain-name>` directly under the datacenter's VM
+folder. This is the same rule a `Url`-kind image uses. A template anywhere else
+in the datacenter does not count, so put a copy in each failure domain's folder.
+
+```yaml title="vmimage.yaml"
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: ubuntu-22.04-cloudinit
+spec:
+  osFamily: linux
+  osDistribution: ubuntu
+  osVersion: "22.04"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: vsphere
+      kind: Template
+      ref: ubuntu-22.04-cloudinit      # template name; must exist in each zone's folder
+  template:
+    rootFolder: templates              # zones look in templates/<failure-domain-name>
+```
+
+Only `spec.template.rootFolder` is read for a `Template` source. The other
+`spec.template` fields (`cpus`, `disk`, `network`, `installMode`, `forceCreate`,
+`retainOnDelete`, ...) describe how banlieue *builds* a template from a `Url`
+source and are ignored here.
+
+```sh
+kubectl apply -f vmimage.yaml
+
+# The provider reports one entry per failure domain under `zones`:
+kubectl get vmimage ubuntu-22.04-cloudinit -o yaml | yq '.status.perProvider'
+```
+
+```yaml
+- providerName: prod-vsphere
+  ready: true                      # true while at least one zone has the template
+  reason: Reconciled
+  zones:
+    - name: zone-a
+      ready: true
+      resolvedRef: ubuntu-22.04-cloudinit   # the bare template name
+      templateFolder: templates/zone-a
+    - name: zone-b
+      ready: false
+      reason: TemplateNotFound
+      message: template "ubuntu-22.04-cloudinit" not found in folder "templates/zone-b" of datacenter "dc1"
+```
+
+`ready: true` for `prod-vsphere` plus a ready zone is the gate the scheduler
+waits on. The scheduler only places a VM in a zone whose own entry is ready, so
+a zone missing its template never receives one while the other zones keep
+working. If everything stays `false`, check the `reason` (`TemplateNotFound`,
+`ConnectFailed`, `NoFailureDomains`, …). Deleting the `VMImage` never deletes the
+vCenter template: banlieue only destroys templates it imported itself (`Url`).
+
+!!! note "Upgrading a `Template`-kind image"
+    Before ADR-0104 the template was looked up anywhere in the datacenter. It
+    is now per zone, so a template that does not sit under
+    `<rootFolder>/<failure-domain-name>` becomes `TemplateNotFound` in that
+    zone until you move or copy it there.
+
+## 6. Create a `VirtualMachine`
+
+This is the only resource an end user writes. It references the class and image
+by name and (optionally) constrains placement.
+
+```yaml title="virtualmachine.yaml"
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: db-prod-01
+  namespace: banlieue-system
+  labels: { app: db-prod }
+spec:
+  classRef: { name: db-prod-large }
+  imageRef: { name: ubuntu-22.04-cloudinit }
+  placement:
+    providerSelector:
+      matchLabels: { dc: dc1, env: prod }    # matches the Provider's labels
+  desiredPowerState: PoweredOn
+```
+
+```sh
+kubectl apply -f virtualmachine.yaml
+```
+
+## 7. Verify the end-to-end flow
+
+```sh
+kubectl -n banlieue-system get virtualmachine db-prod-01
+# NAME         CLASS           IMAGE                    PROVIDER       FAILUREDOMAIN   POWER       READY
+# db-prod-01   db-prod-large   ubuntu-22.04-cloudinit   prod-vsphere   ...             PoweredOn   ...
+
+# The controller created a backend infra CR, owned by the VM:
+kubectl -n banlieue-system get vspheremachines -l app.kubernetes.io/name=banlieue
+kubectl -n banlieue-system get vm db-prod-01 -o yaml | yq '.status.scheduled, .status.conditions'
+```
+
+A successful schedule populates `status.scheduled` (provider + failure domain +
+resolved storage/network) and creates a `VSphereMachine` in the same namespace.
+
+## 8. (Optional) TPM-sealed disk encryption
+
+If your vCenter has a KMS (Key Management Server) registered under
+Configure → Key Providers, banlieue can attach a virtual TPM (vTPM) to a VM
+so Kairos's `kcrypt` seals its LUKS encryption key to that VM's own TPM at
+install time — no remote unlock server needed (ADR-0039). This needs three
+things wired together; get any one wrong and encryption silently doesn't
+happen:
+
+1. **The `Provider` must advertise the `vtpm` feature** — set by hand once
+   you've confirmed KMS + vTPM actually work end-to-end in that vCenter
+   (never auto-discovered):
+
+   ```yaml
+   spec:
+     capabilities:
+       features: [hotAddCPU, hotAddMemory, efiSecureBoot, vtpm]
+   ```
+
+2. **The `VMClass` requests it** with `tpmEnabled: true` — a class-level
+   capability like `firmware`, not a per-VM override:
+
+   ```yaml
+   spec:
+     firmware: efi
+     features: [vtpm]
+     tpmEnabled: true
+   ```
+
+3. **The `VMImage` must use `installMode: deferred`, not the default
+   `immediate`.** Kairos's `kcrypt` only ever seals a key to a TPM present
+   *during install* — it cannot encrypt an already-installed disk later.
+   banlieue's normal pipeline installs Kairos once into a golden template
+   and clones it for every VM, so a vTPM attached to the clone would have
+   nothing to seal against if the template disk was already installed.
+   `deferred` mode leaves the template un-installed (ISO still attached, no
+   power-on at build time); each clone then runs Kairos's installer itself,
+   at its own first boot, with its own freshly-attached vTPM already
+   present (ADR-0040):
+
+   ```yaml
+   spec:
+     template:
+       firmware: efi
+       installMode: deferred
+     cloudConfigs:
+       - secretRef: { name: kairos-encrypted-install-cloud-config }
+   ```
+
+   The cloud-config for a `deferred`-mode image is the **opposite** contract
+   of a normal template build: `install.reboot: true` / `poweroff: false`
+   (the VM keeps running as the production workload after install, not
+   power itself off for templating) and no `after-install-chroot`
+   identity-wipe stage — each clone installs fresh and gets its own real
+   machine-id/SSH host keys.
+
+Full worked examples:
+[`14-vmclass-tpm-encrypted.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/14-vmclass-tpm-encrypted.yaml),
+[`15-vmimage-kairos-deferred-install-tpm.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/15-vmimage-kairos-deferred-install-tpm.yaml).
+
+!!! danger "Getting step 3 wrong is now an error, not a silent no-op"
+    Pairing `tpmEnabled: true` with an `immediate` image used to clone
+    successfully, attach a vTPM, and encrypt **nothing**, reporting `Ready`
+    the whole time. Since **ADR-0048** (superseded by ADR-0088, which adds
+    the third option below) the controller rejects the pairing before
+    scheduling: `Ready=False`, `reason=ImageClassMismatch`, and no
+    infrastructure CR is created, so the VM never reaches a provider.
+
+    ```sh
+    kubectl describe virtualmachine my-vm | grep -A3 ImageClassMismatch
+    ```
+
+    The fix is one field: set `installMode: deferred` on the `VMImage`, or
+    drop `tpmEnabled` from the `VMClass`. `manual` also passes — it is the
+    documented escape hatch for a build that is not Kairos-driven.
+
+    The third option keeps `immediate`: declare `firstBootSealing: {}` on
+    the `VMImage`, built from Kairos v4.4.0 or later (ADR-0088; on unless
+    `banlieue-controller` runs with `--enable-first-boot-sealing=false`).
+    Every clone then seals
+    `COS_PERSISTENT` to its own vTPM on its first boot, and the template is
+    installed only once. See
+    [`23-vmimage-immediate-first-boot-sealing.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/23-vmimage-immediate-first-boot-sealing.yaml).
+    The operator cloud-config for it must not set
+    `install.encrypted_partitions`, and needs a Kairos with first-boot
+    sealing (v4.4.0 or later).
+
+    A `VMImage` with **no `template` block at all** (a `Template`- or
+    `BackingFile`-source image) is rejected on the same grounds: it is a
+    pre-built, and therefore pre-laid, disk.
+
+!!! warning "Provisioning time and readiness"
+    A `deferred`-mode VM's `VirtualMachine`/`VSphereMachine` reports
+    `provisioned=true`/`Ready` the instant the clone powers on, which for
+    this mode means "the unattended install just started," not "the VM is
+    ready" (ADR-0034/ADR-0040). The installed guest announces itself
+    separately: wait on the `GuestReady` condition (ADR-0043), which turns
+    `True` only once the installed system writes its marker and the install
+    ISO is ejected (ADR-0044). Expect the full
+    unattended-install window (typically 8-12 minutes) before the VM is
+    actually usable, every time, for every VM, not just once at
+    template-build time like a normal `immediate`-mode image.
+
+!!! success "Confirmed working end-to-end"
+    Validated live against a real vCenter: a `tpmEnabled: true` VM's disk
+    (`COS_PERSISTENT`) came up as `crypto_LUKS`, mounted and auto-unlocked
+    via its own vTPM on first boot, with no manual intervention.
+
+## Capacity
+
+Each failure domain (one per datacenter and cluster) publishes what the
+cluster can still take, and the scheduler places a new VM only where it fits
+([ADR-0128](https://github.com/firestoned/banlieue/blob/main/docs/adr/0128-every-provider-publishes-measured-capacity.md)):
+
+- `cpus` and `memoryMiB` from the cluster summary (CPU threads, effective
+  memory), capped by the cluster's root resource pool limit;
+- `memoryAvailableMiB`: effective memory less what the cluster's hosts use,
+  or the root pool's unreserved memory when smaller, in whole GiB;
+- `storage[]`, per storage class, from the datastore's summary (for a
+  `datastoreCluster` class, the member with the most free space).
+  `shared: true` marks a datastore more than one cluster reaches.
+
+These are cluster totals. DRS picks the host, so a VM larger than any one
+host can still be placed and then fail in vCenter. Read the figures, the
+refusal messages and the full vSphere test plan in
+[Capacity-Aware Scheduling](../guides/capacity-scheduling.md).
+
+## Rotating credentials
+
+1. Create the new vCenter user or password, with the same role as the old one.
+2. Update the Secret in place (`kubectl -n <namespace> create secret generic <name> --from-literal=username=... --from-literal=password=... --dry-run=client -o yaml | kubectl apply -f -`).
+3. Wait about 30 seconds, and check that the `Provider` stays `Ready`
+   (`kubectl get providers.banlieue.io <name>`).
+4. Remove the old password or user in vCenter.
+
+banlieue never watches the Secret. Each reconcile reads it by name and builds
+a fresh connection from it, so the new credential is in use within one
+requeue interval (about 30 seconds), with no restart. Watching would need
+read access to every Secret in the namespace, which the provider
+deliberately does not have
+([ADR-0095](https://github.com/firestoned/banlieue/blob/main/docs/adr/0095-credential-rotation-without-secret-watches.md)).
+To cut a credential off immediately, revoke it on the backend: that stops it
+everywhere at once.
+
+## Troubleshooting
+
+`Provider` not `Ready` — read the condition `reason`:
+
+| Reason | Meaning | Look at |
+| --- | --- | --- |
+| `SecretMissing` | `credentialsRef` Secret doesn't exist | `kubectl -n banlieue-system get secret vsphere-creds` |
+| `SecretInvalid` | Secret missing `username`/`password` | `kubectl get secret … -o yaml` |
+| `ConnectFailed` | bad creds / endpoint / TLS | provider logs |
+| `InventoryFailed` | login OK, inventory walk failed | provider logs |
+
+`VMImage` per-provider not ready: `TemplateNotFound` (template absent from a
+zone's folder; the zone's `message` names the folder searched), `ConnectFailed`,
+`LookupFailed`, `NoFailureDomains`.
+
+A zone with `reason=ImportFailed`: its import Job failed; read the Job's
+logs (`kubectl -n banlieue-imagebuild logs job/<the Job named in the zone's
+message>`). The provider deletes and recreates a failed Job once it has been
+failed for 10 minutes; to retry at once, run
+`kubectl annotate vmimage <image> banlieue.io/force-reimport=true`. Each
+vSphere `Provider` re-imports its own zones once for that request and marks it
+handled with an annotation of its own (`force-reimport-handled.banlieue.io/…`);
+the last `Provider` to handle it removes the request and every marker. With
+several `Provider`s the annotation therefore stays until all of them have
+acted, and a `Provider` whose workload is not running yet re-imports as soon as
+it is (ADR-0087, amendment 2026-11-03). One cause has its own message: with
+`forceUpload`, `cannot replace [<datastore>] banlieue-images/<image>.iso: it is
+connected to the CD-ROM of running VM(s) …`. vCenter will not delete an ISO
+that a running VM has open, so the Job stops before destroying the zone's
+template. The provider ejects the ISO from an installed `Deferred` VM it
+manages (next item), so this clears on its own once those VMs have
+installed. For a VM banlieue doesn't manage, eject the CD-ROM in vCenter
+(`govc device.cdrom.eject -vm <vm>`).
+
+A `VMImage` deleted while it has templates on several vSphere `Provider`s:
+each `Provider`'s workload destroys its own zone templates and clears its row's
+`zones`; the object goes away once no existing `Provider` lists any. If one
+stays `Terminating`, the row still listing zones names the `Provider` whose
+workload has not finished (check that workload's log). A `Provider` deleted
+before the `VMImage` no longer holds it, but its templates stay in vCenter:
+the workload logs `Provider no longer exists; its zone templates stay in
+vCenter`, and they are yours to remove.
+
+`VirtualMachine` stuck at `InfrastructureReady=False / ProvisionFailed` with a
+"template ... not found" message on its `VSphereMachine`: the clone looked for a
+template name that is not in the zone's folder.
+
+- Read `spec.template` and `spec.templateFolder` on the `VSphereMachine`; the
+  template must exist in exactly that folder, in that machine's datacenter.
+  `spec.template` is a bare name. If it looks like `[dc1] name`, the
+  `VMImage` row was written by a provider older than ADR-0104: upgrade the
+  provider and controller.
+- Compare with `kubectl get vmimage <name> -o yaml | yq '.status.perProvider[].zones'`
+  and confirm the machine's zone is `ready: true`. A zone that is not ready
+  receives no VMs, so a machine in one means the zone's template went missing
+  after it was scheduled.
+- In vCenter, check the folder is `<rootFolder>/<failure-domain-name>` and that
+  the object there is a *template*, not a powered-off VM.
+```sh
+kubectl -n banlieue-system get vspheremachine <name> -o jsonpath='{.spec.template}{"  "}{.spec.templateFolder}{"\n"}'
+```
+
+A `VirtualMachine` that keeps starting again after you stopped it in vCenter:
+the provider drives every VM to `spec.desiredPowerState` (ADR-0034, amended
+2026-10-23), so a vCenter-side power-off is reverted within a few minutes. Set
+`desiredPowerState: PoweredOff` on the `VirtualMachine` to hold it off. A VM
+that is off while `desiredPowerState` is `PoweredOn` and does not start: look
+at the provider log for `power state change failed`, and at the provider's
+vCenter role (`VirtualMachine.Interact.PowerOn`).
+
+`VirtualMachine` stuck `Scheduled=False`:
+
+- `reason=ImageNotReady` — the `VMImage` isn't `ready` on any candidate provider
+  (step 5).
+- `reason=ProviderUnschedulable`: only `Provider`s labelled
+  `banlieue.io/unschedulable: "true"` (cordoned, ADR-0124) could take the VM, and the
+  message names them. Uncordon one, or widen the selector.
+- `reason=ProviderNotAlive`: every `Provider` the VM could use has a
+  `Stale` heartbeat, so its provider is not running (ADR-0102). Check
+  `kubectl get providers.banlieue.io` and the provider pod; see
+  [Provider liveness](../guides/observability.md#provider-liveness).
+- `reason=NoProviderMatched` — no `Provider` matches `placement.providerSelector`, or
+  none advertises the requested storage/network class or feature. Check the
+  `Provider.spec.capabilities` against the `VMClass`.
+- `reason=TpmUnsupported` — `VMClass.spec.tpmEnabled: true`, but no candidate
+  failure domain's `Provider` advertises the `vtpm` feature (step 8 above).
+- `reason=ImageClassMismatch` — `VMClass.spec.tpmEnabled: true` paired with a
+  `VMImage` whose `installMode` is `immediate` (or which has no `template`
+  block at all). The vTPM would have nothing to seal against, so the VM is
+  refused rather than built unencrypted (ADR-0048). This one never reaches
+  the scheduler, so `Scheduled` is deliberately left untouched. Also raised
+  for `firstBootSealing` on an image whose class has no vTPM (ADR-0088).
+- `reason=FirstBootSealingDisabled` — the `VMImage` declares
+  `firstBootSealing` but `banlieue-controller` runs with
+  `--enable-first-boot-sealing=false`. The VM is refused rather than built as if
+  the field were absent.
+
+`GuestReady=False`, `reason=InstallMediaAttached`: the installed guest
+announced itself, but the provider could not eject its install ISO yet
+(ADR-0044). It retries every few minutes. If the guest holds the CD-ROM tray
+locked (installed Kairos guests do), vCenter asks "Disconnect anyway and
+override the lock?" and the provider answers Yes itself; it answers no other
+question, so a different pending question on the VM needs a human. The
+usual remaining cause is a vCenter role without
+`VirtualMachine.Interact.SetCDMedia` / `.DeviceConnection`
+([least privilege](../security/vsphere-least-privilege.md)); the provider log
+names the fault. Once the eject succeeds, `status.installMediaDetached` is
+`true`.
+
+`GuestReady=False` on a first-boot sealing VM:
+
+- `reason=FirstBootSealingUnverified` — the installed guest announced itself
+  but has not reported every listed partition in `guestinfo.banlieue.sealed`.
+  Check `kubectl get vspheremachine <name> -o jsonpath='{.status.sealedPartitions}'`.
+- `reason=FirstBootSealingTimeout` — no complete report within
+  `firstBootSealing.timeoutSeconds` (default 600) of power-on. A clone that
+  cannot seal (no vTPM, a Kairos without first-boot sealing, an upstream
+  defect) halts in its initramfs and never reaches the stage that reports:
+  open the VM console in vCenter for the cause.
+
+`VMImage.status.buildArtifact` `Failed` with `reason=FirstBootSealingConflict`:
+an operator cloud-config of an `immediate` image with `firstBootSealing` sets
+`install.encrypted_partitions`. The template installs with no vTPM, so that
+would fail; remove it, banlieue writes the policy for first boot itself.
+`reason=FirstBootSealingInvalid`: a partition that is not a plain label or is
+a system partition.
+
+`VSphereMachine` not `Ready` with `reason=VMNameConflict`: a VM with the
+machine's name already sits in the clone's target folder (`spec.folder`, or
+the datacenter's VM folder) and it is **not** this machine's. Every VM
+banlieue clones carries the machine's UID in the `extraConfig` key
+`banlieue.machine.uid` (ADR-0101), and the provider never touches a VM
+without a matching one, so it refuses to clone beside it rather than
+failing on vCenter's `DuplicateName` forever. Compare the two:
+
+```sh
+kubectl -n banlieue-system get vspheremachine db-prod-01 -o jsonpath='{.metadata.uid}'
+govc vm.info -e -vm.ipath '/dc1/vm/db-prod-01' | grep banlieue.machine.uid
+```
+
+- No `banlieue.machine.uid` at all: somebody else's VM, or a clone left
+  behind by a banlieue release before ADR-0101 (those clones were never
+  marked). Delete or rename it in vCenter once; the next pass clones.
+- A different UID: another machine of the same name, typically from another
+  namespace placed in the same folder. Give them different folders or names.
+
+A clone that **does** carry this machine's UID is never a conflict: it is
+left over from a pass that stopped between the clone and its status write,
+and the provider destroys it and clones again, or destroys it on deletion.
+
+`VSphereMachine` not `Ready` with `reason=BackendMissing` ("backend VM
+`vm-…` no longer exists in vCenter"): the VM in `status.vmRef` is gone. The
+provider first looks for a VM of the machine's name, in its folder, carrying
+**this machine's** UID in `banlieue.machine.uid` (ADR-0101, amended
+2026-11-04). If there is exactly one it **adopts** it: `status.vmRef` is
+rewritten to that VM and the machine recovers on the next pass, so a machine
+left in this state by an older provider repairs itself once the fixed
+provider runs. Nothing is recreated and the guest is not touched.
+
+If it stays `BackendMissing`, the lookup found nothing to adopt:
+
+- The VM really was deleted in vCenter. Delete the `VirtualMachine` and
+  recreate it.
+- The message says several VMs carry the marker. They cannot all be this
+  machine's, so none is adopted; remove the extras in vCenter.
+- The provider log says it could not look for the machine's own clone (a
+  vCenter fault); it adopts nothing then, and retries on the next pass.
+
+Do **not** clear `status.vmRef` by hand to force a re-clone: a pass with no
+`vmRef` destroys a VM carrying the machine's marker, which here would be the
+live one.
+
+```sh
+kubectl -n banlieue-system logs deploy/banlieue-provider-vsphere
+kubectl -n banlieue-system logs deploy/banlieue-controller
+kubectl -n banlieue-system describe virtualmachine db-prod-01   # Events
+```
+
+## Full schema reference
+
+Every field of every CRD: **[API Reference](../reference/api.md)**.

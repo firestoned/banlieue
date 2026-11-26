@@ -6,7 +6,7 @@ cluster from a released image, `ghcr.io/firestoned/banlieue:$BANLIEUE_VERSION`
 controller watches `VirtualMachine` resources, schedules them onto a `Provider`,
 creates the backend-specific infrastructure CR (e.g. `VSphereMachine`), and
 mirrors status back. It is the foundation every provider builds on — install it
-first, then add a provider with the [vSphere Provider guide](vsphere-provider.md).
+first, then add a provider with the [vSphere Provider guide](../providers/vsphere.md).
 
 !!! note "What you get after this guide"
     The CRDs, the controller Deployment (running, leader-elected), least-privilege
@@ -263,13 +263,13 @@ metrics, is in the [Observability guide](observability.md).
 
 The controller is running but has no backend to schedule onto. Add one:
 
-- **[Cloud Hypervisor Provider](cloud-hypervisor-host.md)**, the reference
+- **[Cloud Hypervisor Provider](../providers/cloud-hypervisor.md)**, the reference
   backend: prepare a bare-metal KVM host and connect it, then run VMs on it.
-- **[vSphere Provider](vsphere-provider.md)**: take a `VirtualMachine` all the
+- **[vSphere Provider](../providers/vsphere.md)**: take a `VirtualMachine` all the
   way to a running VM on vCenter.
-- **[libvirt Provider](libvirt-provider.md)**: register a libvirt/KVM host over
+- **[libvirt Provider](../providers/libvirt.md)**: register a libvirt/KVM host over
   mutual TLS and run VMs on it.
-- **[Proxmox VE Provider](proxmox-provider.md)**: register a Proxmox node with a
+- **[Proxmox VE Provider](../providers/proxmox.md)**: register a Proxmox node with a
   least-privilege API token and run VMs as template clones.
 
 To uninstall, delete in reverse order (`deploy/admission/`, `deploy/controller/`,

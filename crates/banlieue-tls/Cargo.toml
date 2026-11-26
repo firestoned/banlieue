@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "banlieue-tls"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "The one process-wide rustls crypto provider for every banlieue binary: aws-lc-rs, X25519MLKEM768 offered first (ADR-0170)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+# aws-lc-rs provider with `prefer-post-quantum` (ADR-0170); `ring` is banned
+# from the graph by deny.toml.
+rustls.workspace = true
+
+[dev-dependencies]
+# The live probe verifies the peer against the OS trust store, as reqwest does.
+rustls-platform-verifier = "0.7"

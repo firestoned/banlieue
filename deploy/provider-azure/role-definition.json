@@ -1,0 +1,35 @@
+{
+  "Name": "banlieue Azure provider",
+  "IsCustom": true,
+  "Description": "Least privilege for the banlieue Azure runtime provider (ADR-0159 Decision 3, ADR-0164): create, start, deallocate and delete VMs and their NICs and OS disks in the Provider's resource group, read the image it boots, and read quota and SKUs. No snapshot, image or gallery write: the image publisher is a separate identity (ADR-0162).",
+  "Actions": [
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/write",
+    "Microsoft.Compute/virtualMachines/delete",
+    "Microsoft.Compute/virtualMachines/start/action",
+    "Microsoft.Compute/virtualMachines/deallocate/action",
+    "Microsoft.Compute/virtualMachines/instanceView/read",
+    "Microsoft.Compute/disks/read",
+    "Microsoft.Compute/disks/delete",
+    "Microsoft.Compute/galleries/images/versions/read",
+    "Microsoft.Compute/locations/usages/read",
+    "Microsoft.Compute/skus/read",
+    "Microsoft.Compute/locations/operations/read",
+    "Microsoft.Compute/locations/diskOperations/read",
+    "Microsoft.Network/networkInterfaces/read",
+    "Microsoft.Network/networkInterfaces/write",
+    "Microsoft.Network/networkInterfaces/delete",
+    "Microsoft.Network/networkInterfaces/join/action",
+    "Microsoft.Network/virtualNetworks/subnets/join/action",
+    "Microsoft.Network/locations/operations/read",
+    "Microsoft.Network/locations/operationResults/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read",
+    "Microsoft.Resources/subscriptions/resourcegroups/resources/read"
+  ],
+  "NotActions": [],
+  "DataActions": [],
+  "NotDataActions": [],
+  "AssignableScopes": [
+    "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-vms"
+  ]
+}

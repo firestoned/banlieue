@@ -20,7 +20,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_rustls::rustls::ServerConfig;
-use tokio_rustls::rustls::crypto::ring::default_provider;
 
 const HOST: &str = "localhost";
 const RESPONSE: &[u8] = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
@@ -55,7 +54,7 @@ fn pki() -> Pki {
 
 /// Serve `RESPONSE` over TLS on a loopback port until the test ends.
 async fn serve(pki: &Pki) -> u16 {
-    let config = ServerConfig::builder_with_provider(Arc::new(default_provider()))
+    let config = ServerConfig::builder_with_provider(Arc::new(banlieue_tls::provider()))
         .with_safe_default_protocol_versions()
         .unwrap()
         .with_no_client_auth()

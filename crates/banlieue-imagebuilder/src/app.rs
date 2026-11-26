@@ -37,6 +37,7 @@ use kube::{
 };
 use tracing::{info, warn};
 
+use crate::file_digest::DigestArgs;
 use crate::importer_image::ImporterImage;
 use crate::oci_push::PushArgs;
 use crate::reconciler::push::{CaBundle, CaBundleSource, DEFAULT_CA_BUNDLE_KEY, RegistryConfig};
@@ -188,9 +189,11 @@ pub struct Cli {
     #[arg(long, env = "BANLIEUE_REGISTRY_PLAIN_HTTP", default_value_t = false)]
     pub registry_plain_http: bool,
 
-    /// Image the push Job runs. Defaults to the public banlieue image; a
+    /// Image the push Job and the digest Job run (ADR-0064; ADR-0010,
+    /// amendment 2026-11-26). Defaults to the public banlieue image; a
     /// cluster that mirrors images sets this to the mirrored reference, or
-    /// the Job cannot start.
+    /// the Jobs cannot start. Read even without `--registry-repository`:
+    /// every build is measured.
     #[arg(long, env = "BANLIEUE_PUSH_IMAGE", default_value = DEFAULT_PUSH_IMAGE)]
     pub push_image: String,
 
@@ -222,6 +225,14 @@ pub struct Cli {
     /// fails with `PrelayImageUnset`. Read it through [`prelay_image`].
     #[arg(long, env = "BANLIEUE_PRELAY_IMAGE", default_value = DEFAULT_PRELAY_IMAGE)]
     pub prelay_image: String,
+
+    /// OCI image carrying the Azure guest helper, `banlieue-azure-guest`,
+    /// unpacked into every build of a `VMImage` with an `azure` source
+    /// (ADR-0171): `<repository>@sha256:<digest>`, pinned by digest or the
+    /// imagebuilder refuses to start. Empty (the default): such a build fails
+    /// with `AzureGuestImageUnset`. Read it through [`azure_guest_image`].
+    #[arg(long, env = "BANLIEUE_AZURE_GUEST_IMAGE", default_value = "")]
+    pub azure_guest_image: String,
 }
 
 /// Subcommands of `banlieue imagebuilder`.
@@ -233,6 +244,14 @@ pub enum ImagebuilderCommand {
     /// invoked by hand, though the flags are stable so a failed push can be
     /// reproduced.
     Push(PushArgs),
+
+    /// Measure one build artifact's sha256 and exit (ADR-0010, amendment
+    /// 2026-11-26).
+    ///
+    /// Runs inside the Job the `VMImage` reconciler creates once a build is
+    /// `Ready`; the flags are stable, so a measurement can be reproduced by
+    /// hand.
+    Digest(DigestArgs),
 }
 
 /// The pre-lay image to run, or `None` when `--prelay-image` is empty
@@ -244,6 +263,21 @@ pub fn prelay_image(cli: &Cli) -> Option<String> {
         return None;
     }
     Some(image.to_string())
+}
+
+/// The Azure guest helper image, or `None` when `--azure-guest-image` is
+/// empty (ADR-0171).
+///
+/// # Errors
+/// A reference that is not pinned by digest.
+pub fn azure_guest_image(cli: &Cli) -> Result<Option<String>> {
+    let image = cli.azure_guest_image.trim();
+    if image.is_empty() {
+        return Ok(None);
+    }
+    crate::azure_guest::validate_helper_image(image)
+        .map_err(|e| anyhow::anyhow!("--azure-guest-image: {e}"))?;
+    Ok(Some(image.to_string()))
 }
 
 /// The registry configuration from `cli`, if a repository is set.
@@ -314,8 +348,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     .context("initialising tracing")?;
 
     // One-shot roles exit when their work is done.
-    if let Some(ImagebuilderCommand::Push(args)) = cli.command {
-        return crate::oci_push::run(args).await;
+    match cli.command {
+        Some(ImagebuilderCommand::Push(args)) => return crate::oci_push::run(args).await,
+        Some(ImagebuilderCommand::Digest(args)) => return crate::file_digest::run(args).await,
+        None => {}
     }
 
     info!(
@@ -364,6 +400,11 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(image) => info!(%image, "pre-laying enabled (ADR-0113)"),
         None => info!("--prelay-image is empty: pre-laying is off"),
     }
+    let azure_guest_image = azure_guest_image(&cli)?;
+    match &azure_guest_image {
+        Some(image) => info!(%image, "Azure guest helper image set (ADR-0171)"),
+        None => info!("--azure-guest-image is empty: VMImages with an azure source cannot build"),
+    }
     let ctx = Arc::new(Context::new(
         client.clone(),
         cli.build_namespace.clone(),
@@ -371,6 +412,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         importer_image,
         registry,
         prelay_image,
+        cli.push_image.clone(),
+        azure_guest_image,
     ));
 
     // VMImage is cluster-scoped — always watch every namespace.

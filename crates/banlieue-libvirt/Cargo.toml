@@ -28,8 +28,11 @@ thiserror.workspace = true
 # the operation timeouts (without which a wedged libvirtd stalls a reconcile
 # loop indefinitely — observed, not theoretical).
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
+# aws-lc-rs through the workspace rustls (ADR-0170): the mutual-TLS config is
+# built on `banlieue-tls`'s provider, X25519MLKEM768 offered first.
+tokio-rustls = { version = "0.26", default-features = false, features = ["aws_lc_rs"] }
 rustls = { workspace = true }
+banlieue-tls.workspace = true
 # One span per libvirt procedure (ADR-0092).
 tracing.workspace = true
 

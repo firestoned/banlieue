@@ -26,6 +26,11 @@
 //!    the candidate Provider. A `Template`-kind source that reports
 //!    `zones[]` is additionally gated per failure domain: the zone's own
 //!    entry must be ready (ADR-0104).
+//!    3c. Instance size (ADR-0160 Decision 1): a Provider that maps classes
+//!    to instance sizes (any that declares `capabilities.instanceSizes`,
+//!    and every cloud class such as `azure` even when it declares none)
+//!    takes a VM only when its `VMClass` is mapped in the failure domain's
+//!    zone. Nothing is guessed from vCPU and memory.
 //! 4. Storage classes — every disk's `storageClass` must appear in
 //!    `FailureDomain.attributes.availableStorageClasses`.
 //! 5. Network classes — every NIC's `networkClass` must appear in
@@ -92,7 +97,10 @@ use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 use kube::ResourceExt;
 use tracing::warn;
 
-use super::infra::{effective_cpus, effective_memory_mi_b, merge_disk_size_override};
+use super::infra::{
+    CLOUD_PROVIDER_CLASSES, FD_ZONE_KEY, effective_cpus, effective_memory_mi_b,
+    merge_disk_size_override,
+};
 
 /// Feature flag a failure domain must advertise to support EFI secure boot.
 pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
@@ -190,6 +198,14 @@ pub enum ScheduleError {
     /// Providers' names, comma-separated.
     #[error("only cordoned providers (banlieue.io/unschedulable) could take this VM: {0}")]
     ProviderUnschedulable(String),
+
+    /// Every candidate failure domain was rejected because its Provider maps
+    /// classes to instance sizes and has no entry for this `VMClass`
+    /// (ADR-0160 Decision 1). Carries the `VMClass` name.
+    #[error(
+        "VMClass {0} has no instance size on any candidate provider; map it in the Provider's spec.capabilities.instanceSizes (ADR-0160)"
+    )]
+    InstanceSizeUnmapped(String),
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -212,6 +228,9 @@ pub mod reasons {
     pub const PROVIDER_NOT_ALIVE: &str = "ProviderNotAlive";
     /// Every matching Provider is labelled unschedulable (ADR-0124).
     pub const PROVIDER_UNSCHEDULABLE: &str = "ProviderUnschedulable";
+    /// The `VMClass` has no instance size on any candidate Provider that
+    /// maps classes to sizes (ADR-0160 Decision 1).
+    pub const INSTANCE_SIZE_UNMAPPED: &str = "InstanceSizeUnmapped";
 }
 
 impl ScheduleError {
@@ -227,6 +246,7 @@ impl ScheduleError {
             ScheduleError::AntiAffinityUnsatisfied(_) => reasons::ANTI_AFFINITY_UNSATISFIED,
             ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
             ScheduleError::ProviderUnschedulable(_) => reasons::PROVIDER_UNSCHEDULABLE,
+            ScheduleError::InstanceSizeUnmapped(_) => reasons::INSTANCE_SIZE_UNMAPPED,
         }
     }
 }
@@ -268,6 +288,11 @@ impl RejectReasons {
         } else {
             self.omitted += 1;
         }
+    }
+
+    /// How many reasons were pushed, kept or not.
+    fn len(&self) -> usize {
+        self.kept.len() + self.omitted
     }
 
     /// Render the kept reasons joined by `"; "`, with a trailing
@@ -418,6 +443,8 @@ fn place(
     let mut image_ready_seen = false;
     let mut firmware_unsupported_seen = false;
     let mut tpm_unsupported_seen = false;
+    let mut size_rejects: usize = 0;
+    let class_name = class.name_any();
     let mut survivors: Vec<(&Provider, &FailureDomain)> = Vec::new();
 
     for provider in &provider_candidates {
@@ -464,6 +491,21 @@ fn place(
                     provider.name_any(),
                     fd.name,
                     image.name_any(),
+                ));
+                continue;
+            }
+
+            // Step 3c: instance size (ADR-0160 Decision 1). A placed VM keeps
+            // running at the size it was created with, so removing a mapping
+            // stops new placements without moving it (ADR-0125).
+            if !here && instance_size_unmapped(provider, &class_name, fd) {
+                size_rejects += 1;
+                reject_reasons.push(format!(
+                    "{}/{}: VMClass '{}' has no instanceSizes entry on this provider (zone {})",
+                    provider.name_any(),
+                    fd.name,
+                    class_name,
+                    failure_domain_zone(fd).unwrap_or("unset"),
                 ));
                 continue;
             }
@@ -544,10 +586,44 @@ fn place(
                 continue;
             }
 
+            // Step 8a': quota (ADR-0161). A cloud Provider's `capacity.cpus`
+            // is the vCPU quota headroom the cloud reported: VMs already
+            // running are inside it, it is regional (every zone repeats the
+            // same figure) and it is never overcommitted. So only VMs placed
+            // on this Provider and not yet provisioned, in any of its zones,
+            // are subtracted, and a VM already placed here is not re-judged.
+            let quota = is_quota_capacity(provider);
+            if quota
+                && !here
+                && let Some(capacity) = &fd.attributes.capacity
+            {
+                let in_provider = in_flight_on(
+                    vm,
+                    existing_vms,
+                    &classes_by_name,
+                    &provider.name_any(),
+                    None,
+                    0,
+                );
+                if let Some(short) = quota_shortfall(
+                    effective_cpus(class, vm.spec.hardware_override.as_ref()),
+                    &in_provider,
+                    capacity,
+                ) {
+                    reject_reasons.push(format!(
+                        "{}/{}: insufficient quota: {short}",
+                        provider.name_any(),
+                        fd.name,
+                    ));
+                    continue;
+                }
+            }
+
             // Step 8b: capacity (ADR-0107). Memory strictly, vCPUs up to the
             // Provider's overcommit ratio; a domain publishing no capacity, or
-            // no figure for a resource, is not checked on it.
-            if let Some(capacity) = &fd.attributes.capacity {
+            // no figure for a resource, is not checked on it. Not for a quota
+            // Provider, whose figures step 8a' already judged.
+            if !quota && let Some(capacity) = &fd.attributes.capacity {
                 let overhead = capacity.memory_overhead_mi_b_per_vm.unwrap_or(0);
                 let used = usage_on(
                     vm,
@@ -636,6 +712,11 @@ fn place(
         }
         if tpm_unsupported_seen {
             return Err(ScheduleError::TpmUnsupported);
+        }
+        // Only when the size is the one thing in the way: a mix of reasons
+        // keeps the compound message, which names this one among them.
+        if size_rejects > 0 && size_rejects == reject_reasons.len() {
+            return Err(ScheduleError::InstanceSizeUnmapped(class_name));
         }
         return Err(ScheduleError::NoFailureDomainMatched(
             reject_reasons.render(),
@@ -821,10 +902,39 @@ pub fn capacity_shortfall(
 /// (ADR-0128): they are promised there but not yet in its measured figures.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct InFlight {
+    /// Their vCPUs (counted against a cloud Provider's quota, ADR-0161).
+    pub cpus: u64,
     /// Their memory plus the per-VM overhead, MiB.
     pub memory_mi_b: u64,
     /// Their disks, GiB, by storage class.
     pub disks_gi_b: BTreeMap<String, u64>,
+}
+
+/// Whether `provider` publishes cloud quota headroom as its capacity
+/// (ADR-0161 Decision 1) rather than a host's measured resources.
+fn is_quota_capacity(provider: &Provider) -> bool {
+    CLOUD_PROVIDER_CLASSES.contains(&provider.spec.provider_class_ref.name.as_str())
+}
+
+/// Why a VM needing `cpus` vCPUs does not fit a cloud Provider's quota
+/// headroom once the VMs placed on the Provider but not yet provisioned
+/// (`in_provider`) are counted, or `None` when it fits or no headroom is
+/// published (ADR-0161). Never overcommitted: a quota is a hard limit.
+#[must_use]
+pub fn quota_shortfall(
+    cpus: u32,
+    in_provider: &InFlight,
+    capacity: &FailureDomainCapacity,
+) -> Option<String> {
+    let headroom = u64::from(capacity.cpus?);
+    let needed = in_provider.cpus + u64::from(cpus);
+    if needed <= headroom {
+        return None;
+    }
+    Some(format!(
+        "vCPUs {needed} (in flight {}) > quota headroom {headroom}",
+        in_provider.cpus
+    ))
 }
 
 /// Whether the VM's infrastructure reports itself provisioned.
@@ -881,6 +991,7 @@ fn in_flight_on(
             let Some(class) = classes.get(&other.spec.class_ref.name) else {
                 return held;
             };
+            held.cpus += u64::from(effective_cpus(class, other.spec.hardware_override.as_ref()));
             held.memory_mi_b += u64::from(effective_memory_mi_b(
                 class,
                 other.spec.hardware_override.as_ref(),
@@ -1030,6 +1141,33 @@ fn image_ready_in_zone(image: &VMImage, provider: &Provider, zone: &str) -> bool
         return true;
     }
     row.zones.iter().any(|z| z.name == zone && z.ready)
+}
+
+/// The availability zone a failure domain stands for: its raw `zone`
+/// attribute, else its `zone` label (ADR-0158 Decision 3). `None` on a
+/// backend with no zones.
+pub(crate) fn failure_domain_zone(fd: &FailureDomain) -> Option<&str> {
+    fd.attributes
+        .raw
+        .get(FD_ZONE_KEY)
+        .or_else(|| fd.labels.get(FD_ZONE_KEY))
+        .map(String::as_str)
+}
+
+/// Whether `provider` maps classes to instance sizes and has none for
+/// `class_name` in `fd`'s zone (ADR-0160 Decision 1). A Provider maps
+/// classes when it declares `instanceSizes`, or is a cloud class
+/// ([`CLOUD_PROVIDER_CLASSES`]), where an empty list means nothing is
+/// schedulable rather than "no mapping needed".
+fn instance_size_unmapped(provider: &Provider, class_name: &str, fd: &FailureDomain) -> bool {
+    let caps = &provider.spec.capabilities;
+    let maps_sizes = !caps.instance_sizes.is_empty()
+        || CLOUD_PROVIDER_CLASSES.contains(&provider.spec.provider_class_ref.name.as_str());
+    if !maps_sizes {
+        return false;
+    }
+    caps.instance_size_for(class_name, failure_domain_zone(fd).unwrap_or_default())
+        .is_none()
 }
 
 /// Build the final [`Decision`] from the chosen provider + fd. Resolves

@@ -1,0 +1,169 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A complete, minimal VirtualMachine on Azure (ADR-0158 to ADR-0164).
+#
+# Every identifier below is a placeholder: the zero GUIDs stand for your
+# tenant, client (the managed identity or app registration) and subscription.
+#
+# Prepare Azure first (see deploy/provider-azure/README.md):
+#
+#   1. Publish the cluster's ServiceAccount issuer (OIDC discovery document and
+#      JWKS) where Entra ID can fetch them (ADR-0159 Decision 2).
+#   2. Create a user-assigned managed identity (or an app registration) and add
+#      a federated credential to it with
+#        issuer:   your cluster's --service-account-issuer URL
+#        subject:  system:serviceaccount:banlieue-system:banlieue-provider-azure-az-cc
+#        audience: api://AzureADTokenExchange
+#      The subject is the ServiceAccount the operator creates for this Provider:
+#      banlieue-provider-<providerClassRef.name>-<Provider name>.
+#   3. Create the custom role in deploy/provider-azure/role-definition.json and
+#      assign it to that identity on the resource group below; grant subnet
+#      join and gallery read where those live.
+#
+# No Secret anywhere: the provider's only credential is its projected
+# ServiceAccount token (ADR-0159 Decision 1). Admission refuses a credentialsRef
+# on an azure Provider (deploy/admission/provider-connection.yaml).
+#
+# WHAT HAPPENS WHEN YOU APPLY THIS
+#
+#   1. The operator starts a provider pod for `az-cc` with the projected token,
+#      which it exchanges with Entra ID for an ARM token as the identity below.
+#   2. The provider checks the size, disk SKU and subnet declared here and
+#      publishes one failure domain per availability zone of the region.
+#   3. It verifies the gallery image version and marks the VMImage ready.
+#   4. banlieue-controller schedules the VirtualMachine onto a zone and creates
+#      an AzureVirtualMachine beside it.
+#   5. The provider creates the NIC and the VM (OS disk from the image, userData
+#      as custom data), tagged as banlieue's, and reports its addresses.
+#
+# Deleting the VirtualMachine deletes the VM, its NIC and its OS disk; the
+# finalizer is released only after all three are gone.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: az-cc
+  namespace: banlieue-system
+  labels:
+    env: cloud
+spec:
+  providerClassRef:
+    name: azure
+  connection:
+    # The Azure Resource Manager endpoint (public cloud).
+    endpoint: https://management.azure.com
+    azure:
+      tenantId: 00000000-0000-0000-0000-000000000000
+      clientId: 00000000-0000-0000-0000-000000000000
+      subscriptionId: 00000000-0000-0000-0000-000000000000
+      location: canadacentral
+      # Must exist; banlieue never creates or deletes it, and touches only
+      # what carries its ownership tags (ADR-0158 Decision 4).
+      resourceGroup: banlieue-vms
+      # Only for a VMImage with an azure `Url` source (ADR-0162): your existing
+      # Compute Gallery, never created or deleted by banlieue, and the separate
+      # publisher identity the publish Job federates to as
+      # system:serviceaccount:banlieue-imagebuild:banlieue-azure-publisher.
+      # imageGallery:
+      #   resourceGroup: banlieue-images
+      #   name: banlieue
+      # publisher:
+      #   clientId: 00000000-0000-0000-0000-000000000000
+  capabilities:
+    storageClasses:
+      # A managed-disk SKU (ADR-0160).
+      - name: ssd
+        target:
+          sku: Premium_LRS
+    networkClasses:
+      # The subnet a VM's NIC joins, by resource ID.
+      - name: lan
+        target:
+          subnetId: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-net/providers/Microsoft.Network/virtualNetworks/banlieue-vnet/subnets/vms
+    # Which instance size each VMClass runs as (ADR-0160 Decision 1). A
+    # VMClass with no entry is not schedulable on this Provider.
+    instanceSizes:
+      - vmClass: azure-small
+        size: Standard_D2s_v5
+---
+# `Template`: ref is the resource ID of an Azure Compute Gallery image version.
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-azure
+spec:
+  osFamily: linux
+  osDistribution: kairos
+  osVersion: "3"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: azure
+      kind: Template
+      ref: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/banlieue-images/providers/Microsoft.Compute/galleries/banlieue/images/kairos/versions/1.0.0
+      # Or let banlieue build and publish it (ADR-0162 Decisions 4 and 8), with
+      # imageGallery and publisher set on the Provider above:
+      # kind: Url
+      # ref: unused-for-url-sources
+      # importFrom: quay.io/kairos/ubuntu:24.04-core-amd64-generic-v4.4.0@sha256:<digest>
+      # checksum: sha256:<64 hex of the built raw disk>
+      # The row then names the published version, and the version is deleted
+      # with the VMImage once no machine boots it.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  # Not `small`: VMClass is cluster-scoped and 18-virtualmachine-libvirt.yaml
+  # already defines one by that name.
+  name: azure-small
+spec:
+  hardware:
+    # Standard_D2s_v5: 2 vCPUs, 8 GiB. The size, not these numbers, decides
+    # what Azure allocates; keep them in step so quota accounting is honest.
+    cpus: 2
+    memoryMiB: 8192
+    disks:
+      # The OS disk, created from the image at this size.
+      - name: os
+        sizeGiB: 30
+        storageClass: ssd
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: lan
+        ipam: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: az-01-cloud-config
+  namespace: banlieue-system
+data:
+  user-data: |
+    #cloud-config
+    hostname: az-01
+    users:
+      - name: kairos
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAA...replace-me admin@bar.foo.io
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: az-01
+  namespace: banlieue-system
+spec:
+  classRef:
+    name: azure-small
+  imageRef:
+    name: kairos-azure
+  placement:
+    providerSelector:
+      matchLabels:
+        env: cloud
+  userData:
+    configMapRef:
+      name: az-01-cloud-config
+  desiredPowerState: PoweredOn
+  migrationPolicy: never

@@ -2,7 +2,7 @@
 
 A **provider** is the unit of pluggability in banlieue. A provider is whatever
 turns a uniform `VirtualMachine` request into a real VM on a specific backend
-(Cloud Hypervisor, vSphere, libvirt, Proxmox VE, …).
+(Cloud Hypervisor, vSphere, libvirt, Proxmox VE, Azure, …).
 
 This page explains what a provider *is* on the wire, what it implements, and
 how it plugs in. For the reasoning behind the design, see
@@ -59,7 +59,7 @@ Notes:
 
 - `providerClassRef.name` references a `ProviderClass` CR, which carries the
   backend kind (`spec.backend`, drawn from a well-known set: `cloud-hypervisor`,
-  `vsphere`, `libvirt` and `proxmox`) plus install metadata (image,
+  `vsphere`, `libvirt`, `proxmox` and `azure`) plus install metadata (image,
   resources, RBAC) without changing this reference. See
   [ADR-0012](https://github.com/firestoned/banlieue/blob/main/docs/adr/0012-providerclass-crd-and-operator-role.md).
 - The user never sees the `connection:` / `capabilities:` blocks. They're owned
@@ -110,7 +110,7 @@ Notes:
 The authoritative type is in
 [`crates/banlieue-api/src/banlieue/provider.rs`](https://github.com/firestoned/banlieue/blob/main/crates/banlieue-api/src/banlieue/provider.rs).
 For a full deploy walkthrough see the
-[vSphere provider guide](../guides/vsphere-provider.md).
+[vSphere provider guide](../providers/vsphere.md).
 
 ### Cordoning a provider
 
@@ -173,8 +173,10 @@ A provider controller is a Kubernetes controller. Its responsibilities:
    ([ADR-0008](https://github.com/firestoned/banlieue/blob/main/docs/adr/0008-byoc-vsphere-http-client.md)),
    the first-party `banlieue-libvirt` RPC/XDR client for libvirt
    ([ADR-0011](https://github.com/firestoned/banlieue/blob/main/docs/adr/0011-libvirt-provider-own-client.md)),
-   and the first-party `banlieue-proxmox` REST client for Proxmox VE
-   ([ADR-0074](https://github.com/firestoned/banlieue/blob/main/docs/adr/0074-banlieue-proxmox-rest-client.md)). No third-party
+   the first-party `banlieue-proxmox` REST client for Proxmox VE
+   ([ADR-0074](https://github.com/firestoned/banlieue/blob/main/docs/adr/0074-banlieue-proxmox-rest-client.md)),
+   and the first-party `banlieue-azure` Azure Resource Manager client for Azure
+   ([ADR-0164](https://github.com/firestoned/banlieue/blob/main/docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md)). No third-party
    Go/Python client libraries are vendored — everything is native Rust.
 3. **Report status uniformly.** Patch `.status` on the infra CR with the CAPI
    v1beta2 condition vocabulary, regardless of how the backend natively
@@ -286,10 +288,10 @@ gives you:
 The contract between the controller and a provider is CRD-only, so a provider
 needs no RPC, proto or link-time dependency on the controller. The set of
 backends the controller can drive is **closed** today, though: the controller
-builds an infrastructure CR only for the four kinds it knows
+builds an infrastructure CR only for the five kinds it knows
 (`InfraKind` in `crates/banlieue-controller/src/reconciler/infra.rs`:
 `VSphereMachine`, `LibvirtMachine`, `CloudHypervisorMachine`,
-`ProxmoxMachine`). A `Provider` whose `ProviderClass` names any other class
+`ProxmoxMachine`, `AzureVirtualMachine`). A `Provider` whose `ProviderClass` names any other class
 schedules, and then reports `provider class '<name>' has no infrastructure
 builder in banlieue-controller` on the `VirtualMachine` rather than creating
 anything. A new backend is therefore a change to banlieue, not a separate
@@ -298,7 +300,7 @@ project. To add one:
 1. Define the infrastructure CRD(s) in `crates/banlieue-api/src/infrastructure/`,
    satisfying the
    [CAPI v1beta2 InfraMachine contract](https://cluster-api.sigs.k8s.io/developer/providers/contracts/).
-   The four existing kinds are the reference.
+   The five existing kinds are the reference.
 2. Build a controller against your CRD using `banlieue-provider-sdk`. Its
    leader election gives you the Lease that liveness reads (item 7 above);
    name it with `banlieue_provider_sdk::naming::workload_name`, and grant

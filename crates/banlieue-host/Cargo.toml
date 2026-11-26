@@ -27,10 +27,11 @@ banlieue-attestation-ca = { path = "../banlieue-attestation-ca" }
 
 async-trait.workspace = true
 clap.workspace = true
-# Downloads of the pinned VMM and firmware: HTTPS through rustls with the ring
-# provider, as banlieue-oci does. No native TLS library.
+# Downloads of the pinned VMM and firmware: HTTPS through rustls with
+# `banlieue-tls`'s aws-lc-rs provider (X25519MLKEM768 first, ADR-0170), as
+# banlieue-oci does. No OpenSSL.
 reqwest.workspace = true
-rustls.workspace = true
+banlieue-tls.workspace = true
 # Free space, effective uid, host name, and O_NOFOLLOW handles for every
 # ownership and mode change. Already built for the provider.
 # `param` for the clock tick rate `overhead` converts /proc counters with.

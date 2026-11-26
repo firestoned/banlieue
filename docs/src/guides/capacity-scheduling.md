@@ -277,7 +277,7 @@ The same scenarios apply. What differs:
   follows the guests' slice budget when one is set
   (`--guest-memory-max`). A small storage partition gates placement: if no
   VM fits on a host, check `df -h` of its storage class directory first. See
-  [Cloud Hypervisor Provider](cloud-hypervisor-host.md).
+  [Cloud Hypervisor Provider](../providers/cloud-hypervisor.md).
 - **libvirt.** One failure domain per host. `freeGiB` is the pool's
   `available`; compare with `virsh pool-info <pool>`, and free memory with
   `virsh nodememstats`. A pool on the same filesystem as another Provider's

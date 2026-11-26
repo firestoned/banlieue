@@ -70,8 +70,8 @@ daemon:
 - a warm pool refills a claimed `GuestReady` VM in about 100 to 120 s.
 
 Start with the
-**[Cloud Hypervisor Provider guide](https://firestoned.github.io/banlieue/guides/cloud-hypervisor-host/)**;
-the **[Provider Comparison](https://firestoned.github.io/banlieue/reference/provider-comparison/)**
+**[Cloud Hypervisor Provider guide](https://firestoned.github.io/banlieue/providers/cloud-hypervisor/)**;
+the **[Provider Comparison](https://firestoned.github.io/banlieue/providers/comparison/)**
 lines it up against vSphere, libvirt and Proxmox.
 
 ## Why banlieue?

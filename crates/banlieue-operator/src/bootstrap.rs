@@ -39,14 +39,14 @@ use banlieue_provider_sdk::ssa::server_side_apply;
 use clap::{Args, Subcommand};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    ConfigMap, Container, Namespace, PodSpec, PodTemplateSpec, ServiceAccount,
+    ConfigMap, Container, EnvVar, Namespace, PodSpec, PodTemplateSpec, ServiceAccount,
 };
 use k8s_openapi::api::rbac::v1::{ClusterRole, ClusterRoleBinding, PolicyRule, Role, RoleBinding};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta};
 use kube::Api;
 use std::collections::BTreeMap;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::naming::{APP_NAME, LABEL_COMPONENT, LABEL_MANAGED_BY, LABEL_NAME};
 use crate::pod::{
@@ -113,6 +113,10 @@ const PROVIDER_LIBVIRT_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-libvirt/rbac/clusterrole.yaml");
 const PROVIDER_PROXMOX_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-proxmox/rbac/clusterrole.yaml");
+/// The Azure provider (ADR-0164). Grants no Secret access: its only cloud
+/// credential is a projected ServiceAccount token (ADR-0159 Decision 1).
+const PROVIDER_AZURE_CLUSTER_ROLE: &str =
+    include_str!("../../../deploy/provider-azure/rbac/clusterrole.yaml");
 const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
 /// The opt-in shared-serving ClusterRole of the Cloud Hypervisor provider
@@ -341,6 +345,7 @@ impl InstallRole {
                 "vsphere" => "banlieue-provider-vsphere",
                 "libvirt" => "banlieue-provider-libvirt",
                 "proxmox" => "banlieue-provider-proxmox",
+                "azure" => "banlieue-provider-azure",
                 "cloud-hypervisor" => "banlieue-provider-cloud-hypervisor",
                 _ => "banlieue-provider",
             },
@@ -424,6 +429,7 @@ impl InstallRole {
                 "vsphere" => PROVIDER_VSPHERE_CLUSTER_ROLE,
                 "libvirt" => PROVIDER_LIBVIRT_CLUSTER_ROLE,
                 "proxmox" => PROVIDER_PROXMOX_CLUSTER_ROLE,
+                "azure" => PROVIDER_AZURE_CLUSTER_ROLE,
                 "cloud-hypervisor" => PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE,
                 other => anyhow::bail!("no embedded ClusterRole for backend {other:?}"),
             },
@@ -703,16 +709,12 @@ pub fn build_role_install(role: &InstallRole, opts: &InstallOptions) -> Result<I
             .then(|| build_imagebuild_namespace(DEFAULT_IMAGEBUILD_NAMESPACE)),
         // The identity import Jobs run as. It holds nothing on its own; each
         // Provider's operator-created RoleBinding grants it read access to
-        // exactly that Provider and its credentials (ADR-0016 §4).
+        // exactly that Provider and its credentials (ADR-0016 §4). Beside it,
+        // the Azure image publish Job's identity (ADR-0162 Decision 1): no
+        // RBAC and no API server token, only the projected token its
+        // federated credential trusts.
         service_accounts: if matches!(role, InstallRole::Imagebuilder) {
-            vec![ServiceAccount {
-                metadata: ObjectMeta {
-                    name: Some(crate::workload::IMPORT_SERVICE_ACCOUNT.to_string()),
-                    namespace: Some(DEFAULT_IMAGEBUILD_NAMESPACE.to_string()),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }]
+            build_job_service_accounts()
         } else {
             Vec::new()
         },
@@ -720,6 +722,31 @@ pub fn build_role_install(role: &InstallRole, opts: &InstallOptions) -> Result<I
     };
     add_role(&mut manifests, role, opts)?;
     Ok(manifests)
+}
+
+/// The ServiceAccount the Azure image publish Job runs as, in the build
+/// namespace (ADR-0162 Decision 1). Mirrors
+/// `deploy/imagebuilder/rbac/serviceaccount-azure-publisher.yaml`.
+pub const AZURE_PUBLISHER_SERVICE_ACCOUNT: &str = "banlieue-azure-publisher";
+
+/// The identities Jobs in the build namespace run as: the import identity
+/// (ADR-0016 §4) and the Azure publisher (ADR-0162 Decision 1). The publisher
+/// mounts no API server token: it never calls the API server.
+#[must_use]
+pub fn build_job_service_accounts() -> Vec<ServiceAccount> {
+    let account = |name: &str, automount: Option<bool>| ServiceAccount {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(DEFAULT_IMAGEBUILD_NAMESPACE.to_string()),
+            ..Default::default()
+        },
+        automount_service_account_token: automount,
+        ..Default::default()
+    };
+    vec![
+        account(crate::workload::IMPORT_SERVICE_ACCOUNT, None),
+        account(AZURE_PUBLISHER_SERVICE_ACCOUNT, Some(false)),
+    ]
 }
 
 /// Append one role's ServiceAccount, ClusterRole, binding, ConfigMap and
@@ -768,6 +795,14 @@ fn add_role(
         manifests
             .role_bindings
             .push(build_namespaced_role_binding(role, opts));
+        // A backend that runs Jobs holds its Job verbs in the build namespace
+        // only, the same grant the operator renders per Provider: the shared
+        // ClusterRole no longer carries `jobs`, which bound cluster-wide was
+        // pod create in every namespace.
+        if let Some((jobs_role, jobs_binding)) = build_provider_jobs_role(role, opts) {
+            manifests.roles.push(jobs_role);
+            manifests.role_bindings.push(jobs_binding);
+        }
     }
     // The imagebuilder merges VMImage.spec.cloudConfigs Secrets (ADR-0037),
     // which is Secret *content* — but only ever in the build namespace. That
@@ -883,6 +918,48 @@ pub fn build_namespaced_role(role: &InstallRole, opts: &InstallOptions) -> Role 
             rule("", "configmaps", &["get"]),
         ]),
     }
+}
+
+/// Suffix of a standalone provider's Job Role and RoleBinding.
+const PROVIDER_JOBS_ROLE_SUFFIX: &str = "-jobs";
+
+/// A standalone provider's Job Role and its RoleBinding, in the build
+/// namespace, for a backend that runs Jobs (vSphere, libvirt, Azure); `None`
+/// for any other role or backend.
+///
+/// The rules are [`crate::workload::job_rules`], the ones the operator renders
+/// for a Provider of the same backend, so the two install paths grant the same
+/// verbs. The binding sits in the build namespace and names the provider's
+/// ServiceAccount in the install namespace. `banlieue bootstrap imagebuilder`
+/// creates the build namespace; until it exists, `apply` warns and skips
+/// these two objects.
+#[must_use]
+pub fn build_provider_jobs_role(
+    role: &InstallRole,
+    opts: &InstallOptions,
+) -> Option<(Role, RoleBinding)> {
+    let InstallRole::Provider(backend) = role else {
+        return None;
+    };
+    let rules = crate::workload::job_rules(backend)?;
+    let name = format!("{}{PROVIDER_JOBS_ROLE_SUFFIX}", role.name());
+    let metadata = ObjectMeta {
+        name: Some(name.clone()),
+        namespace: Some(DEFAULT_IMAGEBUILD_NAMESPACE.to_string()),
+        labels: Some(labels(role)),
+        ..Default::default()
+    };
+    Some((
+        Role {
+            metadata: metadata.clone(),
+            rules: Some(rules),
+        },
+        RoleBinding {
+            metadata,
+            role_ref: role_ref("Role", name),
+            subjects: Some(vec![sa_subject(role.name(), &opts.namespace)]),
+        },
+    ))
 }
 
 /// Name of the operator's namespaced token Role and its binding.
@@ -1112,6 +1189,11 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
                     security_context: Some(pod_security_context()),
                     termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
                     containers: vec![build_container(role, opts)],
+                    // The projected Entra ID token, for a static Azure
+                    // provider only (ADR-0159 Decision 1), as the operator
+                    // mounts it for one it spawns.
+                    volumes: uses_azure_workload_identity(role)
+                        .then(|| vec![crate::workload::azure_token_volume()]),
                     ..Default::default()
                 }),
             },
@@ -1119,6 +1201,25 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
         },
         ..Default::default()
     }
+}
+
+/// Whether a role is a statically installed Azure provider, which
+/// authenticates with a projected ServiceAccount token (ADR-0159 Decision 1).
+fn uses_azure_workload_identity(role: &InstallRole) -> bool {
+    matches!(role, InstallRole::Provider(backend) if backend == crate::workload::AZURE_BACKEND)
+}
+
+/// A role's container environment: the downward API identity, plus the
+/// federated token file for a static Azure provider.
+fn role_env(role: &InstallRole) -> Vec<EnvVar> {
+    let mut env = downward_api_env(&[
+        ("POD_NAME", "metadata.name"),
+        ("POD_NAMESPACE", "metadata.namespace"),
+    ]);
+    if uses_azure_workload_identity(role) {
+        env.push(crate::workload::azure_token_env());
+    }
+    env
 }
 
 /// Build a role's container.
@@ -1150,10 +1251,9 @@ fn build_container(role: &InstallRole, opts: &InstallOptions) -> Container {
         image: Some(install_image(opts)),
         image_pull_policy: Some("IfNotPresent".to_string()),
         args: Some(args),
-        env: Some(downward_api_env(&[
-            ("POD_NAME", "metadata.name"),
-            ("POD_NAMESPACE", "metadata.namespace"),
-        ])),
+        env: Some(role_env(role)),
+        volume_mounts: uses_azure_workload_identity(role)
+            .then(|| vec![crate::workload::azure_token_mount()]),
         ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
             LIVENESS_PATH,
@@ -1223,29 +1323,18 @@ pub fn build_provider_class(backend: &str, opts: &InstallOptions) -> ProviderCla
 /// Extra per-instance Role rules a backend needs beyond the common set.
 ///
 /// This Role is namespaced to the Provider's own namespace (typically
-/// `banlieue-system`) — kept per-backend rather than granted to every
-/// provider, since the ability to create Jobs is the ability to run
-/// arbitrary pods with the provider's own ServiceAccount.
+/// `banlieue-system`).
 ///
-/// libvirt's import Jobs run guest-image transfer (ADR-0011) in the same
-/// namespace as the Provider, so this per-instance Role is how it reaches
-/// them. **vSphere's per-zone import Jobs (ADR-0020) live in a *different*
-/// namespace (`banlieue-imagebuild`, ADR-0016 isolation), so a namespaced
-/// Role here could never reach them regardless of what it grants** — its
-/// Jobs access comes entirely from the cluster-wide `ClusterRole`
-/// (`deploy/provider-vsphere/rbac/clusterrole.yaml`, `list`/`watch` added
-/// for the event-driven `VMImage` reconciler's `.watches()` on the Job).
-/// vSphere is therefore deliberately excluded here, not because it needs no
-/// Jobs access at all.
-///
-/// libvirt's verbs mirror `deploy/provider-libvirt/rbac/clusterrole.yaml`:
-/// reads are by the deterministic name from `import_job_name`, so no
-/// list/watch, and finished Jobs are reaped by `ttlSecondsAfterFinished`, so
-/// no delete.
+/// **No backend gets `jobs` here.** Every provider's Jobs (libvirt's import,
+/// ADR-0011; vSphere's per-zone import, ADR-0020; Azure's publish, ADR-0162)
+/// run in the build namespace (ADR-0016), which a Role here cannot reach. A
+/// `jobs` rule here once granted libvirt Job create in the Provider's own
+/// namespace, where the operator's ServiceAccount lives: a pod there could run
+/// as the operator. The Job verbs are rendered as a Role in the build
+/// namespace instead ([`crate::workload::job_rules`]).
 #[must_use]
 pub fn backend_additional_rules(backend: &str) -> Vec<PolicyRule> {
     match backend {
-        "libvirt" => vec![rule("batch", "jobs", &["get", "create", "patch"])],
         // Its machines, namespaced like the Role (ADR-0062): no create, no
         // delete — the controller owns their lifecycle.
         "cloud-hypervisor" => {
@@ -1397,12 +1486,20 @@ async fn apply(manifests: &InstallManifests) -> Result<()> {
     // starts without its permissions.
     for role in &manifests.roles {
         let api: Api<Role> = namespaced(&client, role.metadata.namespace.as_deref());
-        server_side_apply(&api, FIELD_MANAGER, role).await?;
+        tolerate_missing_build_namespace(
+            server_side_apply(&api, FIELD_MANAGER, role).await,
+            role.metadata.namespace.as_deref(),
+            manifests,
+        )?;
     }
 
     for binding in &manifests.role_bindings {
         let api: Api<RoleBinding> = namespaced(&client, binding.metadata.namespace.as_deref());
-        server_side_apply(&api, FIELD_MANAGER, binding).await?;
+        tolerate_missing_build_namespace(
+            server_side_apply(&api, FIELD_MANAGER, binding).await,
+            binding.metadata.namespace.as_deref(),
+            manifests,
+        )?;
     }
 
     for cm in &manifests.config_maps {
@@ -1424,6 +1521,34 @@ async fn apply(manifests: &InstallManifests) -> Result<()> {
 
     info!("bootstrap complete");
     Ok(())
+}
+
+/// Pass an apply result through, except a 404 for an object in the build
+/// namespace when this install does not create that namespace: a standalone
+/// provider's Job Role ([`build_provider_jobs_role`]) installed before
+/// `banlieue bootstrap imagebuilder`. Warned and skipped, so the provider
+/// still installs; re-running the install after the imagebuilder's applies it.
+fn tolerate_missing_build_namespace<K>(
+    result: banlieue_provider_sdk::Result<K>,
+    namespace: Option<&str>,
+    manifests: &InstallManifests,
+) -> Result<()> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(banlieue_provider_sdk::Error::Kube(e))
+            if banlieue_provider_sdk::ssa::is_not_found(&e)
+                && namespace == Some(DEFAULT_IMAGEBUILD_NAMESPACE)
+                && manifests.imagebuild_namespace.is_none() =>
+        {
+            warn!(
+                namespace = DEFAULT_IMAGEBUILD_NAMESPACE,
+                "build namespace not found: install the imagebuilder, then re-run this \
+                 install to grant the provider its Job Role"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Namespaced API handle, defaulting to [`DEFAULT_NAMESPACE`] when an object

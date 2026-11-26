@@ -145,22 +145,18 @@ impl VimClientFactory {
     }
 }
 
-/// Install the rustls **ring** crypto provider as the process default.
+/// Install banlieue's rustls crypto provider as the process default.
 ///
-/// reqwest 0.13 is built with `rustls-no-provider` (ADR-0009): it resolves the
-/// TLS provider via `CryptoProvider::get_default()` and **panics with
-/// `"No provider set"`** on first TLS use if none was installed. We install ring
-/// — the same provider kube/hyper-rustls already use — so the whole process
-/// shares one crypto stack (no aws-lc-rs, no OpenSSL).
+/// reqwest 0.13 is built with `rustls-no-provider`: it resolves the TLS
+/// provider via `CryptoProvider::get_default()` and **panics with
+/// `"No provider set"`** on first TLS use if none was installed. The provider
+/// is `banlieue-tls`'s aws-lc-rs build with X25519MLKEM768 offered first
+/// (ADR-0170), the one kube/hyper-rustls use too, so the whole process shares
+/// one crypto stack (no OpenSSL, no `ring`).
 ///
-/// Idempotent and safe to call from multiple roles: `install_default` returns
-/// `Err` if a provider is already set, which we deliberately ignore. Call once
-/// at startup, before any TLS (kube client or vCenter) is constructed.
-pub fn install_default_crypto_provider() {
-    // Ignore the error: a second install (or one already done by another role)
-    // is a no-op for our purposes — we only need *a* ring provider to be active.
-    let _ = rustls::crypto::ring::default_provider().install_default();
-}
+/// Idempotent and safe to call from multiple roles. Call once at startup,
+/// before any TLS (kube client or vCenter) is constructed.
+pub use banlieue_tls::install_default_crypto_provider;
 
 /// Parse a PEM bundle into reqwest root certificates.
 ///

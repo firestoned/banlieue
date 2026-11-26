@@ -1,7 +1,8 @@
 # Copyright (c) 2026 Erick Bourgeois, banlieue
 # SPDX-License-Identifier: Apache-2.0
 #
-# Provider connection hardening (security review 2026-07-31 CHAIN-001). A Provider's spec.connection.endpoint is spliced into URLs by
+# Provider connection hardening (security review 2026-07-31 CHAIN-001, and
+# ADR-0159 for the azure class). A Provider's spec.connection.endpoint is spliced into URLs by
 # the provider's backend client, and the credentials named by credentialsRef
 # are POSTed there every reconcile. Without admission checks, anyone who may
 # create Providers can point a Provider at an attacker host — a confused-deputy
@@ -26,28 +27,105 @@ spec:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["providers"]
+  # Used by the azure token-destination rules below.
+  variables:
+    - name: isAzure
+      expression: "object.spec.providerClassRef.name == 'azure'"
+    - name: endpoint
+      expression: "object.spec.connection.endpoint"
+    # '' when unset: the provider then uses the endpoint's own cloud's
+    # login host.
+    - name: authority
+      expression: >-
+        has(object.spec.connection.azure)
+          && has(object.spec.connection.azure.authorityHost)
+          ? object.spec.connection.azure.authorityHost
+          : ''
   validations:
     - expression: "isURL(object.spec.connection.endpoint)"
       messageExpression: >-
         'spec.connection.endpoint must be an absolute URL (got '
         + object.spec.connection.endpoint + ').'
       reason: Invalid
-    # vsphere / proxmox speak HTTPS to the backend; libvirt uses its own
-    # schemes (qemu+ssh://, qemu+tls://, ...) and is governed by the URL and
-    # userinfo/fragment checks instead.
+    # vsphere / proxmox / azure speak HTTPS to the backend (azure: the ARM
+    # endpoint); libvirt uses its own schemes (qemu+ssh://, qemu+tls://, ...)
+    # and is governed by the URL and userinfo/fragment checks instead.
     - expression: >-
-        !(object.spec.providerClassRef.name in ['vsphere', 'proxmox'])
+        !(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure'])
         || object.spec.connection.endpoint.startsWith('https://')
-      message: spec.connection.endpoint must use https:// for vsphere/proxmox providers.
+      message: spec.connection.endpoint must use https:// for vsphere/proxmox/azure providers.
       reason: Invalid
     # credentialsRef became optional in the schema for ADR-0060 Decision 4;
-    # every backend that authenticates to a remote endpoint still needs one,
-    # and cloud-hypervisor — which runs on the host and must read no Secret —
-    # must not have one.
+    # every backend that authenticates to a remote endpoint with a stored
+    # secret still needs one. cloud-hypervisor (runs on the host) and azure
+    # (workload identity federation, ADR-0159 Decision 1) must read no Secret
+    # and are handled below.
     - expression: >-
-        object.spec.providerClassRef.name == 'cloud-hypervisor'
+        object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure']
         || has(object.spec.connection.credentialsRef)
       message: spec.connection.credentialsRef is required for this provider class.
+      reason: Invalid
+    # azure authenticates with the provider pod's projected ServiceAccount
+    # token, exchanged with Entra ID (ADR-0159 Decision 1): its identity is
+    # spec.connection.azure, and no Secret is ever read. A static client-secret
+    # fallback (ADR-0159 Decision 4) is out of scope for v1, so credentialsRef
+    # is refused outright rather than accepted and ignored.
+    - expression: >-
+        object.spec.providerClassRef.name != 'azure'
+        || has(object.spec.connection.azure)
+      message: >-
+        spec.connection.azure (tenantId, clientId, subscriptionId, location,
+        resourceGroup) is required for azure providers (ADR-0159).
+      reason: Invalid
+    - expression: >-
+        object.spec.providerClassRef.name != 'azure'
+        || !has(object.spec.connection.credentialsRef)
+      message: >-
+        spec.connection.credentialsRef must not be set for azure: the provider
+        authenticates by workload identity federation and reads no Secret
+        (ADR-0159 Decision 1).
+      reason: Invalid
+    - expression: >-
+        object.spec.providerClassRef.name == 'azure'
+        || !has(object.spec.connection.azure)
+      message: spec.connection.azure is only valid for azure providers.
+      reason: Invalid
+    # azure token destinations (ADR-0159). spec.connection.endpoint receives
+    # the ARM bearer token and spec.connection.azure.authorityHost receives
+    # the projected ServiceAccount token, which Entra ID exchanges for the
+    # managed identity's token. azure has no credentialsRef, so the
+    # Secret-read check in provider-credentialsref-authorization.yaml never
+    # fires for it: both hosts are pinned to the known Azure clouds instead,
+    # as exact strings (with or without one trailing slash), and the
+    # authority must be the endpoint's own cloud's. The provider binary
+    # enforces the same table (crates/banlieue-provider-azure/src/cloud.rs).
+    - expression: >-
+        !variables.isAzure
+        || variables.endpoint in [
+             'https://management.azure.com', 'https://management.azure.com/',
+             'https://management.usgovcloudapi.net', 'https://management.usgovcloudapi.net/',
+             'https://management.chinacloudapi.cn', 'https://management.chinacloudapi.cn/']
+      messageExpression: >-
+        'spec.connection.endpoint must be a known Azure Resource Manager endpoint
+        (https://management.azure.com, https://management.usgovcloudapi.net or
+        https://management.chinacloudapi.cn) for azure providers (got '
+        + object.spec.connection.endpoint + ').'
+      reason: Invalid
+    - expression: >-
+        !variables.isAzure
+        || variables.authority == ''
+        || (variables.endpoint in ['https://management.azure.com', 'https://management.azure.com/']
+            && variables.authority in ['https://login.microsoftonline.com', 'https://login.microsoftonline.com/'])
+        || (variables.endpoint in ['https://management.usgovcloudapi.net', 'https://management.usgovcloudapi.net/']
+            && variables.authority in ['https://login.microsoftonline.us', 'https://login.microsoftonline.us/'])
+        || (variables.endpoint in ['https://management.chinacloudapi.cn', 'https://management.chinacloudapi.cn/']
+            && variables.authority in ['https://login.chinacloudapi.cn', 'https://login.chinacloudapi.cn/'])
+      messageExpression: >-
+        'spec.connection.azure.authorityHost must be unset or the login host of
+        the same cloud as spec.connection.endpoint (management.azure.com: https://login.microsoftonline.com,
+        management.usgovcloudapi.net: https://login.microsoftonline.us,
+        management.chinacloudapi.cn: https://login.chinacloudapi.cn) (got '
+        + variables.authority + ').'
       reason: Invalid
     - expression: >-
         object.spec.providerClassRef.name != 'cloud-hypervisor'

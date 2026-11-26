@@ -38,11 +38,22 @@ pub struct Context {
     /// Image for pre-lay Jobs (ADR-0113, `--prelay-image`). `None`: a
     /// `VMImage` asking for `spec.prelay` is refused.
     pub prelay_image: Option<String>,
+
+    /// Image the digest Job runs (ADR-0010, amendment 2026-11-26): the
+    /// banlieue image, the same one `--push-image` names for the push Job.
+    pub helper_image: String,
+
+    /// Digest-pinned OCI image carrying `banlieue-azure-guest`, unpacked
+    /// into every build of a `VMImage` with an `azure` source through
+    /// `spec.artifacts.bundles` (ADR-0171, `--azure-guest-image`). `None`:
+    /// such a build is refused (`AzureGuestImageUnset`).
+    pub azure_guest_image: Option<String>,
 }
 
 impl Context {
     /// Construct a new [`Context`].
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         client: Client,
         build_namespace: String,
@@ -50,6 +61,8 @@ impl Context {
         importer_image: ImporterImage,
         registry: Option<RegistryConfig>,
         prelay_image: Option<String>,
+        helper_image: String,
+        azure_guest_image: Option<String>,
     ) -> Self {
         Self {
             client,
@@ -58,6 +71,8 @@ impl Context {
             importer_image,
             registry,
             prelay_image,
+            helper_image,
+            azure_guest_image,
         }
     }
 }

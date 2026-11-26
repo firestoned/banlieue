@@ -30,13 +30,16 @@ pub mod tls;
 
 pub use auth::Credentials;
 
-/// Install rustls' `ring` provider as the process default.
+/// Install banlieue's process crypto provider (aws-lc-rs, X25519MLKEM768
+/// offered first; ADR-0170).
 ///
 /// The workspace's reqwest links rustls without a provider
 /// (`rustls-no-provider`) and panics on first TLS use if none is set.
-/// Idempotent: a provider already installed is kept.
+/// Idempotent: a provider already installed is kept. A thin name for
+/// [`banlieue_tls::install_default_crypto_provider`], kept for this crate's
+/// callers.
 pub fn install_crypto_provider() {
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    let _ = banlieue_tls::install_default_crypto_provider();
 }
 pub use client::{Client, Pulled, Pushed};
 pub use error::{Error, Result};

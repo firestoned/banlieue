@@ -34,6 +34,34 @@ pub enum OperationKind {
     Location,
 }
 
+/// The name [`OperationKind::AsyncOperation`] is stored under.
+pub const KIND_ASYNC_OPERATION: &str = "AsyncOperation";
+/// The name [`OperationKind::Location`] is stored under.
+pub const KIND_LOCATION: &str = "Location";
+
+impl OperationKind {
+    /// The stable name a caller stores the kind under (a CR's status), so a
+    /// restarted provider polls a stored handle the same way.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AsyncOperation => KIND_ASYNC_OPERATION,
+            Self::Location => KIND_LOCATION,
+        }
+    }
+
+    /// The kind stored as `name` by [`OperationKind::as_str`]; `None` for
+    /// anything else, since a stored handle is user-editable.
+    #[must_use]
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            KIND_ASYNC_OPERATION => Some(Self::AsyncOperation),
+            KIND_LOCATION => Some(Self::Location),
+            _ => None,
+        }
+    }
+}
+
 /// An operation to observe later.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationHandle {

@@ -64,6 +64,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_vm_reads_back_with_the_tags_it_was_created_with() {
+        let f = fake();
+        assert!(f.vm_tags(RG, &vm_name(UID)).await.expect("read").is_none());
+        with_nic(&f).await;
+        f.put_vm(RG, &vm_name(UID), &vm("1", "Standard_D2s_v7", IMAGE_NVME))
+            .await
+            .expect("created");
+        assert_eq!(
+            f.vm_tags(RG, &vm_name(UID)).await.expect("read"),
+            Some(tags())
+        );
+
+        let foreign = BTreeMap::from([("banlieue-owner-uid".to_string(), "other".to_string())]);
+        f.set_vm_tags(RG, &vm_name(UID), foreign.clone());
+        assert_eq!(
+            f.vm_tags(RG, &vm_name(UID)).await.expect("read"),
+            Some(foreign)
+        );
+    }
+
+    #[tokio::test]
     async fn a_vm_is_created_provisions_and_reports_ready() {
         let f = fake();
         with_nic(&f).await;
@@ -324,5 +345,337 @@ mod tests {
         let f = fake();
         let skus = f.resource_skus("eastus2").await.expect("skus");
         assert!(skus.iter().any(|s| s.name == "Standard_D2s_v7"));
+    }
+}
+
+/// The gallery side of the fake (ADR-0162): it refuses what ARM refuses.
+#[cfg(test)]
+mod publish_tests {
+    use std::collections::BTreeMap;
+
+    use super::super::*;
+    use crate::api::{ArmApi, DiskAccess, PublishApi};
+    use crate::error::Error;
+    use crate::gallery::{
+        DISK_STATE_ACTIVE_UPLOAD, DISK_STATE_UNATTACHED, GalleryImageVersionRequest,
+        ImageDefinitionRequest, PROVISIONING_CREATING, PROVISIONING_SUCCEEDED, SnapshotRequest,
+        UploadDiskRequest,
+    };
+    use crate::tags::OwnershipTags;
+    use crate::upload::PageWriterFactory;
+
+    const RG: &str = "rg";
+    const GAL: &str = "gal";
+    const DEF: &str = "kairos-tl";
+    const VER: &str = "1.2.3";
+    const DISK: &str = "up-disk";
+    const SNAP: &str = "up-snap";
+    /// 2 MiB virtual size plus the footer.
+    const SIZE: u64 = 2 * 1024 * 1024 + 512;
+
+    fn tags() -> BTreeMap<String, String> {
+        OwnershipTags::new("uid", "VMImage", "ns", "p").to_map()
+    }
+
+    fn fake() -> FakeArm {
+        FakeArm::from_fixtures("eastus2").expect("fixtures load")
+    }
+
+    fn definition(tl: bool) -> ImageDefinitionRequest {
+        ImageDefinitionRequest {
+            location: "eastus2".into(),
+            offer: "kairos".into(),
+            trusted_launch: tl,
+            tags: tags(),
+        }
+    }
+
+    fn disk(size: u64) -> UploadDiskRequest {
+        UploadDiskRequest {
+            location: "eastus2".into(),
+            upload_size_bytes: size,
+            tags: tags(),
+        }
+    }
+
+    async fn disk_id(f: &FakeArm) -> String {
+        f.get_disk(RG, DISK).await.unwrap().unwrap().id
+    }
+
+    fn snapshot(source: String) -> SnapshotRequest {
+        SnapshotRequest {
+            location: "eastus2".into(),
+            source_disk_id: source,
+            tags: tags(),
+        }
+    }
+
+    fn version(snapshot_id: String) -> GalleryImageVersionRequest {
+        GalleryImageVersionRequest {
+            location: "eastus2".into(),
+            snapshot_id,
+            end_of_life: None,
+            tags: tags(),
+        }
+    }
+
+    #[tokio::test]
+    async fn upload_size_must_be_pages_and_virtual_size_whole_mib() {
+        let f = fake();
+        assert!(f.put_upload_disk(RG, DISK, &disk(SIZE + 1)).await.is_err());
+        assert!(
+            f.put_upload_disk(RG, DISK, &disk(SIZE + 512))
+                .await
+                .is_err()
+        );
+        f.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        let d = f.get_disk(RG, DISK).await.unwrap().unwrap();
+        assert_eq!(d.disk_state, "ReadyToUpload");
+        assert_eq!(d.upload_size_bytes, Some(SIZE));
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_of_a_disk_still_uploading_is_refused() {
+        let f = fake();
+        f.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        let id = disk_id(&f).await;
+        assert!(
+            f.put_snapshot(RG, SNAP, &snapshot(id.clone()))
+                .await
+                .is_err()
+        );
+        let DiskAccess::Granted(_) = f.grant_disk_write_access(RG, DISK, 3600).await.unwrap()
+        else {
+            panic!("the fake grants synchronously");
+        };
+        assert!(
+            f.put_snapshot(RG, SNAP, &snapshot(id.clone()))
+                .await
+                .is_err()
+        );
+        f.revoke_disk_access(RG, DISK).await.unwrap();
+        assert_eq!(
+            f.get_disk(RG, DISK).await.unwrap().unwrap().disk_state,
+            DISK_STATE_UNATTACHED
+        );
+        f.put_snapshot(RG, SNAP, &snapshot(id)).await.unwrap();
+        assert!(f.has_snapshot(RG, SNAP));
+    }
+
+    #[tokio::test]
+    async fn write_access_only_while_awaiting_upload() {
+        let f = fake();
+        f.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        f.grant_disk_write_access(RG, DISK, 3600).await.unwrap();
+        // Granting again while active is allowed (a restarted Job).
+        f.grant_disk_write_access(RG, DISK, 3600).await.unwrap();
+        f.revoke_disk_access(RG, DISK).await.unwrap();
+        assert!(f.grant_disk_write_access(RG, DISK, 3600).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_sas_opens_the_disk_blob_only_while_active_and_only_on_the_upload_host() {
+        let f = fake();
+        f.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        let DiskAccess::Granted(sas) = f.grant_disk_write_access(RG, DISK, 3600).await.unwrap()
+        else {
+            panic!("granted");
+        };
+        let writer = f.writer(&sas).expect("valid SAS");
+        writer.put_page(0, vec![1; 512]).await.unwrap();
+        assert_eq!(f.upload_blob(RG, DISK).unwrap().writes(), 1);
+        f.revoke_disk_access(RG, DISK).await.unwrap();
+        assert!(f.writer(&sas).is_err(), "a revoked SAS writes nothing");
+
+        let g = fake();
+        g.set_upload_host("md-x.blob.core.evil.example");
+        g.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        let DiskAccess::Granted(sas) = g.grant_disk_write_access(RG, DISK, 3600).await.unwrap()
+        else {
+            panic!("granted");
+        };
+        assert!(matches!(
+            g.writer(&sas).err(),
+            Some(Error::UntrustedUploadHost(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_version_name_must_be_int_int_int() {
+        let f = fake();
+        for bad in ["1.2", "v1.2.3", "1.2.3.4"] {
+            assert!(
+                f.get_gallery_image_version(RG, GAL, DEF, bad)
+                    .await
+                    .is_err()
+            );
+            assert!(
+                f.put_gallery_image_version(RG, GAL, DEF, bad, &version("s".into()))
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_source_without_nvme_is_refused_by_an_nvme_definition() {
+        let f = fake();
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        f.insert_snapshot(RG, "scsi-only", None, tags());
+        let id = f.get_snapshot(RG, "scsi-only").await.unwrap().unwrap().id;
+        let err = f
+            .put_gallery_image_version(RG, GAL, DEF, VER, &version(id))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("diskControllerType"), "{err}");
+
+        f.insert_snapshot(RG, "both", Some("SCSI, NVMe"), tags());
+        let id = f.get_snapshot(RG, "both").await.unwrap().unwrap().id;
+        f.put_gallery_image_version(RG, GAL, DEF, VER, &version(id))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_version_needs_its_definition() {
+        let f = fake();
+        f.insert_snapshot(RG, "both", Some("SCSI, NVMe"), tags());
+        let id = f.get_snapshot(RG, "both").await.unwrap().unwrap().id;
+        let err = f
+            .put_gallery_image_version(RG, GAL, DEF, VER, &version(id))
+            .await
+            .unwrap_err();
+        assert!(err.is_not_found());
+    }
+
+    #[tokio::test]
+    async fn a_tag_with_a_slash_is_refused() {
+        let f = fake();
+        let mut bad = definition(false);
+        bad.tags.insert("banlieue.io/owner-uid".into(), "x".into());
+        assert!(matches!(
+            f.put_gallery_image_definition(RG, GAL, DEF, &bad).await,
+            Err(Error::InvalidTag(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn definition_features_are_immutable() {
+        let f = fake();
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        assert!(
+            f.put_gallery_image_definition(RG, GAL, DEF, &definition(false))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_definition_with_versions_cannot_be_deleted() {
+        let f = fake();
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        f.insert_gallery_image_version(RG, GAL, DEF, VER, PROVISIONING_SUCCEEDED, tags());
+        assert!(
+            f.delete_gallery_image_definition(RG, GAL, DEF)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            f.delete_gallery_image_version(RG, GAL, DEF, VER)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            f.list_gallery_image_versions(RG, GAL, DEF)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        f.delete_gallery_image_definition(RG, GAL, DEF)
+            .await
+            .unwrap();
+        assert!(!f.has_gallery_image_definition(RG, GAL, DEF));
+    }
+
+    #[tokio::test]
+    async fn a_new_version_is_creating_until_held_reads_pass() {
+        let f = fake();
+        f.hold_versions_creating(2);
+        f.put_gallery_image_definition(RG, GAL, DEF, &definition(true))
+            .await
+            .unwrap();
+        f.insert_snapshot(RG, "both", Some("SCSI, NVMe"), tags());
+        let id = f.get_snapshot(RG, "both").await.unwrap().unwrap().id;
+        f.put_gallery_image_version(RG, GAL, DEF, VER, &version(id))
+            .await
+            .unwrap();
+        let state = |v: Option<crate::gallery::GalleryImageVersion>| v.unwrap().provisioning_state;
+        assert_eq!(
+            state(
+                f.get_gallery_image_version(RG, GAL, DEF, VER)
+                    .await
+                    .unwrap()
+            ),
+            PROVISIONING_CREATING
+        );
+        assert_eq!(
+            state(
+                f.get_gallery_image_version(RG, GAL, DEF, VER)
+                    .await
+                    .unwrap()
+            ),
+            PROVISIONING_CREATING
+        );
+        assert_eq!(
+            state(
+                f.get_gallery_image_version(RG, GAL, DEF, VER)
+                    .await
+                    .unwrap()
+            ),
+            PROVISIONING_SUCCEEDED
+        );
+    }
+
+    #[tokio::test]
+    async fn absent_things_read_as_none_and_delete_as_success() {
+        let f = fake();
+        assert!(
+            f.get_gallery_image_version(RG, GAL, DEF, VER)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(f.get_disk(RG, DISK).await.unwrap().is_none());
+        assert!(f.get_snapshot(RG, SNAP).await.unwrap().is_none());
+        assert_eq!(
+            f.delete_gallery_image_version(RG, GAL, DEF, VER)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(f.delete_snapshot(RG, SNAP).await.unwrap(), None);
+        assert_eq!(f.delete_disk(RG, DISK).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_stuck_upload_can_be_forced_back_to_active() {
+        let f = fake();
+        f.put_upload_disk(RG, DISK, &disk(SIZE)).await.unwrap();
+        f.set_disk_state(RG, DISK, DISK_STATE_ACTIVE_UPLOAD);
+        assert_eq!(
+            f.get_disk(RG, DISK).await.unwrap().unwrap().disk_state,
+            DISK_STATE_ACTIVE_UPLOAD
+        );
+        assert!(f.publish_calls() > 0);
     }
 }

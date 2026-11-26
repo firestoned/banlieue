@@ -14,6 +14,7 @@
 //! banlieue provider vsphere [flags]      -> banlieue_provider_vsphere::run
 //! banlieue provider libvirt [flags]      -> banlieue_provider_libvirt::run
 //! banlieue provider proxmox [flags]      -> banlieue_provider_proxmox::run
+//! banlieue provider azure [flags]        -> banlieue_provider_azure::run
 //! banlieue provider cloud-hypervisor     -> banlieue_provider_cloud_hypervisor::run
 //! banlieue imagebuilder [flags]          -> banlieue_imagebuilder::run
 //! banlieue bootstrap <target> [flags]    -> banlieue_operator::bootstrap::run
@@ -119,6 +120,8 @@ pub const COMPILED_BACKENDS: &[&str] = &[
     // `banlieue host cloud-hypervisor install` (ADR-0060, ADR-0067).
     #[cfg(feature = "cloud-hypervisor")]
     "cloud-hypervisor",
+    #[cfg(feature = "azure")]
+    "azure",
 ];
 
 /// `banlieue provider <backend>` — selects which backend provider to run.
@@ -151,6 +154,10 @@ pub enum ProviderBackend {
     /// Cloud Hypervisor provider. Runs on the KVM host itself (ADR-0060).
     #[cfg(feature = "cloud-hypervisor")]
     CloudHypervisor(banlieue_provider_cloud_hypervisor::Cli),
+
+    /// Microsoft Azure provider (ADR-0164).
+    #[cfg(feature = "azure")]
+    Azure(banlieue_provider_azure::Cli),
 }
 
 /// Dispatch a parsed [`Cli`] to the selected role's `run` entry point.
@@ -199,6 +206,8 @@ async fn dispatch_provider(backend: ProviderBackend) -> anyhow::Result<()> {
         ProviderBackend::CloudHypervisor(args) => {
             banlieue_provider_cloud_hypervisor::run(args).await
         }
+        #[cfg(feature = "azure")]
+        ProviderBackend::Azure(args) => banlieue_provider_azure::run(args).await,
     }
 }
 

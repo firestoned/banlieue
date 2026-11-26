@@ -20,7 +20,9 @@ use banlieue_api::banlieue::{
 };
 use banlieue_provider_sdk::finalizer::{ensure_finalizer, remove_finalizer};
 use banlieue_provider_sdk::reconciler::{requeue_default, requeue_on_error};
-use banlieue_provider_sdk::ssa::{apply_status, delete_ignoring_404, server_side_apply};
+use banlieue_provider_sdk::ssa::{
+    apply_status, delete_ignoring_404, is_not_found, server_side_apply,
+};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::coordination::v1::Lease;
 use k8s_openapi::api::core::v1::ServiceAccount;
@@ -38,8 +40,8 @@ use crate::events;
 use crate::heartbeat::{self, Transition};
 use crate::naming::{cluster_scoped_name, owned_by_selector, workload_name};
 use crate::workload::{
-    WorkloadInputs, build_workload, owner_reference, shared_cluster_role_binding_name,
-    wants_shared_cluster_role,
+    WorkloadInputs, WorkloadSet, build_workload, job_rules, jobs_role_name, owner_reference,
+    shared_cluster_role_binding_name, wants_shared_cluster_role,
 };
 
 /// Finalizer held on every `Provider` this operator manages.
@@ -315,6 +317,11 @@ async fn prune_orphans(
             workload_name(&class.name_any(), &name)
         ));
     }
+    // The Job Role and RoleBinding in the build namespace, for a Managed
+    // backend that runs Jobs; a class change to one that runs none prunes them.
+    if !external && job_rules(&class.spec.backend).is_some() {
+        keep_rbac.push(jobs_role_name(&class.name_any(), provider_namespace, &name));
+    }
     let mut keep_cluster_scoped = vec![cluster_scoped_name(
         &class.name_any(),
         provider_namespace,
@@ -470,6 +477,9 @@ async fn apply_workload(
     if let Some(import_role_binding) = &set.import_role_binding {
         server_side_apply(&role_bindings, FIELD_MANAGER, import_role_binding).await?;
     }
+    // The provider's Job access, a Role in the build namespace (never the
+    // shared ClusterRole, where Job create would reach every namespace).
+    apply_jobs_rbac(&set, ctx).await?;
     server_side_apply(
         &cluster_role_bindings,
         FIELD_MANAGER,
@@ -491,6 +501,39 @@ async fn apply_workload(
         "workload applied"
     );
     Ok(())
+}
+
+/// Server-side apply the provider's Job Role and RoleBinding into the build
+/// namespace, when its backend runs Jobs.
+///
+/// A missing build namespace is not an error: it exists once the imagebuilder
+/// is installed (ADR-0016), and until then the provider has no artifact to
+/// import or publish, so nothing to do with the grant. The reconcile carries
+/// on with a warning, and a later one applies the grant.
+async fn apply_jobs_rbac(set: &WorkloadSet, ctx: &Context) -> Result<()> {
+    let (Some(role), Some(binding)) = (&set.jobs_role, &set.jobs_role_binding) else {
+        return Ok(());
+    };
+    let roles: Api<Role> = Api::namespaced(ctx.client.clone(), &ctx.imagebuild_namespace);
+    let bindings: Api<RoleBinding> = Api::namespaced(ctx.client.clone(), &ctx.imagebuild_namespace);
+    let applied = match server_side_apply(&roles, FIELD_MANAGER, role).await {
+        Ok(_) => server_side_apply(&bindings, FIELD_MANAGER, binding)
+            .await
+            .map(|_| ()),
+        Err(e) => Err(e),
+    };
+    match applied {
+        Ok(()) => Ok(()),
+        Err(banlieue_provider_sdk::Error::Kube(e)) if is_not_found(&e) => {
+            warn!(
+                namespace = %ctx.imagebuild_namespace,
+                role = %role.name_any(),
+                "build namespace not found; the provider's Job Role waits for it"
+            );
+            Ok(())
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Mirror the workload's readiness and the provider's heartbeat into

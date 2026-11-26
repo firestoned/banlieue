@@ -65,8 +65,11 @@ make kind-deploy-provider-vsphere
 ```
 
 !!! note "Cross-compiling on macOS"
-    The binary uses **rustls** (no OpenSSL), so it cross-compiles with a plain
-    gcc cross-toolchain — no `cross`, no sysroot, no libssl. On Apple Silicon:
+    The binary uses **rustls** with the aws-lc-rs crypto provider (no OpenSSL;
+    ADR-0170), so it cross-compiles with a plain gcc cross-toolchain: no
+    `cross`, no sysroot, no libssl. `aws-lc-sys` compiles AWS-LC from C with
+    the same cross `CC` the Makefile passes (its `cc` builder: no `cmake` and
+    no NASM for Linux x86_64 or aarch64). On Apple Silicon:
     `brew tap messense/macos-cross-toolchains && brew install aarch64-unknown-linux-gnu`.
     The distroless / Chainguard runtime images are plain single-stage COPYs (no
     OpenSSL to ship).

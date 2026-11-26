@@ -302,7 +302,7 @@ BANLIEUE_ENV_FILE=~/.config/banlieue/hosts/prod.env \
 Creates the VM folder, and a resource pool under each cluster if
 `VSPHERE_CREATE_POOL` is set. It does **not** build VM templates — see
 [Building a Kairos Hadron VM Template](building-kairos-hadron-template.md) or
-[Building an Alpine VM Template](alpine-vsphere-template.md).
+[Building an Alpine VM Template](../providers/alpine-vsphere-template.md).
 
 ### 4. Verify before you clone
 

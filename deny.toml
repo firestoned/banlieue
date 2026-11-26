@@ -66,24 +66,20 @@ wildcards = "allow"
 allow-wildcard-paths = true
 
 skip = [
-    # getrandom 0.2 (pulled in via ring → rustls → hyper-rustls → kube-client)
-    # vs getrandom 0.3 (pulled in via ahash → kube-runtime).
-    # Both paths originate inside `kube 3.1.0`; we cannot unify until either
-    # `ring` bumps to getrandom 0.3 or `ahash` migrates back. Revisit on the
-    # next `kube` release.
-    { crate = "getrandom@0.2" },
-
     # hashbrown 0.16 (transitive via tracing-subscriber/foldhash-using crates)
-    # vs hashbrown 0.17 (newer chain). Same transitive-only situation.
+    # vs hashbrown 0.17 (newer chain). Transitive only.
     { crate = "hashbrown@0.16" },
-
-    # windows-sys 0.52 vs 0.61 — common in async/IO crates where some
-    # dependencies pin older windows-sys while newer ones moved to 0.6x.
-    # No security or correctness impact; not on a hot path.
-    { crate = "windows-sys@0.52" },
 ]
 
 skip-tree = []
+
+# Banned crates. `ring` has no ML-KEM, so it cannot offer post-quantum key
+# exchange; banlieue uses only rustls' aws-lc-rs provider with X25519MLKEM768
+# first (ADR-0170). The ban keeps a dependency's default features from
+# quietly bringing it back.
+deny = [
+    { crate = "ring", reason = "no post-quantum key exchange (ML-KEM); use aws-lc-rs (ADR-0170)" },
+]
 
 # ─── Sources (where crates may be fetched from) ─────────────────────────────
 # Lock the toolchain to crates.io. No git deps, no alternate registries.

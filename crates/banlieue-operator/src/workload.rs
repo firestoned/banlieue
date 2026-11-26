@@ -25,6 +25,11 @@
 //!   covers cluster-scoped and cross-namespace resources (`VMImage` above all)
 //!   that no Role can reach.
 //!
+//! A provider that runs Jobs (vSphere, libvirt, Azure) gets a third grant: a
+//! Role in the build namespace holding exactly its Job verbs
+//! ([`build_jobs_role`]). Jobs stay out of the shared ClusterRole, where
+//! `create` would reach every namespace.
+//!
 //! `resourceNames` only constrains verbs that name a single object —
 //! Kubernetes ignores it for `list`, `watch`, `create` and `deletecollection`.
 //! Every narrowed rule here therefore sticks to `get`-style verbs, and `create`
@@ -36,7 +41,9 @@ use std::collections::BTreeMap;
 use banlieue_api::banlieue::{ImagePullPolicy, Provider, ProviderClassSpec, ProviderDeployment};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
-    Container, LocalObjectReference, PodSpec, PodTemplateSpec, ResourceRequirements, ServiceAccount,
+    Container, EnvVar, LocalObjectReference, PodSpec, PodTemplateSpec, ProjectedVolumeSource,
+    ResourceRequirements, ServiceAccount, ServiceAccountTokenProjection, Volume, VolumeMount,
+    VolumeProjection,
 };
 use k8s_openapi::api::rbac::v1::{ClusterRoleBinding, PolicyRule, Role, RoleBinding, Subject};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference};
@@ -74,6 +81,28 @@ const READINESS_TIMEOUT_SECS: i32 = 2;
 /// Default CPU/memory limits when the class does not set any.
 const DEFAULT_CPU_LIMIT: &str = "1000m";
 const DEFAULT_MEMORY_LIMIT: &str = "512Mi";
+
+/// Backend whose provider authenticates by workload identity federation with
+/// Entra ID (ADR-0159 Decision 1) and so gets a projected token.
+pub const AZURE_BACKEND: &str = "azure";
+
+/// Audience Entra ID requires on a federated ServiceAccount token
+/// (ADR-0159 Decision 1). The Entra federated credential must name it too.
+pub const AZURE_TOKEN_AUDIENCE: &str = "api://AzureADTokenExchange";
+
+/// Lifetime of the projected token, in seconds: one hour (ADR-0159
+/// Decision 1). The kubelet refreshes it before it expires.
+pub const AZURE_TOKEN_EXPIRATION_SECS: i64 = 3600;
+
+/// Name of the projected token volume, and of the file inside it.
+pub const AZURE_TOKEN_VOLUME: &str = "azure-identity-token";
+
+/// Directory the projected token volume is mounted at, read-only.
+pub const AZURE_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/azure/tokens";
+
+/// Environment variable naming the token file, the name the Azure SDKs'
+/// workload identity credential reads.
+pub const AZURE_FEDERATED_TOKEN_FILE_ENV: &str = "AZURE_FEDERATED_TOKEN_FILE";
 
 /// Everything needed to build one Provider's workload, already resolved.
 ///
@@ -195,6 +224,13 @@ pub struct WorkloadSet {
     /// Binds [`WorkloadSet::import_role`] to the import ServiceAccount in the
     /// build namespace.
     pub import_role_binding: Option<RoleBinding>,
+    /// The provider's own Job access, in the build namespace only: present
+    /// for a Managed Provider of a backend that runs Jobs (vSphere, libvirt,
+    /// Azure), `None` otherwise. See [`build_jobs_role`].
+    pub jobs_role: Option<Role>,
+    /// Binds [`WorkloadSet::jobs_role`] to the provider's ServiceAccount, a
+    /// subject in another namespace.
+    pub jobs_role_binding: Option<RoleBinding>,
     /// The provider controller itself. `None` for External (ADR-0060
     /// Decision 3): the process runs elsewhere.
     pub deployment: Option<Deployment>,
@@ -202,9 +238,10 @@ pub struct WorkloadSet {
 
 /// Build every object backing one Provider.
 ///
-/// `build_namespace` is where import Jobs run — the privileged namespace of
-/// ADR-0016. It appears here only as the subject namespace of the import
-/// RoleBinding; no object is created there by this function.
+/// `build_namespace` is where import Jobs run, the privileged namespace of
+/// ADR-0016. It is the subject namespace of the import RoleBinding, and the
+/// namespace of the provider's Job Role and RoleBinding ([`build_jobs_role`]),
+/// the only objects this function places there.
 #[must_use]
 pub fn build_workload(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> WorkloadSet {
     let managed = !inputs.is_external();
@@ -216,8 +253,126 @@ pub fn build_workload(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> Wor
         shared_cluster_role_binding: build_shared_cluster_role_binding(inputs),
         import_role: managed.then(|| build_import_role(inputs)),
         import_role_binding: managed.then(|| build_import_role_binding(inputs, build_namespace)),
+        jobs_role: build_jobs_role(inputs, build_namespace),
+        jobs_role_binding: build_jobs_role_binding(inputs, build_namespace),
         deployment: managed.then(|| build_deployment(inputs)),
     }
+}
+
+/// Suffix of the per-Provider Job Role and RoleBinding in the build namespace.
+const JOBS_ROLE_SUFFIX: &str = "jobs";
+
+/// Every verb the vSphere and Azure providers use on their Jobs.
+const JOB_RUNNER_VERBS: &[&str] = &["get", "list", "watch", "create", "patch", "delete"];
+
+/// The rules a provider of `backend` needs on the Jobs it runs in the build
+/// namespace, derived from each provider's own `Api<Job>` / `Api<Pod>` calls;
+/// `None` for a backend that runs no Job (proxmox, cloud-hypervisor).
+///
+/// - **libvirt** (ADR-0011): reads its import Job by its deterministic name
+///   and server-side-applies it when absent (`create` for an apply that
+///   creates, `patch` because apply is a patch). No `list`/`watch` and no
+///   `delete`: finished Jobs are reaped by `ttlSecondsAfterFinished`.
+/// - **vsphere** (ADR-0020): the same, plus `delete` for
+///   `banlieue.io/force-reimport` and a failed Job's retry, and
+///   `list`/`watch` for the `VMImage` controller's `.watches()` on its Jobs.
+/// - **azure** (ADR-0162 Decision 1): the vSphere set, plus `pods` `list`:
+///   a finished Job's only output is its pod's termination message, read by
+///   the `batch.kubernetes.io/job-name` label. No `get`, `watch` or write on
+///   pods, and no `pods/log`.
+///
+/// None of them uses `update`. These rules sit in a Role in the build
+/// namespace, never in the backend's cluster-wide ClusterRole: bound
+/// cluster-wide, `jobs` `create` is pod create in every namespace, as any
+/// ServiceAccount there.
+#[must_use]
+pub fn job_rules(backend: &str) -> Option<Vec<PolicyRule>> {
+    match backend {
+        "libvirt" => Some(vec![rule("batch", "jobs", &["get", "create", "patch"])]),
+        "vsphere" => Some(vec![rule("batch", "jobs", JOB_RUNNER_VERBS)]),
+        AZURE_BACKEND => Some(vec![
+            rule("batch", "jobs", JOB_RUNNER_VERBS),
+            rule("", "pods", &["list"]),
+        ]),
+        _ => None,
+    }
+}
+
+/// Name of a Provider's Job Role and RoleBinding in the build namespace.
+///
+/// Namespace-qualified like the cluster-scoped objects: every Provider's Job
+/// Role shares the one build namespace, so two Providers with the same name
+/// and class in different namespaces would otherwise collide there.
+#[must_use]
+pub fn jobs_role_name(class: &str, provider_namespace: &str, provider: &str) -> String {
+    cluster_scoped_name(
+        class,
+        provider_namespace,
+        &format!("{provider}-{JOBS_ROLE_SUFFIX}"),
+    )
+}
+
+/// The rules of [`build_jobs_role`] for this Provider, or `None` when it gets
+/// no Job access: an External provider runs nothing in the cluster.
+fn wanted_job_rules(inputs: &WorkloadInputs<'_>) -> Option<Vec<PolicyRule>> {
+    if inputs.is_external() {
+        return None;
+    }
+    job_rules(&inputs.class.backend)
+}
+
+/// The provider's Job access, as a Role **in the build namespace**, where its
+/// Jobs and the artifacts PVC they mount live (ADR-0016). The provider's own
+/// code only ever creates Jobs there (`Api::namespaced` on its
+/// `--build-namespace`, whose default is the operator's build namespace).
+///
+/// Never owned: its Provider lives in another namespace, and a
+/// cross-namespace owner reference is invalid. The labels pin the Provider's
+/// name and namespace, so the finalizer's label-based cleanup (and the orphan
+/// prune) removes it, as it does the ClusterRoleBinding.
+#[must_use]
+pub fn build_jobs_role(inputs: &WorkloadInputs<'_>, build_namespace: &str) -> Option<Role> {
+    let rules = wanted_job_rules(inputs)?;
+    Some(Role {
+        metadata: ObjectMeta {
+            name: Some(jobs_role_name(
+                inputs.class_name,
+                inputs.provider_namespace,
+                inputs.provider_name,
+            )),
+            namespace: Some(build_namespace.to_string()),
+            labels: Some(inputs.labels()),
+            ..Default::default()
+        },
+        rules: Some(rules),
+    })
+}
+
+/// Bind [`build_jobs_role`] to the provider's ServiceAccount, which lives in
+/// the workload namespace: the binding sits with the Role and the Jobs it
+/// grants, and names a subject elsewhere. Never owned, for the reason the
+/// Role is not.
+#[must_use]
+pub fn build_jobs_role_binding(
+    inputs: &WorkloadInputs<'_>,
+    build_namespace: &str,
+) -> Option<RoleBinding> {
+    wanted_job_rules(inputs)?;
+    let name = jobs_role_name(
+        inputs.class_name,
+        inputs.provider_namespace,
+        inputs.provider_name,
+    );
+    Some(RoleBinding {
+        metadata: ObjectMeta {
+            name: Some(name.clone()),
+            namespace: Some(build_namespace.to_string()),
+            labels: Some(inputs.labels()),
+            ..Default::default()
+        },
+        role_ref: role_ref("Role", name),
+        subjects: Some(vec![service_account_subject(inputs)]),
+    })
 }
 
 /// ServiceAccount the import Job runs as, in the build namespace (ADR-0016 §4).
@@ -581,6 +736,72 @@ pub fn shared_cluster_role_name(backend: &str) -> String {
     format!("banlieue-{}", component(backend))
 }
 
+/// Whether this workload's provider authenticates by workload identity
+/// federation with Entra ID, and so gets the projected token (ADR-0159).
+fn uses_azure_workload_identity(inputs: &WorkloadInputs<'_>) -> bool {
+    inputs.class.backend == AZURE_BACKEND
+}
+
+/// Full path of the projected token file inside the provider container.
+#[must_use]
+pub fn azure_federated_token_file() -> String {
+    format!("{AZURE_TOKEN_MOUNT_PATH}/{AZURE_TOKEN_VOLUME}")
+}
+
+/// The projected ServiceAccount token an Azure provider exchanges with Entra
+/// ID for an ARM token (ADR-0159 Decision 1): audience
+/// [`AZURE_TOKEN_AUDIENCE`], one hour, refreshed by the kubelet. It is the
+/// provider's only cloud credential; the provider never writes it anywhere.
+pub(crate) fn azure_token_volume() -> Volume {
+    Volume {
+        name: AZURE_TOKEN_VOLUME.to_string(),
+        projected: Some(ProjectedVolumeSource {
+            sources: Some(vec![VolumeProjection {
+                service_account_token: Some(ServiceAccountTokenProjection {
+                    audience: Some(AZURE_TOKEN_AUDIENCE.to_string()),
+                    expiration_seconds: Some(AZURE_TOKEN_EXPIRATION_SECS),
+                    path: AZURE_TOKEN_VOLUME.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Read-only mount of [`azure_token_volume`].
+pub(crate) fn azure_token_mount() -> VolumeMount {
+    VolumeMount {
+        name: AZURE_TOKEN_VOLUME.to_string(),
+        mount_path: AZURE_TOKEN_MOUNT_PATH.to_string(),
+        read_only: Some(true),
+        ..Default::default()
+    }
+}
+
+/// Container environment: the downward API identity, plus the token file for
+/// an Azure provider. Tenant, client, subscription and authority host are not
+/// passed here: the provider reads them from its own `Provider`'s
+/// `spec.connection.azure`, the one source of truth.
+fn container_env(inputs: &WorkloadInputs<'_>) -> Vec<EnvVar> {
+    let mut env = downward_api_env(DOWNWARD_API_ENV);
+    if uses_azure_workload_identity(inputs) {
+        env.push(azure_token_env());
+    }
+    env
+}
+
+/// `AZURE_FEDERATED_TOKEN_FILE`, pointing at the projected token.
+pub(crate) fn azure_token_env() -> EnvVar {
+    EnvVar {
+        name: AZURE_FEDERATED_TOKEN_FILE_ENV.to_string(),
+        value: Some(azure_federated_token_file()),
+        ..Default::default()
+    }
+}
+
 /// Build the pod spec for a provider workload.
 fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
     PodSpec {
@@ -605,6 +826,9 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
         security_context: Some(pod_security_context()),
         termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
         containers: vec![build_container(inputs)],
+        // Only the Azure provider mounts anything: every other backend's pod
+        // spec is unchanged, with no volumes at all.
+        volumes: uses_azure_workload_identity(inputs).then(|| vec![azure_token_volume()]),
         ..Default::default()
     }
 }
@@ -621,7 +845,8 @@ fn build_container(inputs: &WorkloadInputs<'_>) -> Container {
             .and_then(|i| i.pull_policy.as_ref())
             .map(|p| pull_policy_str(p).to_string()),
         args: Some(build_args(inputs)),
-        env: Some(downward_api_env(DOWNWARD_API_ENV)),
+        env: Some(container_env(inputs)),
+        volume_mounts: uses_azure_workload_identity(inputs).then(|| vec![azure_token_mount()]),
         ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
             LIVENESS_PATH,

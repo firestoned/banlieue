@@ -855,6 +855,9 @@ pub async fn compute_template_status(
         reason: Some(reason.to_string()),
         message,
         zones,
+        source_digest: None,
+        min_os_disk_size_gib: None,
+        superseded_refs: Vec::new(),
     }
 }
 
@@ -979,6 +982,9 @@ async fn reconcile_url_source(
         reason: Some(reason.to_string()),
         message: None,
         zones,
+        source_digest: None,
+        min_os_disk_size_gib: None,
+        superseded_refs: Vec::new(),
     }
 }
 
@@ -1130,6 +1136,10 @@ async fn ensure_import_jobs(
 /// ISO) heals without an operator. `banlieue.io/force-reimport` still
 /// retries at once.
 pub const IMPORT_RETRY_AFTER_SECS: i64 = 600;
+
+/// UID the import Job's pod runs as: the distroless image's `nonroot` user,
+/// declared so admission can check it (deploy/admission/provider-jobs.yaml).
+const IMPORT_JOB_NONROOT_UID: i64 = 65532;
 
 /// Kubernetes `Job` condition type of a Job that has given up.
 const JOB_CONDITION_FAILED: &str = "Failed";
@@ -1474,6 +1484,15 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
 
     let mut pod_spec = json!({
         "restartPolicy": "Never",
+        // The image already runs as the distroless `nonroot` user; this says
+        // so, so the build namespace (PSA `privileged`) and
+        // deploy/admission/provider-jobs.yaml can check it. Matches the libvirt
+        // import Job and the Azure publish Job.
+        "securityContext": {
+            "runAsNonRoot": true,
+            "runAsUser": IMPORT_JOB_NONROOT_UID,
+            "seccompProfile": { "type": "RuntimeDefault" },
+        },
         "containers": [{
             "name": "import",
             "image": image,
@@ -1483,6 +1502,10 @@ pub fn build_import_job(inputs: &ImportJobInputs<'_>) -> Value {
                 "mountPath": "/artifacts",
                 "readOnly": true,
             }],
+            "securityContext": {
+                "allowPrivilegeEscalation": false,
+                "capabilities": { "drop": ["ALL"] },
+            },
         }],
         "volumes": [{
             "name": "artifacts",

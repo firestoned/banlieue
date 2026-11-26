@@ -4,7 +4,7 @@
 # Only banlieue-controller sets or changes an infrastructure machine's
 # spec.providerRef.namespace (ADR-0133 Decision 6), on every machine kind that
 # can be served from a shared provider: VSphereMachine, LibvirtMachine,
-# ProxmoxMachine and CloudHypervisorMachine.
+# ProxmoxMachine, CloudHypervisorMachine and AzureVirtualMachine.
 #
 # A shared provider runs in the platform's provider namespace, holds the
 # vCenter credentials there, and serves machines in tenant namespaces. A machine
@@ -41,7 +41,7 @@ spec:
       - apiGroups: ["infrastructure.banlieue.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["vspheremachines", "libvirtmachines", "proxmoxmachines", "cloudhypervisormachines"]
+        resources: ["vspheremachines", "libvirtmachines", "proxmoxmachines", "cloudhypervisormachines", "azurevirtualmachines"]
   matchConditions:
     # The controller writes this field; everyone else is checked below.
     - name: not-banlieue-controller
@@ -90,7 +90,7 @@ spec:
       - apiGroups: ["infrastructure.banlieue.io"]
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
-        resources: ["vspheremachinetemplates", "libvirtmachinetemplates", "proxmoxmachinetemplates", "cloudhypervisormachinetemplates"]
+        resources: ["vspheremachinetemplates", "libvirtmachinetemplates", "proxmoxmachinetemplates", "cloudhypervisormachinetemplates", "azurevirtualmachinetemplates"]
   matchConditions:
     - name: not-banlieue-controller
       expression: "request.userInfo.username != 'system:serviceaccount:banlieue-system:banlieue-controller'"

@@ -353,7 +353,7 @@ docs-serve: ## Serve docs locally with live reload at http://127.0.0.1:8000
 	@command -v poetry >/dev/null 2>&1 || { echo "Error: Poetry not found. Install: curl -sSL https://install.python-poetry.org | python3 -"; exit 1; }
 	@cd docs && poetry install --no-interaction --quiet
 	@echo "Starting MkDocs server at http://127.0.0.1:8000 (live reload)..."
-	@cd docs && poetry run mkdocs serve --livereload
+	@cd docs && poetry run mkdocs serve --livereload --no-strict
 
 docs-clean: ## Remove docs build artefacts, generated diagrams, and venv
 	@rm -rf docs/site/ docs/.venv/ docs/poetry.lock
@@ -680,7 +680,7 @@ pool-claim-e2e: ## Pool -> real libvirt domains -> claim -> release (LOCAL ONLY,
 	cargo test -p banlieue-provider-libvirt --test e2e_pool_claim -- \
 	  --ignored --nocapture --test-threads=1
 
-provider-bench: ## Benchmark one provider through the VirtualMachine API (docs/src/reference/provider-comparison.md; LOCAL ONLY)
+provider-bench: ## Benchmark one provider through the VirtualMachine API (docs/src/providers/comparison.md; LOCAL ONLY)
 	@# Creates VirtualMachines on the cluster in KUBECONFIG and logs in over
 	@# SSH; the runner must reach the guests' addresses. Results are appended
 	@# to target/provider-bench/<label>.jsonl; render them with
@@ -977,6 +977,28 @@ prepare-binaries-linux-arm64: build-linux-arm64 ## Stage $(BINARY) at binaries/a
 	@mkdir -p binaries/arm64
 	@cp target/aarch64-unknown-linux-gnu/release/$(BINARY) binaries/arm64/
 	@echo "✓ binaries/arm64/$(BINARY) ready"
+
+# ----- Azure guest helper (ADR-0171) ----------------------------------------
+#
+# `banlieue-azure-guest` ships inside every Azure-bound Kairos image as a
+# kairos-operator bundle: a FROM-scratch OCI image holding one static musl
+# binary. Built for size with the workspace's `guest` profile. The image
+# builder takes the published image by digest (--azure-guest-image).
+
+AZURE_GUEST_TRIPLE ?= x86_64-unknown-linux-musl
+AZURE_GUEST_IMAGE  ?= $(REGISTRY)$(if $(strip $(ORG)),/$(ORG),)/banlieue-azure-guest:$(IMAGE_TAG)
+
+.PHONY: azure-guest-binary azure-guest-image
+azure-guest-binary: ## Build the static Azure guest helper and stage it at binaries/amd64/banlieue-azure-guest (ADR-0171)
+	@rustup target add $(AZURE_GUEST_TRIPLE) >/dev/null 2>&1 || true
+	cargo build -p banlieue-guest-azure --profile guest --target $(AZURE_GUEST_TRIPLE)
+	@mkdir -p binaries/amd64
+	@cp target/$(AZURE_GUEST_TRIPLE)/guest/banlieue-azure-guest binaries/amd64/
+	@ls -l binaries/amd64/banlieue-azure-guest
+
+azure-guest-image: azure-guest-binary ## Build the FROM-scratch bundle image $(AZURE_GUEST_IMAGE) (linux/amd64, loads to local docker)
+	docker buildx build --platform linux/amd64 --load \
+	  -f Dockerfile.azure-guest -t $(AZURE_GUEST_IMAGE) .
 
 # ----- Docker images --------------------------------------------------------
 
@@ -1523,7 +1545,7 @@ kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the ki
 		if ! command -v $$LINKER >/dev/null 2>&1 && [ "$$(uname -s)" != "Linux" ]; then \
 			echo "ERROR: cross-toolchain '$$LINKER' not found."; \
 			echo "  macOS: brew tap messense/macos-cross-toolchains && brew install $$TRIPLE"; \
-			echo "  (rustls/ring cross-compiles with the gcc cross-toolchain — no OpenSSL, no 'cross' needed.)"; \
+			echo "  (rustls/aws-lc-rs cross-compiles with the gcc cross-toolchain: no OpenSSL, no 'cross' needed.)"; \
 			exit 1; \
 		fi; \
 		rustup target add $$TRIPLE >/dev/null 2>&1 || true; \

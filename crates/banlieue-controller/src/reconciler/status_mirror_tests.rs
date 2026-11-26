@@ -726,6 +726,97 @@ mod tests {
         );
     }
     // ======================================================================
+    // The concrete AzureVirtualMachine impl (ADR-0164)
+    // ======================================================================
+
+    fn azure_machine() -> banlieue_api::infrastructure::AzureVirtualMachine {
+        use banlieue_api::infrastructure::{
+            AzureVirtualMachine, AzureVirtualMachineSpec, AzureVirtualMachineStatus,
+        };
+        AzureVirtualMachine {
+            metadata: Default::default(),
+            spec: AzureVirtualMachineSpec {
+                provider_id: Some(
+                    "azure:///subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Compute/virtualMachines/vm-1"
+                        .to_string(),
+                ),
+                failure_domain: Some("az1-zone-1".to_string()),
+                provider_ref: banlieue_api::common::ProviderReference {
+                    name: "az1".to_string(),
+                    namespace: None,
+                },
+                zone: "1".to_string(),
+                size: "Standard_D2s_v5".to_string(),
+                image_version_id: "/subscriptions/s/versions/1.0.0".to_string(),
+                os_disk_size_gi_b: 30,
+                os_disk_sku: "Premium_LRS".to_string(),
+                subnet_id: "/subscriptions/s/subnets/a".to_string(),
+                accelerated_networking: false,
+                trusted_launch: true,
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(AzureVirtualMachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("az1-zone-1".to_string()),
+                addresses: vec![MachineAddress {
+                    address_type: MachineAddressType::InternalIP,
+                    address: "10.0.1.4".to_string(),
+                }],
+                observed_power_state: Some(PowerState::PoweredOn),
+                conditions: vec![Condition {
+                    type_: condition_types::READY.to_string(),
+                    status: "True".to_string(),
+                    reason: "VMRunning".to_string(),
+                    message: String::new(),
+                    last_transition_time: Time(k8s_openapi::jiff::Timestamp::now()),
+                    observed_generation: None,
+                }],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn azure_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = azure_machine();
+        assert!(m.provider_id().is_some_and(|p| p.starts_with("azure:///")));
+        assert_eq!(m.failure_domain(), Some("az1-zone-1"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.provider_name(), Some("az1"));
+        assert!(
+            m.tpm_endorsement_certificates().is_empty(),
+            "AK-only in v1 (ADR-0165)"
+        );
+        assert_eq!(m.attestation_subject(), None);
+    }
+
+    #[test]
+    fn azure_machine_provisioned_and_addresses_mirror_onto_the_vm() {
+        let m = azure_machine();
+        let status = mirror_status_from_infra(&VirtualMachineStatus::default(), &m, 1);
+        let cond = find_condition(&status.conditions, condition_types::INFRASTRUCTURE_READY)
+            .expect("InfrastructureReady must be published");
+        assert_eq!(cond.status, condition_status::TRUE);
+        assert_eq!(status.initialization.provisioned, Some(true));
+        assert_eq!(status.addresses.len(), 1);
+        assert_eq!(status.addresses[0].address, "10.0.1.4");
+    }
+
+    #[test]
+    fn azure_impl_tolerates_an_absent_status() {
+        let mut m = azure_machine();
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.conditions().is_empty());
+        assert!(m.observed_power_state().is_none());
+    }
+
+    // ======================================================================
     // The concrete FirecrackerMachine impl and attestationSubject (ADR-0143)
     // ======================================================================
 

@@ -123,8 +123,9 @@ pub fn service_name_override(
 /// headers, timeout), as does the provider (`OTEL_TRACES_SAMPLER`, default
 /// parent-based always-on; `OTEL_RESOURCE_ATTRIBUTES`). Transport is
 /// HTTP/protobuf over the workspace's reqwest, whose `rustls-no-provider`
-/// build needs a process crypto provider: `ring` is installed here if none
-/// is yet, the same provider every other banlieue connection uses.
+/// build needs a process crypto provider: `banlieue-tls`'s (aws-lc-rs,
+/// X25519MLKEM768 first; ADR-0170) is installed here if none is yet, the same
+/// provider every other banlieue connection uses.
 ///
 /// # Errors
 /// [`BootstrapError::Otlp`] when the exporter cannot be built.
@@ -136,8 +137,8 @@ fn build_tracer_provider(
         return Ok(None);
     }
 
-    // An `Err` only means another crate installed a provider first.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    // Idempotent: a provider already installed is kept.
+    let _ = banlieue_tls::install_default_crypto_provider();
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_http()
