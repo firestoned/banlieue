@@ -37,6 +37,7 @@ mod tests {
             image_version_id: IMAGE.to_string(),
             os_disk_size_gb: 32,
             os_disk_sku: "StandardSSD_LRS".to_string(),
+            os_disk_name: os_disk_name(UID),
             nic_id: NIC.to_string(),
             computer_name: vm_name(UID),
             admin_username: DEFAULT_ADMIN_USERNAME.to_string(),
@@ -64,6 +65,7 @@ mod tests {
                     "imageReference": {"id": IMAGE},
                     "diskControllerType": "NVMe",
                     "osDisk": {
+                        "name": os_disk_name(UID),
                         "createOption": "FromImage",
                         "deleteOption": "Delete",
                         "diskSizeGB": 32,
@@ -225,6 +227,36 @@ mod tests {
         assert!(vm.len() <= MAX_VM_NAME_LEN);
         assert_eq!(nic_name(UID), format!("banlieue-{UID}-nic"));
         assert!(nic_name(UID).len() <= MAX_NIC_NAME_LEN);
+        assert_eq!(os_disk_name(UID), format!("banlieue-{UID}-osdisk"));
+        assert!(os_disk_name(UID).len() <= MAX_DISK_NAME_LEN);
+        assert!(
+            os_disk_name(UID).starts_with(&vm),
+            "a leftover disk must still read as the machine's"
+        );
+    }
+
+    #[test]
+    fn the_os_disk_is_named_so_it_can_be_tagged_after_the_create() {
+        // ADR-0173: ARM takes no tags on osDisk, so the name is how the
+        // provider finds the disk to tag it.
+        let body = request().to_body().expect("valid");
+        let os_disk = &body["properties"]["storageProfile"]["osDisk"];
+        assert_eq!(os_disk["name"], os_disk_name(UID));
+        assert!(
+            os_disk.get("tags").is_none(),
+            "ARM's OSDisk has no tags property"
+        );
+    }
+
+    #[test]
+    fn a_missing_or_oversized_os_disk_name_is_refused() {
+        let mut r = request();
+        r.os_disk_name.clear();
+        assert!(r.to_body().is_err());
+
+        let mut r = request();
+        r.os_disk_name = "d".repeat(MAX_DISK_NAME_LEN + 1);
+        assert!(r.to_body().is_err());
     }
 
     #[test]

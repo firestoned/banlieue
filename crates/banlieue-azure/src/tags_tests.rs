@@ -210,4 +210,12 @@ mod tests {
         assert_eq!(OwnershipTags::from_tags(&map), Some(scoped));
         assert!(validate_tags(&map).is_ok());
     }
+
+    #[test]
+    fn the_merge_body_names_the_merge_operation_and_the_tags() {
+        let map = ownership().to_map();
+        let body = merge_tags_body(&map);
+        assert_eq!(body["operation"], TAGS_OPERATION_MERGE);
+        assert_eq!(body["properties"]["tags"], serde_json::json!(map));
+    }
 }

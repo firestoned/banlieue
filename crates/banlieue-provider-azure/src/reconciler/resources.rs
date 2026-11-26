@@ -161,6 +161,8 @@ pub fn sweep_candidates<'a>(
 /// What one sweep pass did.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SweepReport {
+    /// Orphans past their grace period, deferred ones included.
+    pub found: usize,
     /// Names whose delete ARM accepted.
     pub deleted: Vec<String>,
     /// Names whose delete failed, with why; retried next pass.
@@ -198,6 +200,7 @@ pub async fn sweep(
         SWEEP_GRACE,
     );
     let mut report = SweepReport {
+        found: candidates.len(),
         deferred: candidates.len().saturating_sub(MAX_SWEEP_DELETES_PER_PASS),
         ..SweepReport::default()
     };

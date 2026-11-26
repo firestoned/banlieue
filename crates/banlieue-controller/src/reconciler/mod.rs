@@ -11,6 +11,7 @@ pub mod claim;
 pub mod claim_plan;
 pub mod infra;
 pub mod migration;
+pub mod placement_failure;
 pub mod pool;
 pub mod pool_plan;
 pub mod provider_lookup;

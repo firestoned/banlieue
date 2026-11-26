@@ -771,6 +771,60 @@ fn place(
     Ok(build_decision(vm, class, provider, fd))
 }
 
+/// [`schedule`] with the `(provider, failure domain)` pairs in `excluded`
+/// removed from the candidates, and **no** fallback: `Err` when nothing else
+/// fits. The VM's own recorded placement is excluded like any other pair,
+/// so a VM refused there is spread anew (ADR-0173 Decision 2).
+///
+/// # Errors
+/// The [`ScheduleError`] of the pruned candidate set.
+pub fn schedule_avoiding(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    providers: &[Provider],
+    existing_vms: &[VirtualMachine],
+    classes: &[VMClass],
+    excluded: &[(String, String)],
+) -> Result<Decision, ScheduleError> {
+    let pruned: Vec<Provider> = providers
+        .iter()
+        .cloned()
+        .map(|mut provider| {
+            let name = provider.name_any();
+            if let Some(status) = provider.status.as_mut() {
+                status
+                    .failure_domains
+                    .retain(|fd| !excluded.iter().any(|(p, d)| *p == name && *d == fd.name));
+            }
+            provider
+        })
+        .collect();
+    schedule(vm, class, image, &pruned, existing_vms, classes)
+}
+
+/// [`schedule_avoiding`], falling back to [`schedule`] when the exclusions
+/// leave nothing: an exclusion is a preference and never makes a VM
+/// unschedulable (ADR-0173 Decision 4). Empty `excluded` is [`schedule`].
+///
+/// # Errors
+/// The [`ScheduleError`] of the full candidate set.
+pub fn schedule_excluding(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    providers: &[Provider],
+    existing_vms: &[VirtualMachine],
+    classes: &[VMClass],
+    excluded: &[(String, String)],
+) -> Result<Decision, ScheduleError> {
+    if excluded.is_empty() {
+        return schedule(vm, class, image, providers, existing_vms, classes);
+    }
+    schedule_avoiding(vm, class, image, providers, existing_vms, classes, excluded)
+        .or_else(|_| schedule(vm, class, image, providers, existing_vms, classes))
+}
+
 /// FNV-1a 64-bit offset basis and prime.
 const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;

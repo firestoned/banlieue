@@ -1015,6 +1015,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | `initialization` | object |  | Mirrored from the infra CR's `status.initialization`. |
 | `observedGeneration` | integer |  |  |
 | `observedPowerState` | string |  | Observed power state from the provider. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `placementFailures` | object[] |  | Failure domains whose backend refused to create this VM, most recent last (ADR-0173). Written by the controller when the infra CR of the recorded placement reports `VMCreated=False` with reason `ZoneUnavailable`; each entry excludes its failure domain from this VM's placement for an exponentially growing, bounded time. Cleared once the infrastructure reports provisioned. |
 | `scheduled` | object |  | Current scheduling decision. Absent until first successful schedule. |
 | `tpmEndorsementCertificates` | string[] |  | Mirrored from the infra CR's `status.tpmEndorsementCertificates` (ADR-0045). The anchor a verifier checks an attestation quote against; mirrored onward onto a bound `VirtualMachineClaim` so a consumer needs one GET. |
 
@@ -1082,6 +1083,23 @@ Mirrored from the infra CR's `status.initialization`.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+#### `.status.placementFailures[]`
+
+Failure domains whose backend refused to create this VM, most recent
+last (ADR-0173). Written by the controller when the infra CR of the
+recorded placement reports `VMCreated=False` with reason
+`ZoneUnavailable`; each entry excludes its failure domain from this
+VM's placement for an exponentially growing, bounded time. Cleared
+once the infrastructure reports provisioned.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `failureDomain` | string | Yes | The failure domain that refused it. |
+| `failures` | integer | Yes | Consecutive failures in this failure domain; the exclusion doubles with each. |
+| `lastFailureTime` | string | Yes | The infra CR's `lastTransitionTime` for the latest failure: a failure is counted once, when it is later than this. |
+| `providerName` | string | Yes | The `Provider` the VM was placed on. |
+| `reason` | string | Yes | The infra CR's `VMCreated` reason, such as `ZoneUnavailable`. |
 
 #### `.status.scheduled`
 
@@ -2299,11 +2317,13 @@ on the siblings, so the controller's status mirror treats backends alike.
 | --- | --- | --- | --- |
 | `addresses` | object[] |  | CAPI contract field (optional): the NIC's private address. No public address in v1. |
 | `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `createFailures` | integer |  | Consecutive failed creates of this generation: the provider waits `min(5 min * 2^(n - 1), 1 h)` before creating again (ADR-0173 Decision 5). Reset when the VM exists. |
 | `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
 | `guestInstalled` | boolean |  | Sticky: the guest reported ready once (ADR-0163 Decision 1, ADR-0043 Decision 5). |
 | `initialization` | object |  | CAPI contract field. |
 | `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
 | `observedPowerState` | string |  | The VM's last observed run state (deallocated reads `PoweredOff`). Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `osDiskTagged` | boolean |  | Sticky: the OS disk carries this machine's ownership tags. ARM takes none in the VM body, so the provider merges them onto the disk once the VM exists (ADR-0173). |
 | `pendingOperation` | object |  | The ARM operation in flight, if any. |
 | `provisioningState` | string |  | The VM's ARM `provisioningState` (`Creating`, `Succeeded`, `Failed`). |
 | `vmName` | string |  | The VM's resource name, derived from this object's UID. |

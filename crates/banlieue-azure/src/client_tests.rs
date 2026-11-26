@@ -87,6 +87,7 @@ mod tests {
             image_version_id: "/subscriptions/s/resourceGroups/g/providers/Microsoft.Compute/galleries/gal/images/i/versions/1.0.0".to_string(),
             os_disk_size_gb: 32,
             os_disk_sku: "StandardSSD_LRS".to_string(),
+            os_disk_name: crate::vm::os_disk_name("uid"),
             nic_id: format!("{}{}", "/subscriptions/s", rg_path("Microsoft.Network/networkInterfaces/n")),
             computer_name: VM.to_string(),
             admin_username: DEFAULT_ADMIN_USERNAME.to_string(),
@@ -373,6 +374,50 @@ mod tests {
                 rg_path(&format!("Microsoft.Compute/virtualMachines/{VM}"))
             )
         );
+    }
+
+    #[tokio::test]
+    async fn disk_tags_are_merged_through_the_tags_api() {
+        // ADR-0173: the OS disk is tagged after the create, by name.
+        let (endpoint, server) = serve(vec![ok(r#"{"properties":{"tags":{}}}"#)]).await;
+        client(&endpoint)
+            .merge_disk_tags(RG, "banlieue-uid-osdisk", &tags())
+            .await
+            .expect("merged");
+        let seen = server.await.unwrap();
+        assert_eq!(
+            seen[0].target(),
+            format!(
+                "PATCH {}/providers/Microsoft.Resources/tags/default?api-version={RESOURCES_API_VERSION}",
+                rg_path("Microsoft.Compute/disks/banlieue-uid-osdisk")
+            )
+        );
+        let body = json_body(&seen[0]);
+        assert_eq!(body["operation"], "Merge");
+        assert_eq!(body["properties"]["tags"], serde_json::json!(tags()));
+    }
+
+    #[tokio::test]
+    async fn tagging_a_missing_disk_is_not_found() {
+        let body = r#"{"error":{"code":"ResourceNotFound","message":"x"}}"#;
+        let (endpoint, _s) = serve(vec![respond(404, &[], body)]).await;
+        let err = client(&endpoint)
+            .merge_disk_tags(RG, "banlieue-uid-osdisk", &tags())
+            .await
+            .unwrap_err();
+        assert!(err.is_not_found());
+    }
+
+    #[tokio::test]
+    async fn a_refused_disk_tag_never_reaches_arm() {
+        // No server: a call would fail as transport, not as a tag error.
+        let mut bad = tags();
+        bad.insert("a/b".to_string(), "x".to_string());
+        let err = client("https://management.azure.com")
+            .merge_disk_tags(RG, "banlieue-uid-osdisk", &bad)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::InvalidTag(_)), "{err:?}");
     }
 
     #[tokio::test]

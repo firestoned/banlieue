@@ -194,4 +194,24 @@ mod tests {
                 .contains("uid-1")
         );
     }
+
+    #[test]
+    fn a_registered_role_metric_is_encoded_with_the_rest() {
+        let metrics = Metrics::new("banlieue-provider-azure");
+        let counter = Counter::<u64>::default();
+        metrics.register("banlieue_example_events", "Example events", counter.clone());
+        counter.inc();
+        metrics.record_reconcile(
+            "Provider",
+            ReconcileResult::Success,
+            Duration::from_millis(1),
+        );
+
+        let text = metrics.encode().expect("encode");
+        assert!(text.contains("banlieue_example_events_total 1"), "{text}");
+        assert!(
+            text.contains(r#"banlieue_reconcile_total{controller="Provider",result="success"} 1"#),
+            "the shared families stay registered: {text}"
+        );
+    }
 }

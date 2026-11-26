@@ -486,6 +486,7 @@ dependencies = [
  "jiff 0.2.46",
  "k8s-openapi",
  "kube",
+ "prometheus-client",
  "serde_json",
  "sha2",
  "tempfile",

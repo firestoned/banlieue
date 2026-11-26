@@ -180,7 +180,8 @@ only, and writes neither token anywhere.
 
 [`deploy/provider-azure/role-definition.json`](https://github.com/firestoned/banlieue/blob/main/deploy/provider-azure/role-definition.json)
 is a custom role with exactly the actions the runtime provider calls: read,
-write, start, deallocate and delete VMs; read and delete their disks; create,
+write, start, deallocate and delete VMs; read and delete their disks; write
+tags (to tag each VM's OS disk, which ARM leaves untagged, ADR-0173); create,
 join and delete NICs; join a subnet; read a gallery image version; read
 quota, SKUs and long-running operations. It holds **no** snapshot, image or
 gallery write, no resource-group create or delete, no role assignment and no
@@ -316,7 +317,7 @@ spec:
 
 | Policy | Setting | What banlieue does |
 | --- | --- | --- |
-| Required tags | `tags` | Puts them on the NIC, the VM, and the publish Job's image definition, upload disk, snapshot and image version, beside its own ownership tags. **Not the OS disk**: Azure creates it from the VM and does not copy the VM's tags (see below). |
+| Required tags | `tags` | Puts them on the NIC, the VM, and the publish Job's image definition, upload disk, snapshot and image version, beside its own ownership tags. The OS disk gets them too, but only once the VM exists (merged through the Tags API, ADR-0173): enough for audit and `modify` policies and cost reports, but a `deny` policy covering `Microsoft.Compute/disks` sees the disk created untagged with the VM and refuses the create (see below). |
 | Customer-managed keys | `diskEncryptionSetId` | Names the disk encryption set on the OS disk (`storageProfile.osDisk.managedDisk.diskEncryptionSet`), the upload disk and snapshot (`encryption`), and the image version's replica. |
 | Encryption at host | `encryptionAtHost` | Sets `securityProfile.encryptionAtHost` on every VM, beside Trusted Launch when the class asks for it. |
 
@@ -605,7 +606,7 @@ The lifecycle ADR-0158, ADR-0161 and ADR-0164 define:
    public half and discards the private half. Nothing can log in with it.
    Resource names derive from the machine's UID, so a retried create is the
    same resource.
-5. The VM and NIC carry four tags:
+5. The VM, the NIC and the OS disk carry four tags:
 
     | Tag | Value |
     | --- | --- |
@@ -614,9 +615,15 @@ The lifecycle ADR-0158, ADR-0161 and ADR-0164 define:
     | `banlieue-provider` | `<namespace>.<name>` of the `Provider` |
     | `banlieue-owner-namespace` | the `AzureVirtualMachine`'s namespace |
 
-    The OS disk is **not** tagged: ARM does not copy a VM's tags onto the
-    disk it creates. It is removed with the VM by `deleteOption: Delete`.
-    banlieue deletes only a resource whose `banlieue-owner-uid` names the
+    ARM takes no tags on the OS disk in the VM create and copies none of the
+    VM's onto it, so the disk is named from the UID
+    (`banlieue-<uid>-osdisk`) and, once the VM has provisioned, the provider
+    merges the tags onto it through the Tags API and records
+    `status.osDiskTagged` (ADR-0173). A tag write that fails (for example, a
+    role without `Microsoft.Resources/tags/write`) is retried on later
+    passes and never holds the machine back; the disk still goes with the
+    VM by `deleteOption: Delete`. A VM created by an earlier version keeps
+    its ARM-named, untagged disk. banlieue deletes only a resource whose `banlieue-owner-uid` names the
     object it is deleting for, and adopts its own tagged NIC or VM rather
     than creating a second one. A name is never proof of ownership: a NIC
     or VM with the machine's name but another owner's tag, or no tag, is
@@ -653,10 +660,18 @@ never swept. A provider that serves only its home namespace (no
 namespace, since it cannot see machines anywhere else. A pass deletes at
 most 3 resources and stops early if ARM throttles it. If listing the
 machines fails, the pass is skipped, because every resource would read as
-an orphan. The sweep never touches an untagged resource (so never an OS
-disk directly), one tagged for another `Provider`, or anything outside the
-`Provider`'s resource group. It reports through the provider log only
-(`orphan sweep finished`, with counts); there is no sweep metric yet.
+an orphan. The sweep never touches an untagged resource, one tagged for
+another `Provider`, or anything outside the `Provider`'s resource group. It
+logs `orphan sweep finished` with counts and exports two counters on the
+provider's `/metrics`, labelled with the `Provider` (`<namespace>.<name>`):
+
+| Metric | `result` |
+| --- | --- |
+| `banlieue_azure_orphan_sweeps_total` | `completed`, `throttled` (ARM stopped the pass), `skipped` (a listing failed, so nothing was judged) |
+| `banlieue_azure_orphan_sweep_resources_total` | `found` (orphans past the grace), `deleted`, `failed`, `deferred` (left for the next pass by the 3-per-pass limit) |
+
+A steady `found` with no `deleted` means the deletes are failing; a rising
+`skipped` means the provider cannot list its machines or resource group.
 
 **Powering off** (`desiredPowerState: PoweredOff`) **deallocates** the VM:
 compute billing stops and the disk and NIC are kept. A stopped but still
@@ -739,12 +754,40 @@ stored in `status.pendingOperation` and polled on the next reconcile, so a
 restarted provider resumes it instead of starting a second one. ARM's
 `Retry-After` is honoured, deletes included.
 
-**A refused create waits a fixed 5 minutes** before it is tried again, in
-the same zone, unless the `AzureVirtualMachine`'s generation changes. The
-wait is not exponential. The provider never moves a machine to another
-zone itself, and the controller does not yet re-place a machine on
-`ZoneUnavailable`: delete and recreate the `VirtualMachine`, or narrow its
-placement, to land it elsewhere.
+### A zone that refuses the VM
+
+A create that Azure refuses for the zone (`ZonalAllocationFailed`,
+`AllocationFailed`, `SkuNotAvailable`, the `Overconstrained` codes) is
+`VMCreated=False`, reason `ZoneUnavailable`. The provider never moves a
+machine; `banlieue-controller` does
+([ADR-0173](https://github.com/firestoned/banlieue/blob/main/docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md)):
+
+1. It records the failure on the `VirtualMachine`'s
+   `status.placementFailures` (`providerName`, `failureDomain`, `reason`,
+   `failures`, `lastFailureTime`; at most 8 entries, cleared once the VM
+   has provisioned).
+2. It schedules again without that zone and without any zone still
+   excluded by an earlier failure. A zone is excluded for 5 minutes after
+   its first failure, doubling with each further one, at most an hour.
+3. If another placement fits, it records it in `status.scheduled`, sets
+   `PlacementValid=False` (reason `ZoneUnavailable`) and `Ready=False`
+   (reason `ReplacingAfterAllocationFailure`), and deletes the
+   `AzureVirtualMachine`. The finalizer removes the NIC and anything the
+   failed create left; the next pass creates a new `AzureVirtualMachine`
+   in the new zone. This happens whatever the `migrationPolicy`, because no
+   VM ever ran; a machine that has provisioned is never moved this way.
+4. If nothing else fits (one zone, a selector pinning the VM to that zone,
+   or every other zone excluded too), the machine stays and the provider
+   retries it in place.
+
+**A refused create waits** before it is tried again in place: 5 minutes
+after the first failure, doubling with each consecutive failure
+(`status.createFailures`) to at most an hour. A change to the
+`AzureVirtualMachine`'s spec (a new generation) retries at once and starts
+the count again, and the count resets once the VM exists. This applies to
+every create failure (`ZoneUnavailable`, `QuotaExceeded`, `CreateRefused`,
+`ForeignResource`, `OperationFailed`); throttling and transient ARM errors
+keep their short retry and ARM's `Retry-After`.
 
 ## `GuestReady` on Azure, and what the image must do
 
@@ -884,8 +927,11 @@ Boot diagnostics are always on, so the serial log is there when a VM fails:
 | A `VMImage` with an `azure` source fails to build, reason `AzureGuestImageUnset` | The image builder has no `BANLIEUE_AZURE_GUEST_IMAGE`. Set it to the `banlieue-azure-guest` image, pinned by digest (ADR-0171; the release's `azure-guest-image.txt` asset names it): in the ConfigMap for a kustomize install, with `bootstrap imagebuilder --azure-guest-image` for a bootstrap install. |
 | A zone missing from the `Provider`'s failure domains, or `NotAvailableForSubscription` | The size is offered in that zone but restricted for this subscription. `az vm list-skus --location <region> --size <size>` shows the restrictions. Map another size for that zone with `instanceSizes[].perZone`, or request access. |
 | A `VirtualMachine` stays unscheduled on Azure, reason `insufficient quota: vCPUs ...` | The published quota headroom (`capacity.cpus`) does not fit the VM. Raise the region's or the size family's vCPU quota (`az vm list-usage` shows usage and limit); quota is an action outside banlieue. |
-| `VMCreated=False`, reason `QuotaExceeded` | The scheduler admitted the VM but ARM refused it over quota (see [Failure domains and capacity](#failure-domains-and-capacity)). The create is retried every 5 minutes; raise the quota or delete the `VirtualMachine`. |
-| `VMCreated=False`, reason `ZoneUnavailable` (ARM's `ZonalAllocationFailed`, `SkuNotAvailable`) | Azure has no capacity for, or does not offer, that size in that zone right now. The provider retries the same zone after 5 minutes; it does not move the machine. Delete and recreate the `VirtualMachine`, or narrow its placement, to try another zone. |
+| `VMCreated=False`, reason `QuotaExceeded` | The scheduler admitted the VM but ARM refused it over quota (see [Failure domains and capacity](#failure-domains-and-capacity)). The create is retried after 5 minutes, then 10, 20, 40 and every hour (`status.createFailures` counts); raise the quota or delete the `VirtualMachine`. |
+| `VMCreated=False`, reason `ZoneUnavailable` (ARM's `ZonalAllocationFailed`, `SkuNotAvailable`) | Azure has no capacity for, or does not offer, that size in that zone right now. The controller moves the machine to another zone when its placement allows ([A zone that refuses the VM](#a-zone-that-refuses-the-vm)); the `VirtualMachine` shows `PlacementValid=False`, reason `ZoneUnavailable`, and lists the zone in `status.placementFailures`. |
+| `VMCreated=False`, reason `ZoneUnavailable`, and the machine stays in that zone | No other placement fits: the Provider has one usable zone for the size, the `VirtualMachine`'s `failureDomainSelector` allows only this zone, or every other zone refused it lately (see `status.placementFailures`). The provider retries in place with the back-off above. Widen the selector, map another size for the zone (`instanceSizes[].perZone`), or wait. |
+| `VirtualMachine` `Ready=False`, reason `ReplacingAfterAllocationFailure` | The pass that moved a refused machine; its `AzureVirtualMachine` is being deleted and a new one created in the zone `status.scheduled` names. Transient. |
+| `osDiskTagged` stays unset on a running `AzureVirtualMachine` | The provider could not tag the OS disk. The usual cause is a custom role created before `Microsoft.Resources/tags/write` was added: update the role from `deploy/provider-azure/role-definition.json`. A VM created by an earlier banlieue version has an ARM-named disk and stays untagged; its disk is still deleted with it. |
 | `VMCreated=False`, reason `CreateRefused` | ARM refused the create for another reason: a wrong image version ID, the identity lacking a role, a disk below the image's size. The message carries ARM's error. |
 | A create fails naming disk controller types | The size is NVMe-only (or SCSI-only) and the image definition does not declare `DiskControllerTypes=SCSI,NVMe`. Image definition features are immutable: create a new definition. |
 | `Ready=False`, reason `Throttled`, on the `Provider` or a machine | ARM throttles per subscription, deletes early. The provider waits as `Retry-After` says; a throttled `Provider` keeps its last failure domains. Spread bursts (mass deletes) or split across subscriptions. |

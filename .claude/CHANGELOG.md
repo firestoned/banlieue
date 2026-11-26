@@ -1,5 +1,79 @@
 # Changelog
 
+## [2026-11-26 23:00] - Azure: re-place a machine its zone refused, exponential back-off, sweep metrics, OS-disk tags (ADR-0173, roadmap 23)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md` (Accepted): the provider reports a
+  zone that refused a create (`VMCreated=False`/`ZoneUnavailable`) and never moves a machine; the controller records it
+  on `VirtualMachine.status.placementFailures`, re-places a machine that never provisioned excluding that zone
+  (5 minutes doubling to an hour), independent of `migrationPolicy`, and stays put when nothing else fits. Also: the
+  provider's exponential in-place back-off, per-machine (not fleet-wide) memory, and OS-disk ownership tags.
+- `crates/banlieue-api/src/common.rs`: `allocation::{VM_CREATED, ZONE_UNAVAILABLE}`, the shared contract.
+- `crates/banlieue-api/src/banlieue/virtualmachine.rs`: `PlacementFailure`, `MAX_PLACEMENT_FAILURES` (8),
+  `VirtualMachineStatus.placementFailures` (schema `maxItems: 8`).
+- `crates/banlieue-api/src/infrastructure/azure_virtual_machine.rs`: `AzureVirtualMachineStatus.createFailures`,
+  `osDiskTagged`.
+- `crates/banlieue-controller/src/reconciler/placement_failure.rs` (+ `_tests.rs`, 12 tests): `allocation_failure`,
+  `record_failure`, `exclusion_window`, `active_exclusions`, `scheduling_exclusions`, `replacement_exclusions`,
+  `moves`, `replaced_status`; all pure.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: `schedule_avoiding` (strict) and `schedule_excluding`
+  (falls back to the unexcluded answer); 4 tests.
+- `crates/banlieue-azure`: `os_disk_name` and `VmRequest.os_disk_name` (`storageProfile.osDisk.name`);
+  `ArmApi::merge_disk_tags` through the Tags API (`PATCH {disk}/providers/Microsoft.Resources/tags/default`,
+  `operation: Merge`), in `ArmClient` and `FakeArm` (which refuses a missing disk, a bad tag and a merge past 50 tags;
+  OS disks start untagged as on ARM); `tags::merge_tags_body`.
+- `crates/banlieue-provider-azure/src/metrics.rs` (+ `_tests.rs`): `banlieue_azure_orphan_sweeps_total{provider,result}`
+  and `banlieue_azure_orphan_sweep_resources_total{provider,result}`; `SweepReport.found`.
+- `crates/banlieue-provider-sdk/src/metrics.rs`: `Metrics::register` for role-specific families.
+- `crates/banlieue-provider-azure/Cargo.toml`: `prometheus-client` (workspace; already in the graph through the SDK)
+  for the sweep counters.
+
+### Changed
+- `crates/banlieue-provider-azure/src/reconciler/azurevirtualmachine.rs`: `tag_os_disk` merges the Provider's
+  extra tags (ADR-0172) with the ownership tags, the set the NIC and VM get at create, ownership winning; test
+  `a_governed_providers_os_disk_carries_its_extra_tags`. ADR-0172 amended: the OS disk now carries the extra
+  tags once the VM exists (audit, `modify` policies, cost), while a `deny` policy on disks still needs the
+  exemption or the inherit-tag `modify` built-in, because the disk is created untagged with the VM.
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: schedules with `scheduling_exclusions`; after the
+  infra CR is applied, an allocation failure for the recorded placement is recorded and, when another placement
+  fits, written to `status.scheduled` before the infra CR is deleted; `placementFailures` cleared once provisioned.
+- `crates/banlieue-provider-azure/src/reconciler/azurevirtualmachine.rs`: `create_backoff` (5 min doubling to 1 h,
+  `CREATE_RETRY_BACKOFF_MAX`, `CREATE_RETRY_BACKOFF_FACTOR`) replaces the fixed 5 minutes, counted by
+  `status.createFailures` per generation and reset when the VM exists; the OS disk is named from the UID and tagged
+  once the VM has provisioned (`tag_os_disk`, never by a name prefix); `VM_CREATED` and `ZONE_UNAVAILABLE` come from
+  the API contract.
+- `crates/banlieue-provider-azure/src/{context.rs,app.rs,reconciler/provider.rs}`: sweep counters registered at
+  startup and recorded per pass (including skipped passes).
+- `deploy/provider-azure/role-definition.json`: `Microsoft.Resources/tags/write`.
+- `deploy/crds/banlieue.io_virtualmachines.yaml`, `deploy/crds/infrastructure.banlieue.io_azurevirtualmachines.yaml`,
+  `docs/src/reference/api.md`: regenerated.
+- `docs/architecture/calm/architecture.json`: flow `flow-replace-azure-virtual-machine-after-allocation-failure`,
+  two relationship descriptions, ADR-0173 listed.
+- `docs/src/providers/azure.md`: "A zone that refuses the VM", the exponential back-off, the sweep metrics, OS-disk
+  tags, the role's tag write, five troubleshooting rows. `docs/src/concepts/virtualmachine.md`: `placementFailures`.
+- `.github/community/23-azure-provider.md`, `ROADMAPS.md`: phase C's items landed; phase D verified live
+  (2026-11-26: a `Url` source built, published by the Job and booted to `GuestReady` in about 61 s); phase F partly
+  (a 3-member `GuestReady` pool across three zones; claim, release, refill and sealing not verified).
+  `.github/community/22-public-cloud-foundation.md`: the publish ran live.
+- `docs/src/security/threat-model.md`: full pass for ADR-0173, stamp advanced to ADR-0173: §2 (controller, Azure
+  provider), §3 A-16 (OS disk), §5 diagram, §6 TB-4 Azure (three rows changed, two added: a forged `ZoneUnavailable`,
+  the Tags API grant), TB-14 (sweep labels), the placement-drift row, §7.36 (role update), §8 (one new risk: per-VM,
+  not fleet-wide, zone memory; two Azure rows whose "first live run" trigger fired are rewritten, their re-walk still
+  owed). §4, §9 and §10 walked, unchanged.
+
+### Why
+Roadmap 23 phase C's open items. A zone out of capacity was retried every 5 minutes forever in the same zone, the
+OS disk was the one resource banlieue created without its ownership tags, and the sweep reported through logs only.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (re-apply the `virtualmachines` and `azurevirtualmachines` CRDs before the new
+  binaries; add `Microsoft.Resources/tags/write` to an existing provider role)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-26 23:00] - Azure provider in a policy-governed subscription (ADR-0172)
 
 **Author:** Erick Bourgeois

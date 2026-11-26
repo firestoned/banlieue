@@ -42,6 +42,10 @@ pub const RESERVED_TAG_PREFIX: &str = "banlieue-";
 /// resource fits (ADR-0172 Decision 1).
 pub const MAX_EXTRA_TAGS: usize = 45;
 
+/// The Tags API's `operation` that adds and replaces the named tags and
+/// keeps the rest.
+pub const TAGS_OPERATION_MERGE: &str = "Merge";
+
 /// Characters Azure refuses in a tag name.
 const RESERVED_TAG_NAME_CHARS: [char; 7] = ['<', '>', '%', '&', '\\', '?', '/'];
 
@@ -218,6 +222,17 @@ pub fn validate_tag_value(value: &str) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+/// The Tags API body that merges `tags` into a resource's own
+/// (`PATCH {resource}/providers/Microsoft.Resources/tags/default`): tags
+/// already there and not named here are kept.
+#[must_use]
+pub fn merge_tags_body(tags: &BTreeMap<String, String>) -> serde_json::Value {
+    serde_json::json!({
+        "operation": TAGS_OPERATION_MERGE,
+        "properties": {"tags": tags}
+    })
 }
 
 /// Validates every tag, the count, and that no two names differ only in

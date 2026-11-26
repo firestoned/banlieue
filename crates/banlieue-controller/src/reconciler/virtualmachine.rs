@@ -69,8 +69,12 @@ use super::infra::{
     build_proxmox_machine, build_vsphere_machine, install_mode, machine_name,
 };
 use super::migration::{MigrationAction, PlacementDriftReason, evaluate};
+use super::placement_failure::{
+    allocation_failure, moves, record_failure, replaced_status, replacement_exclusions,
+    scheduling_exclusions,
+};
 use super::provider_lookup::{candidate_providers, placement_peers};
-use super::scheduler::{ScheduleError, schedule};
+use super::scheduler::{ScheduleError, schedule_avoiding, schedule_excluding};
 use super::status_mirror::{InfraMachineRead, mirror_onto_vm, mirror_status_from_infra};
 use crate::context::Context;
 use crate::error::{Error, Result};
@@ -353,7 +357,24 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         None
     };
     let providers = placement_candidates(providers, recorded, existing_provider.as_deref());
-    let decision = match schedule(&vm, &class, &image, &providers, &sibling_vms, &classes) {
+    // Failure domains that refused this VM lately are avoided (ADR-0173),
+    // except its own recorded placement, which its infra CR speaks for.
+    let now = k8s_openapi::jiff::Timestamp::now();
+    let placement_failures = vm
+        .status
+        .as_ref()
+        .map(|s| s.placement_failures.clone())
+        .unwrap_or_default();
+    let excluded = scheduling_exclusions(&placement_failures, recorded, now);
+    let decision = match schedule_excluding(
+        &vm,
+        &class,
+        &image,
+        &providers,
+        &sibling_vms,
+        &classes,
+        &excluded,
+    ) {
         Ok(d) => d,
         Err(err) => {
             warn!(?err, "scheduling failed; surfacing condition");
@@ -520,6 +541,64 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
         }
     };
 
+    // ---- Allocation failure: re-place a machine that never ran (ADR-0173) --
+    // The provider reports a zone that refused the machine; the controller,
+    // the only placer, moves it when another placement fits. Not a
+    // migration: no VM ran, so `migrationPolicy` has nothing to protect.
+    let mut placement_failures = placement_failures;
+    if applied.initialization().provisioned == Some(true) {
+        placement_failures.clear();
+    }
+    if let Some(recorded) = recorded
+        && let Some(failure) = allocation_failure(applied.as_ref(), recorded)
+    {
+        if record_failure(&mut placement_failures, &recorded.provider_name, &failure) {
+            warn!(
+                provider = %recorded.provider_name,
+                failure_domain = %failure.failure_domain,
+                message = %failure.message,
+                "the backend refused the machine in its failure domain"
+            );
+        }
+        let excluded =
+            replacement_exclusions(&placement_failures, &recorded.provider_name, &failure, now);
+        match schedule_avoiding(
+            &vm,
+            &class,
+            &image,
+            &providers,
+            &sibling_vms,
+            &classes,
+            &excluded,
+        ) {
+            Ok(replacement) if moves(&replacement, recorded) => {
+                info!(
+                    from = %failure.failure_domain,
+                    to = %replacement.failure_domain_name,
+                    provider = %replacement.provider_name,
+                    "re-placing a machine its backend refused"
+                );
+                let next = replaced_status(
+                    &vm.status.clone().unwrap_or_default(),
+                    placement_failures,
+                    &replacement,
+                    &failure,
+                    generation,
+                    Time(now),
+                );
+                // The new placement is recorded before the refused infra CR
+                // goes, so the memory survives whatever happens next.
+                patch_status(&vm_api, &name, &next).await?;
+                delete_existing_infra(&infra_apis, infra_kind, &machine_name(&vm)).await?;
+                return Ok(requeue_default());
+            }
+            Ok(_) | Err(_) => debug!(
+                failure_domain = %failure.failure_domain,
+                "no other placement fits; the provider retries in place after its back-off"
+            ),
+        }
+    }
+
     // ---- Status mirror -------------------------------------------------
     // `mirror_status_from_infra`'s aggregate Ready computation reads the
     // `Scheduled` *condition* off `current.conditions` — not
@@ -556,6 +635,7 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     // The infra CR was just applied with these addresses: from now on they
     // are held (ADR-0083). Written only here, carried forward everywhere else.
     next_status.held_addresses = held_addresses(&vm, &class);
+    next_status.placement_failures = placement_failures;
     // Every infra kind lives in the same API group, so only `kind` varies. The
     // name is the machine this VM owns, never reset to the VM's own: a moved
     // VM keeps pointing at its move's destination (ADR-0127 Decision 4).

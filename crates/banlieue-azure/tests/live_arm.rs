@@ -214,6 +214,7 @@ async fn a_vm_is_created_boots_and_is_deleted_with_its_nic_and_disk() {
             .parse()
             .expect("AZURE_OS_DISK_GB"),
         os_disk_sku: OS_DISK_SKU.to_string(),
+        os_disk_name: format!("{vm}-osdisk"),
         nic_id,
         computer_name: vm.clone(),
         admin_username: DEFAULT_ADMIN_USERNAME.to_string(),

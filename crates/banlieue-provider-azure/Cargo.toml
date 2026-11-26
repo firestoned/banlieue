@@ -48,6 +48,9 @@ aws-lc-rs = "1"
 # checksum hash, already in the lockfile.
 banlieue-diskformat.workspace = true
 sha2.workspace = true
+# The orphan sweep's counters, registered in the SDK's per-process registry
+# (ADR-0091); already in the graph through banlieue-provider-sdk.
+prometheus-client.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

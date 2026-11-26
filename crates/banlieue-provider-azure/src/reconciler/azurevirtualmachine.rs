@@ -60,17 +60,38 @@
 //!   `status.guestInstalled` is sticky.
 //! - `VMCreated`: `True` once the VM exists. `False` after a refused or
 //!   failed create; its `lastTransitionTime` is the time of the latest
-//!   failure and the create is not retried for [`CREATE_RETRY_BACKOFF`]
-//!   unless the spec changes (ADR-0161 Decision 2). Placing the machine in
-//!   another zone is the controller's decision; the provider reports
-//!   `ZoneUnavailable` for it to act on.
+//!   failure and the create is not retried for [`create_backoff`] of
+//!   `status.createFailures` (5 minutes, doubling to an hour) unless the
+//!   spec changes (ADR-0173 Decision 5).
+//!
+//! # A zone that refuses the VM
+//!
+//! A create refused or failed for a zone-specific reason (the size not
+//! offered in the zone, `ZonalAllocationFailed`, `AllocationFailed`) is
+//! `VMCreated=False` with reason `ZoneUnavailable`, the contract in
+//! `banlieue_api::common::allocation`. The provider never moves the machine:
+//! the controller reads that condition, records the failure on the
+//! `VirtualMachine` and re-places it in another zone when its placement
+//! allows, deleting this object (ADR-0173). When it cannot, this object
+//! stays and the create is retried here after the back-off.
+//!
+//! # The OS disk
+//!
+//! ARM takes no tags on the OS disk in the VM body and copies none of the
+//! VM's onto it. The disk is named from the UID
+//! ([`banlieue_azure::vm::os_disk_name`]) and, once the VM has provisioned,
+//! this machine's ownership tags are merged onto it (`status.osDiskTagged`),
+//! so the orphan sweep and the finalizer's tag check see it like the VM and
+//! NIC (ADR-0173).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use banlieue_api::banlieue::Provider;
-use banlieue_api::common::{MachineAddress, MachineAddressType, PowerState, condition_types};
+use banlieue_api::common::{
+    MachineAddress, MachineAddressType, PowerState, allocation, condition_types,
+};
 use banlieue_api::infrastructure::{
     AzureOperation, AzureOperationAction, AzureVirtualMachine, AzureVirtualMachineSpec,
     AzureVirtualMachineStatus, azure_provider_id,
@@ -78,7 +99,7 @@ use banlieue_api::infrastructure::{
 use banlieue_azure::error::operation_failure;
 use banlieue_azure::tags::TAG_OWNER_UID;
 use banlieue_azure::types::{InstanceView, Power, Provisioning};
-use banlieue_azure::vm::{DEFAULT_ADMIN_USERNAME, nic_name, vm_name};
+use banlieue_azure::vm::{DEFAULT_ADMIN_USERNAME, nic_name, os_disk_name, vm_name};
 use banlieue_azure::{
     ArmApi, NicRequest, OperationHandle, OperationKind, OperationStatus, OwnershipTags,
     PowerAction, VmRequest,
@@ -100,15 +121,20 @@ use crate::sshkey::throwaway_public_key;
 /// Finalizer holding an `AzureVirtualMachine` until its VM, NIC and any
 /// tagged disk are gone.
 pub const MACHINE_FINALIZER: &str = "banlieue.io/azurevirtualmachine";
-/// Condition type: the VM exists (or why creating it failed).
-pub const VM_CREATED: &str = "VMCreated";
+/// Condition type: the VM exists (or why creating it failed). The
+/// controller reads it (ADR-0173).
+pub const VM_CREATED: &str = allocation::VM_CREATED;
 /// How soon a stored operation is polled when ARM gave no hint.
 pub const OPERATION_POLL: Duration = Duration::from_secs(10);
 /// How soon a VM still provisioning, or changing power state, is read again.
 pub const OBSERVE_POLL: Duration = Duration::from_secs(15);
-/// How long a refused or failed create waits before it is tried again
-/// (ADR-0161 Decision 2 starts its back-off at 5 minutes).
+/// How long the first refused or failed create waits before it is tried
+/// again (ADR-0161 Decision 2 starts its back-off at 5 minutes).
 pub const CREATE_RETRY_BACKOFF: Duration = Duration::from_secs(300);
+/// The longest wait between create attempts (ADR-0173 Decision 5).
+pub const CREATE_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(3600);
+/// Each consecutive failed create multiplies the wait by this.
+pub const CREATE_RETRY_BACKOFF_FACTOR: u32 = 2;
 /// How often a settled VM is observed again.
 pub const STEADY_REQUEUE: Duration = Duration::from_secs(300);
 /// After an ARM error that may pass.
@@ -134,8 +160,9 @@ pub mod reasons {
     /// The NIC or VM create was sent; the VM is not visible yet.
     pub const CREATING: &str = "Creating";
     /// The size is not available or has no capacity in this zone
-    /// (ADR-0161 Decision 2): the controller may place it elsewhere.
-    pub const ZONE_UNAVAILABLE: &str = "ZoneUnavailable";
+    /// (ADR-0161 Decision 2): the controller re-places it elsewhere when
+    /// it can (ADR-0173).
+    pub const ZONE_UNAVAILABLE: &str = banlieue_api::common::allocation::ZONE_UNAVAILABLE;
     /// The subscription's vCPU quota would be exceeded.
     pub const QUOTA_EXCEEDED: &str = "QuotaExceeded";
     /// ARM refused the create for another reason (image, identity, ...).
@@ -159,7 +186,7 @@ pub mod reasons {
     pub const AWAITING_GUEST: &str = "AwaitingGuest";
 }
 
-/// Reasons after which a create waits for [`CREATE_RETRY_BACKOFF`].
+/// Reasons after which a create waits for [`create_backoff`].
 const BACKOFF_REASONS: [&str; 5] = [
     reasons::ZONE_UNAVAILABLE,
     reasons::QUOTA_EXCEEDED,
@@ -398,9 +425,25 @@ fn not_ready(
     );
 }
 
+/// How long to wait after the `failures`-th consecutive failed create:
+/// [`CREATE_RETRY_BACKOFF`] doubled for each failure after the first, at
+/// most [`CREATE_RETRY_BACKOFF_MAX`] (ADR-0173 Decision 5). Zero failures
+/// waits as one does.
+#[must_use]
+pub fn create_backoff(failures: u32) -> Duration {
+    let doublings = failures.saturating_sub(1);
+    CREATE_RETRY_BACKOFF_FACTOR
+        .checked_pow(doublings)
+        .map_or(CREATE_RETRY_BACKOFF_MAX, |factor| {
+            CREATE_RETRY_BACKOFF
+                .saturating_mul(factor)
+                .min(CREATE_RETRY_BACKOFF_MAX)
+        })
+}
+
 /// Time left before a failed create may be tried again: `Some` only while
 /// `VMCreated` is `False` for a back-off reason, for this generation, and
-/// younger than [`CREATE_RETRY_BACKOFF`].
+/// younger than [`create_backoff`] of `status.createFailures`.
 #[must_use]
 pub fn create_backoff_remaining(
     status: &AzureVirtualMachineStatus,
@@ -415,13 +458,16 @@ pub fn create_backoff_remaining(
         return None;
     }
     let elapsed = Duration::try_from(now.duration_since(c.last_transition_time.0)).ok()?;
-    CREATE_RETRY_BACKOFF
+    create_backoff(status.create_failures)
         .checked_sub(elapsed)
         .filter(|d| !d.is_zero())
 }
 
 /// Records a failed create on `VMCreated` and `Ready`. `lastTransitionTime`
-/// becomes `now` on every failure, so the back-off counts from the latest.
+/// becomes `now` on every failure, so the back-off counts from the latest,
+/// and the controller sees each failure as new (ADR-0173 Decision 3).
+/// `createFailures` counts consecutive failures of this generation; a new
+/// generation starts again at one.
 fn record_create_failure(
     status: &mut AzureVirtualMachineStatus,
     reason: &str,
@@ -430,6 +476,14 @@ fn record_create_failure(
     now: jiff::Timestamp,
 ) {
     warn!(reason, message, "VM create failed");
+    let same_generation = find_condition(&status.conditions, VM_CREATED).is_some_and(|c| {
+        c.status == condition_status::FALSE && c.observed_generation == Some(generation)
+    });
+    status.create_failures = if same_generation {
+        status.create_failures.saturating_add(1)
+    } else {
+        1
+    };
     cond(
         status,
         VM_CREATED,
@@ -623,6 +677,7 @@ async fn create(
         image_version_id: spec.image_version_id.clone(),
         os_disk_size_gb: spec.os_disk_size_gi_b,
         os_disk_sku: spec.os_disk_sku.clone(),
+        os_disk_name: os_disk_name(m.uid),
         nic_id: target.nic_id(&nic),
         computer_name: computer_name(m.name, &vm),
         admin_username: DEFAULT_ADMIN_USERNAME.to_string(),
@@ -768,10 +823,11 @@ pub async fn converge(
                         generation,
                         now,
                     );
+                    let requeue = create_backoff(status.create_failures);
                     return Pass {
                         status,
                         provider_id,
-                        requeue: CREATE_RETRY_BACKOFF,
+                        requeue,
                     };
                 }
                 warn!(%detail, "ARM operation failed");
@@ -823,10 +879,11 @@ pub async fn converge(
                 Created::Accepted => {}
                 Created::Refused { reason, message } => {
                     record_create_failure(&mut status, reason, &message, generation, now);
+                    let requeue = create_backoff(status.create_failures);
                     return Pass {
                         status,
                         provider_id: None,
-                        requeue: CREATE_RETRY_BACKOFF,
+                        requeue,
                     };
                 }
                 Created::Error(e) => return arm_error(status, &e, None, generation),
@@ -869,10 +926,11 @@ pub async fn converge(
                 generation,
                 now,
             );
+            let requeue = create_backoff(status.create_failures);
             return Pass {
                 status,
                 provider_id: None,
-                requeue: CREATE_RETRY_BACKOFF,
+                requeue,
             };
         }
         Ok(VmOwnership::Absent) => {
@@ -899,6 +957,7 @@ pub async fn converge(
         format!("VM {vm} exists"),
         generation,
     );
+    status.create_failures = 0;
     observe(api, target, m, spec, view, status, generation).await
 }
 
@@ -949,6 +1008,11 @@ async fn observe(
             generation,
         ),
         _ => {}
+    }
+
+    // The OS disk's ownership tags, once its VM has provisioned (ADR-0173).
+    if view.provisioning == Provisioning::Succeeded && !status.os_disk_tagged {
+        status.os_disk_tagged = tag_os_disk(api, target, m).await;
     }
 
     // The NIC's address; an error keeps what was known.
@@ -1067,6 +1131,43 @@ async fn observe(
         status,
         provider_id,
         requeue: STEADY_REQUEUE,
+    }
+}
+
+/// Merges this machine's tags onto its OS disk, found by the name it was
+/// created with ([`os_disk_name`]): the ownership tags and the Provider's
+/// extra tags (ADR-0172), the same set the NIC and VM were created with,
+/// ownership winning. Never by a name prefix: a name is not evidence of
+/// ownership, and a disk tagged here is one the finalizer and the sweep will
+/// delete. `false` (retried next pass) on any error; a VM created before its
+/// disk was named keeps an untagged disk, which `deleteOption: Delete` still
+/// removes with the VM.
+async fn tag_os_disk(api: &dyn ArmApi, target: &Target, m: &MachineRef<'_>) -> bool {
+    let disk = os_disk_name(m.uid);
+    // `from_provider` already refused extra tags that cannot merge, so this
+    // fails only on a hand-built `Target`.
+    let tags = match target
+        .ownership(m.uid, m.namespace)
+        .merged_with(&target.extra_tags)
+    {
+        Ok(tags) => tags,
+        Err(e) => {
+            debug!(%disk, error = %e, "OS disk tags do not merge; not tagged");
+            return false;
+        }
+    };
+    match api
+        .merge_disk_tags(&target.resource_group, &disk, &tags)
+        .await
+    {
+        Ok(()) => {
+            info!(%disk, "tagged the OS disk with this machine's ownership");
+            true
+        }
+        Err(e) => {
+            debug!(%disk, error = %e, "OS disk not tagged this pass");
+            false
+        }
     }
 }
 

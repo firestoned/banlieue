@@ -603,6 +603,47 @@ spec:
                 - null
                 nullable: true
                 type: string
+              placementFailures:
+                description: |-
+                  Failure domains whose backend refused to create this VM, most recent
+                  last (ADR-0173). Written by the controller when the infra CR of the
+                  recorded placement reports `VMCreated=False` with reason
+                  `ZoneUnavailable`; each entry excludes its failure domain from this
+                  VM's placement for an exponentially growing, bounded time. Cleared
+                  once the infrastructure reports provisioned.
+                items:
+                  description: One failure domain whose backend refused to create a VM (ADR-0173).
+                  properties:
+                    failureDomain:
+                      description: The failure domain that refused it.
+                      type: string
+                    failures:
+                      description: |-
+                        Consecutive failures in this failure domain; the exclusion doubles
+                        with each.
+                      minimum: 0.0
+                      type: integer
+                    lastFailureTime:
+                      description: |-
+                        The infra CR's `lastTransitionTime` for the latest failure: a
+                        failure is counted once, when it is later than this.
+                      format: date-time
+                      type: string
+                    providerName:
+                      description: The `Provider` the VM was placed on.
+                      type: string
+                    reason:
+                      description: The infra CR's `VMCreated` reason, such as `ZoneUnavailable`.
+                      type: string
+                  required:
+                  - failureDomain
+                  - failures
+                  - lastFailureTime
+                  - providerName
+                  - reason
+                  type: object
+                maxItems: 8
+                type: array
               scheduled:
                 description: Current scheduling decision. Absent until first successful schedule.
                 nullable: true

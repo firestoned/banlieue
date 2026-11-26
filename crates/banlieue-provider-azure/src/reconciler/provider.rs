@@ -455,6 +455,7 @@ async fn run_sweep(ctx: &Context, api: &dyn ArmApi, provider: &Provider, key: &s
         Ok(live) => live,
         Err(e) => {
             warn!(error = %e, "orphan sweep skipped: cannot list AzureVirtualMachines");
+            ctx.sweep_metrics.record_skipped(key);
             return;
         }
     };
@@ -468,14 +469,21 @@ async fn run_sweep(ctx: &Context, api: &dyn ArmApi, provider: &Provider, key: &s
     )
     .await
     {
-        Ok(report) => info!(
-            deleted = report.deleted.len(),
-            failed = report.failed.len(),
-            deferred = report.deferred,
-            throttled = report.throttled.is_some(),
-            "orphan sweep finished"
-        ),
-        Err(e) => warn!(error = %e, "orphan sweep skipped: cannot list the resource group"),
+        Ok(report) => {
+            info!(
+                found = report.found,
+                deleted = report.deleted.len(),
+                failed = report.failed.len(),
+                deferred = report.deferred,
+                throttled = report.throttled.is_some(),
+                "orphan sweep finished"
+            );
+            ctx.sweep_metrics.record(key, &report);
+        }
+        Err(e) => {
+            warn!(error = %e, "orphan sweep skipped: cannot list the resource group");
+            ctx.sweep_metrics.record_skipped(key);
+        }
     }
 }
 

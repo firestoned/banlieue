@@ -45,6 +45,7 @@ use crate::client::{
     DEFAULT_FEDERATED_TOKEN_FILE, HttpClientFactory, install_default_crypto_provider,
 };
 use crate::context::{Context, PublishSettings};
+use crate::metrics::SweepMetrics;
 use crate::reconciler::publish_job::{
     DEFAULT_PUBLISHER_SERVICE_ACCOUNT, LABEL_VMIMAGE, job_watch_selector,
 };
@@ -258,6 +259,10 @@ pub async fn run(cli: Cli) -> Result<()> {
     // rather than surface later as an unschedulable Job.
     let tolerations = banlieue_provider_sdk::scheduling::parse_tolerations(&cli.build_toleration)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
+    // The orphan sweep's counters (ADR-0158 Decision 5), served beside the
+    // shared reconcile series.
+    let sweep_metrics = SweepMetrics::default();
+    sweep_metrics.register(&metrics);
     let ctx = Arc::new(
         Context::new(
             client.clone(),
@@ -266,6 +271,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             cli.provider_name.clone(),
         )
         .with_scope(scope.clone(), gate)
+        .with_sweep_metrics(sweep_metrics)
         .with_publishing(PublishSettings {
             build_namespace: cli.build_namespace.clone(),
             image: cli.import_image.clone(),

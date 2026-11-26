@@ -114,6 +114,24 @@ mod tests {
     }
 
     #[test]
+    fn create_failures_and_os_disk_tagged_are_omitted_until_set() {
+        let value = serde_json::to_value(AzureVirtualMachineStatus::default()).unwrap();
+        assert!(value.get("createFailures").is_none(), "{value}");
+        assert!(value.get("osDiskTagged").is_none(), "{value}");
+
+        let status = AzureVirtualMachineStatus {
+            create_failures: 3,
+            os_disk_tagged: true,
+            ..Default::default()
+        };
+        let value = serde_json::to_value(&status).unwrap();
+        assert_eq!(value["createFailures"], 3);
+        assert_eq!(value["osDiskTagged"], true);
+        let back: AzureVirtualMachineStatus = serde_json::from_value(value).unwrap();
+        assert_eq!(back, status);
+    }
+
+    #[test]
     fn crd_names_do_not_collide_with_capz() {
         use kube::CustomResourceExt;
         let crd = AzureVirtualMachine::crd();

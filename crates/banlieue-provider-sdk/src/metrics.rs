@@ -294,6 +294,19 @@ impl Metrics {
             .set(i64::try_from(count).unwrap_or(i64::MAX));
     }
 
+    /// Register a role-specific metric family under `name` (the encoder
+    /// appends a counter's `_total`). For series a role updates as events
+    /// happen, such as the Azure provider's orphan sweep counters; a gauge
+    /// read from a cache at scrape time is a [`Collector`] instead.
+    pub fn register(
+        &self,
+        name: &str,
+        help: &str,
+        metric: impl prometheus_client::registry::Metric,
+    ) {
+        self.lock_registry().register(name, help, metric);
+    }
+
     /// Add a collector that encodes its own series on every scrape.
     pub fn register_collector(&self, collector: Box<dyn Collector>) {
         self.lock_registry().register_collector(collector);

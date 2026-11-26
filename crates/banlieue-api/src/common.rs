@@ -703,6 +703,20 @@ pub mod condition_types {
     pub const PROVIDER_REACHABLE: &str = "ProviderReachable";
 }
 
+/// How an infra CR reports that its backend refused the machine in the
+/// failure domain it was placed in (ADR-0173). Any provider may meet this
+/// contract; the controller then re-places a machine that never ran,
+/// excluding that failure domain for a while.
+pub mod allocation {
+    /// Condition type on an infra CR: whether the backend VM was created.
+    pub const VM_CREATED: &str = "VMCreated";
+    /// `VMCreated=False` reason: the size is not offered to the
+    /// subscription in this zone, or the zone has no capacity for it now
+    /// (ADR-0161 Decision 2). Its `lastTransitionTime` is the time of the
+    /// latest such failure.
+    pub const ZONE_UNAVAILABLE: &str = "ZoneUnavailable";
+}
+
 #[cfg(test)]
 #[path = "common_tests.rs"]
 mod common_tests;
