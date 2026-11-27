@@ -24,8 +24,7 @@
     "Microsoft.Network/locations/operations/read",
     "Microsoft.Network/locations/operationResults/read",
     "Microsoft.Resources/subscriptions/resourceGroups/read",
-    "Microsoft.Resources/subscriptions/resourcegroups/resources/read",
-    "Microsoft.Resources/tags/write"
+    "Microsoft.Resources/subscriptions/resourcegroups/resources/read"
   ],
   "NotActions": [],
   "DataActions": [],

@@ -279,9 +279,11 @@ pub struct AzureVirtualMachineStatus {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub create_failures: u32,
 
-    /// Sticky: the OS disk carries this machine's ownership tags. ARM takes
-    /// none in the VM body, so the provider merges them onto the disk once
-    /// the VM exists (ADR-0173).
+    /// Deprecated, no longer written. v0.6.1 providers set it once they had
+    /// merged the ownership tags onto the OS disk; ARM already creates the
+    /// disk with the VM's tags, so the merge is gone (ADR-0173 as amended
+    /// 2026-11-27). Kept so stored objects stay valid; a value already set
+    /// is left as it is.
     #[serde(default, skip_serializing_if = "is_false")]
     pub os_disk_tagged: bool,
 

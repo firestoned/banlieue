@@ -77,12 +77,12 @@
 //!
 //! # The OS disk
 //!
-//! ARM takes no tags on the OS disk in the VM body and copies none of the
-//! VM's onto it. The disk is named from the UID
-//! ([`banlieue_azure::vm::os_disk_name`]) and, once the VM has provisioned,
-//! this machine's ownership tags are merged onto it (`status.osDiskTagged`),
-//! so the orphan sweep and the finalizer's tag check see it like the VM and
-//! NIC (ADR-0173).
+//! The disk is named from the UID ([`banlieue_azure::vm::os_disk_name`]).
+//! ARM creates it with the VM's tags in the same write, so it carries this
+//! machine's ownership tags (and a `Provider`'s extra tags) from the start,
+//! and the orphan sweep and the finalizer's tag check see it like the VM and
+//! NIC. The provider sends no tag write of its own (ADR-0173 as amended
+//! 2026-11-27).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1010,11 +1010,6 @@ async fn observe(
         _ => {}
     }
 
-    // The OS disk's ownership tags, once its VM has provisioned (ADR-0173).
-    if view.provisioning == Provisioning::Succeeded && !status.os_disk_tagged {
-        status.os_disk_tagged = tag_os_disk(api, target, m).await;
-    }
-
     // The NIC's address; an error keeps what was known.
     match api.nic_private_ip(rg, &nic_name(m.uid)).await {
         Ok(ip) => {
@@ -1131,43 +1126,6 @@ async fn observe(
         status,
         provider_id,
         requeue: STEADY_REQUEUE,
-    }
-}
-
-/// Merges this machine's tags onto its OS disk, found by the name it was
-/// created with ([`os_disk_name`]): the ownership tags and the Provider's
-/// extra tags (ADR-0172), the same set the NIC and VM were created with,
-/// ownership winning. Never by a name prefix: a name is not evidence of
-/// ownership, and a disk tagged here is one the finalizer and the sweep will
-/// delete. `false` (retried next pass) on any error; a VM created before its
-/// disk was named keeps an untagged disk, which `deleteOption: Delete` still
-/// removes with the VM.
-async fn tag_os_disk(api: &dyn ArmApi, target: &Target, m: &MachineRef<'_>) -> bool {
-    let disk = os_disk_name(m.uid);
-    // `from_provider` already refused extra tags that cannot merge, so this
-    // fails only on a hand-built `Target`.
-    let tags = match target
-        .ownership(m.uid, m.namespace)
-        .merged_with(&target.extra_tags)
-    {
-        Ok(tags) => tags,
-        Err(e) => {
-            debug!(%disk, error = %e, "OS disk tags do not merge; not tagged");
-            return false;
-        }
-    };
-    match api
-        .merge_disk_tags(&target.resource_group, &disk, &tags)
-        .await
-    {
-        Ok(()) => {
-            info!(%disk, "tagged the OS disk with this machine's ownership");
-            true
-        }
-        Err(e) => {
-            debug!(%disk, error = %e, "OS disk not tagged this pass");
-            false
-        }
     }
 }
 

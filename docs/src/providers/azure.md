@@ -660,6 +660,14 @@ published again. A rebuild (a new digest) is a new version, never an
 overwrite; the old one is listed in the row's `supersededRefs` and deleted by
 a delete-mode Job once no `AzureVirtualMachine` references it.
 
+While a rebuild publishes, the row is not ready, so a new VM from the
+`VMImage` waits (`Scheduled=False`, reason `InfraBuildFailed`, "has no
+resolved_ref"). A VM already running is not affected: the image is used only
+at create, so the controller leaves its `AzureVirtualMachine` as it is and
+keeps mirroring it. Other changes to that VM's infrastructure, such as its
+power state, are applied once the row is ready again. This holds for every
+backend, not only Azure.
+
 ### Deletion
 
 A `VMImage` with an `azure` `Url` source carries the finalizer
@@ -727,15 +735,13 @@ The lifecycle ADR-0158, ADR-0161 and ADR-0164 define:
     | `banlieue-provider` | `<namespace>.<name>` of the `Provider` |
     | `banlieue-owner-namespace` | the `AzureVirtualMachine`'s namespace |
 
-    ARM takes no tags on the OS disk in the VM create and copies none of the
-    VM's onto it, so the disk is named from the UID
-    (`banlieue-<uid>-osdisk`) and, once the VM has provisioned, the provider
-    merges the tags onto it through the Tags API and records
-    `status.osDiskTagged` (ADR-0173). A tag write that fails (for example, a
-    role without `Microsoft.Resources/tags/write`) is retried on later
-    passes and never holds the machine back; the disk still goes with the
-    VM by `deleteOption: Delete`. A VM created by an earlier version keeps
-    its ARM-named, untagged disk. banlieue deletes only a resource whose `banlieue-owner-uid` names the
+    The OS disk is named from the UID (`banlieue-<uid>-osdisk`), and ARM
+    creates it with the VM's tags in the same write, so it carries the
+    ownership tags (and the `Provider`'s extra tags) from the start
+    (ADR-0173 as amended 2026-11-27). The provider sends no tag write of its
+    own and its role holds no `Microsoft.Resources/tags/write`. A VM created
+    before v0.6.1 has an ARM-named disk, tagged the same way; it goes with
+    the VM by `deleteOption: Delete`. banlieue deletes only a resource whose `banlieue-owner-uid` names the
     object it is deleting for, and adopts its own tagged NIC or VM rather
     than creating a second one. A name is never proof of ownership: a NIC
     or VM with the machine's name but another owner's tag, or no tag, is
@@ -1043,7 +1049,7 @@ Boot diagnostics are always on, so the serial log is there when a VM fails:
 | `VMCreated=False`, reason `ZoneUnavailable` (ARM's `ZonalAllocationFailed`, `SkuNotAvailable`) | Azure has no capacity for, or does not offer, that size in that zone right now. The controller moves the machine to another zone when its placement allows ([A zone that refuses the VM](#a-zone-that-refuses-the-vm)); the `VirtualMachine` shows `PlacementValid=False`, reason `ZoneUnavailable`, and lists the zone in `status.placementFailures`. |
 | `VMCreated=False`, reason `ZoneUnavailable`, and the machine stays in that zone | No other placement fits: the Provider has one usable zone for the size, the `VirtualMachine`'s `failureDomainSelector` allows only this zone, or every other zone refused it lately (see `status.placementFailures`). The provider retries in place with the back-off above. Widen the selector, map another size for the zone (`instanceSizes[].perZone`), or wait. |
 | `VirtualMachine` `Ready=False`, reason `ReplacingAfterAllocationFailure` | The pass that moved a refused machine; its `AzureVirtualMachine` is being deleted and a new one created in the zone `status.scheduled` names. Transient. |
-| `osDiskTagged` stays unset on a running `AzureVirtualMachine` | The provider could not tag the OS disk. The usual cause is a custom role created before `Microsoft.Resources/tags/write` was added: update the role from `deploy/provider-azure/role-definition.json`. A VM created by an earlier banlieue version has an ARM-named disk and stays untagged; its disk is still deleted with it. |
+| `osDiskTagged` is unset (or stuck `false`) on an `AzureVirtualMachine` | Expected: the field is deprecated and no longer written. The OS disk carries the VM's tags from the create; check with `az disk show -g <resource group> -n <disk> --query tags`. A v0.6.1 role may still hold `Microsoft.Resources/tags/write`; update it from `deploy/provider-azure/role-definition.json` to drop it. |
 | `VMCreated=False`, reason `CreateRefused` | ARM refused the create for another reason: a wrong image version ID, the identity lacking a role, a disk below the image's size. The message carries ARM's error. |
 | A create fails naming disk controller types | The size is NVMe-only (or SCSI-only) and the image definition does not declare `DiskControllerTypes=SCSI,NVMe`. Image definition features are immutable: create a new definition. |
 | `Ready=False`, reason `Throttled`, on the `Provider` or a machine | ARM throttles per subscription, deletes early. The provider waits as `Retry-After` says; a throttled `Provider` keeps its last failure domains. Spread bursts (mass deletes) or split across subscriptions. |

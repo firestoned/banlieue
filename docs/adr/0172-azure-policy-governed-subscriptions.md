@@ -7,7 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-26
 - **Deciders:** Erick Bourgeois
-- **Amended:** 2026-11-26 (the OS disk receives the extra tags after create, through ADR-0173 Decision 7)
+- **Amended:** 2026-11-26 (the OS disk receives the extra tags after create, through ADR-0173 Decision 7);
+  2026-11-27 (Azure creates the OS disk with the VM's tags, so it carries the extra tags from the create; the merge is removed)
 - **Related:** Extends [ADR-0158](0158-shape-of-a-cloud-provider-class.md)
   Decision 4 (ownership tags) and Decision 1 (one `Provider` is one
   subscription in one region),
@@ -75,16 +76,18 @@ A map of tag name to value, applied to every resource banlieue creates by
 name for that `Provider`: the NIC, the VM, and the publish Job's image
 definition, upload disk, snapshot and image version.
 
-The OS disk is the exception. Azure creates it implicitly from the VM's
-`storageProfile` and does not copy the VM's tags to it, and the VM body has
-no field that tags it. A required-tag `deny` policy that also targets
-`Microsoft.Compute/disks` therefore still refuses the VM create (see
-Consequences). Creating the OS disk as a resource of its own, tagged, and
-attaching it, would close this; it changes adoption, deletion and the sweep,
-so it is a separate decision. (Amended 2026-11-26: ADR-0173 Decision 7 tags
-the OS disk through the Tags API once the VM exists, with these extra tags
-too; that does not help a `deny` policy, which judges the disk as it is
-created.)
+The OS disk needs nothing of its own. Azure creates it implicitly from the
+VM's `storageProfile`, and the VM body has no field that tags it, but Azure
+creates it with the VM's tags, the extra tags included, in the same write.
+(Amended 2026-11-27. This section first said Azure does not copy the VM's
+tags to the disk, so a required-tag `deny` policy covering
+`Microsoft.Compute/disks` would refuse the VM create, and the 2026-11-26
+amendment had ADR-0173 Decision 7 merge the tags on after create. Observed
+on 2026-11-27, compute API 2024-07-01: every OS disk of five banlieue VMs
+carried exactly its VM's tags, and the activity log shows one
+`Microsoft.Compute/disks/write` at create and no tag write. A `deny` policy
+therefore judges the disk with the tags. The merge is removed; ADR-0173 as
+amended the same day.)
 
 - **Ownership tags always win, and cannot be forged.** A name that starts
   with `banlieue-`, compared case-insensitively, is refused: that prefix is
@@ -207,16 +210,15 @@ group.
 - The upload disk and snapshot with a DES are not yet exercised against live
   ARM; the request shapes follow the Disks and Snapshots REST APIs. The live
   run is an open item on roadmap 23.
-- **The OS disk is created without the extra tags** (Decision 1). Since
-  ADR-0173 Decision 7 the provider merges the ownership and extra tags onto
-  it through the Tags API once the VM exists (amendment 2026-11-26), which
-  satisfies audit and `modify` policies and cost reports. A required-tag
-  `deny` policy covering managed disks still refuses the VM create, because
-  the disk is created untagged with the VM: the admin either exempts disks in
-  the `Provider`'s resource group from it, or uses Azure's `modify` built-ins
-  ("Inherit a tag from the resource group if missing"), which tag the disk as
-  it is created. Creating the OS disk as a resource of its own, tagged
-  before the VM, stays open on roadmap 23.
+- **The OS disk carries the extra tags from the create** (Decision 1, as
+  amended 2026-11-27): Azure creates it with the VM's tags, so a required-tag
+  `deny` policy covering managed disks judges it with them, and audit and
+  `modify` policies and cost reports see them. This rests on Azure's
+  observed behaviour, not on a documented contract: the first VM under such
+  a policy is the test, and a refused create reports the policy's name in
+  its `CreateRefused` message. Should Azure stop copying the tags, creating
+  the OS disk as a resource of its own, tagged before the VM, is the fix,
+  and stays open on roadmap 23.
 - **Out of scope: `DeployIfNotExists` extensions** (monitoring agents,
   Defender). banlieue creates VMs with `provisionVMAgent: false` (ADR-0163):
   the image reports readiness itself, so extension deployment fails. That is a

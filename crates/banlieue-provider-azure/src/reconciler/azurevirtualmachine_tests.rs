@@ -226,14 +226,6 @@ mod tests {
                 .await
                 .map(|h| self.handle(h))
         }
-        async fn merge_disk_tags(
-            &self,
-            rg: &str,
-            name: &str,
-            tags: &BTreeMap<String, String>,
-        ) -> banlieue_azure::Result<()> {
-            self.inner.merge_disk_tags(rg, name, tags).await
-        }
         async fn operation_status(
             &self,
             _h: &OperationHandle,
@@ -703,53 +695,29 @@ mod tests {
         assert_eq!(p.requeue, STEADY_REQUEUE);
     }
 
-    /// ADR-0173: ARM takes no tags on the OS disk, so the provider merges
-    /// the machine's onto it once the VM has provisioned, and only once.
+    /// ARM creates the OS disk with the VM's tags, so it carries this
+    /// machine's ownership from the create: the orphan sweep and the
+    /// finalizer's tag check see it like the VM and NIC, and the provider
+    /// sends no tag write (ADR-0173 as amended 2026-11-27).
     #[tokio::test]
-    async fn the_os_disk_is_tagged_once_the_vm_has_provisioned() {
+    async fn the_os_disk_carries_the_ownership_tags_from_the_create() {
         let fake = world();
         let first = pass(&fake, &spec(), None).await;
-        assert!(!first.status.os_disk_tagged, "not while the VM is creating");
-        let disk = |resources: &[TaggedResource]| {
-            resources
-                .iter()
-                .find(|r| r.name == os_disk_name(UID))
-                .cloned()
-                .expect("the OS disk, named from the UID")
-        };
-        assert!(disk(&listed(&fake).await).tags.is_empty());
-
-        fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
-        let ready = pass(&fake, &spec(), Some(&first.status)).await;
-        assert!(ready.status.os_disk_tagged);
+        let disk = listed(&fake)
+            .await
+            .into_iter()
+            .find(|r| r.name == os_disk_name(UID))
+            .expect("the OS disk, named from the UID");
         assert_eq!(
-            disk(&listed(&fake).await).tags,
+            disk.tags,
             target().ownership(UID, MACHINE_NAMESPACE).to_map()
         );
 
-        // Once tagged, never again: a later pass sends no tag write.
-        fake.delete_disk(RESOURCE_GROUP, &os_disk_name(UID))
-            .await
-            .expect("gone");
-        let later = pass(&fake, &spec(), Some(&ready.status)).await;
-        assert!(later.status.os_disk_tagged, "sticky");
-    }
-
-    /// Tagging is bookkeeping: a disk that cannot be tagged this pass never
-    /// holds the machine back, and is tried again.
-    #[tokio::test]
-    async fn an_untaggable_os_disk_does_not_block_ready_and_is_retried() {
-        let fake = world();
-        let first = pass(&fake, &spec(), None).await;
         fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
-        fake.delete_disk(RESOURCE_GROUP, &os_disk_name(UID))
-            .await
-            .expect("gone");
-        let p = pass(&fake, &spec(), Some(&first.status)).await;
-        assert!(!p.status.os_disk_tagged);
-        assert_eq!(
-            reason(&p.status, condition_types::READY),
-            (condition_status::TRUE.into(), reasons::VM_READY.into())
+        let ready = pass(&fake, &spec(), Some(&first.status)).await;
+        assert!(
+            !ready.status.os_disk_tagged,
+            "deprecated: no longer written"
         );
     }
 
@@ -1212,28 +1180,16 @@ mod tests {
     }
 
     /// The OS disk gets the same tags as the VM and NIC, the Provider's extra
-    /// tags included (ADR-0172 with ADR-0173 Decision 7), so a required-tag
-    /// policy covering `Microsoft.Compute/disks` finds them once it is
-    /// tagged; the ownership tags still win.
+    /// tags included, in the create itself: a required-tag policy covering
+    /// `Microsoft.Compute/disks` judges the disk with them (ADR-0172 and
+    /// ADR-0173 as amended 2026-11-27); the ownership tags still win.
     #[tokio::test]
     async fn a_governed_providers_os_disk_carries_its_extra_tags() {
         let fake = world();
         fake.add_disk_encryption_set(test_support::DES_ID, LOCATION);
         fake.register_encryption_at_host();
         let target = governed_target();
-        let first = governed_pass(&fake).await;
-        fake.guest_reports_ready(RESOURCE_GROUP, &vm_name(UID));
-        let ready = converge(
-            &fake,
-            &target,
-            &machine(),
-            &spec(),
-            Some(&first.status),
-            1,
-            now(),
-        )
-        .await;
-        assert!(ready.status.os_disk_tagged);
+        governed_pass(&fake).await;
 
         let disk = listed(&fake)
             .await
