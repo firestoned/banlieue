@@ -393,6 +393,103 @@ fn azure_example_matches_the_types() {
     }
 }
 
+/// Every document in `33-virtualmachine-ec2.yaml` must parse into the type
+/// its `kind` names with no dropped key. The Provider carries no credential
+/// (ADR-0159 Decision 1), passes the provider's own connection check
+/// (`Ec2Connection::validate`, ADR-0174), maps every zone's network class to a
+/// subnet and security groups of the right shape, and maps the class the
+/// VirtualMachine uses to an instance type (ADR-0160 Decision 1).
+#[test]
+fn ec2_example_matches_the_types() {
+    use banlieue_api::aws;
+    use banlieue_api::banlieue::{Provider, VMClass, VMImage, VirtualMachine};
+
+    let path = format!("{EXAMPLES}/33-virtualmachine-ec2.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut seen = Vec::new();
+    let mut sized = Vec::new();
+    let mut class_names = Vec::new();
+
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        let kind = doc["kind"].as_str().expect("kind").to_string();
+        let spec = doc.get("spec").cloned();
+        match kind.as_str() {
+            "Provider" => {
+                let p: Provider = serde_json::from_value(doc.clone()).expect("Provider");
+                assert_no_dropped_keys(&spec.unwrap(), &p.spec);
+                assert_eq!(p.spec.provider_class_ref.name, "ec2");
+                assert!(
+                    p.spec.connection.credentials_ref.is_none(),
+                    "an ec2 Provider must not name a Secret (ADR-0159 Decision 1)"
+                );
+                assert!(p.spec.connection.azure.is_none());
+                assert!(p.spec.attestation.is_none(), "no ekTrustBundle on ec2");
+                let ec2 = p.spec.connection.ec2.as_ref().expect("connection.ec2");
+                assert_eq!(ec2.validate(&p.spec.connection.endpoint), Ok(()));
+                assert_eq!(
+                    aws::account_of_role_arn(&ec2.role_arn),
+                    Some("111122223333")
+                );
+                let caps = &p.spec.capabilities;
+                assert!(
+                    caps.storage_classes.iter().all(|c| c
+                        .target
+                        .as_ref()
+                        .is_some_and(|t| t.contains_key("volumeType"))),
+                    "EC2 storage classes name an EBS `volumeType`"
+                );
+                for class in &caps.network_classes {
+                    assert!(!class.per_zone.is_empty(), "subnets are zonal");
+                    for zone in &class.per_zone {
+                        let t = &zone.target;
+                        assert!(
+                            t.get("subnetId").is_some_and(|s| aws::is_subnet_id(s)),
+                            "{t:?}"
+                        );
+                        let groups = t.get("securityGroupIds").expect("securityGroupIds");
+                        assert!(groups.split(',').all(aws::is_security_group_id), "{groups}");
+                    }
+                }
+                sized.extend(caps.instance_sizes.iter().map(|s| s.vm_class.clone()));
+            }
+            "VMImage" => {
+                let i: VMImage = serde_json::from_value(doc.clone()).expect("VMImage");
+                assert_no_dropped_keys(&spec.unwrap(), &i.spec);
+                assert!(
+                    i.spec
+                        .sources
+                        .iter()
+                        .any(|s| s.provider_class == "ec2" && aws::is_ami_id(&s.reference)),
+                    "the image needs an ec2 AMI source"
+                );
+            }
+            "VMClass" => {
+                let c: VMClass = serde_json::from_value(doc.clone()).expect("VMClass");
+                assert_no_dropped_keys(&spec.unwrap(), &c.spec);
+                class_names.push(c.metadata.name.clone().unwrap_or_default());
+            }
+            "VirtualMachine" => {
+                let v: VirtualMachine =
+                    serde_json::from_value(doc.clone()).expect("VirtualMachine");
+                assert_no_dropped_keys(&spec.unwrap(), &v.spec);
+                assert!(v.spec.user_data.is_some(), "the example shows userData");
+            }
+            _ => {}
+        }
+        seen.push(kind);
+    }
+    for kind in ["Provider", "VMImage", "VMClass", "VirtualMachine"] {
+        assert!(seen.iter().any(|k| k == kind), "example lacks a {kind}");
+    }
+    for class in &class_names {
+        assert!(
+            sized.contains(class),
+            "VMClass {class} has no instance size"
+        );
+    }
+}
+
 /// The Cloud Hypervisor Provider example (ADR-0060, ADR-0107): it must parse
 /// with no dropped key, carry no credential (an External provider reads no
 /// Secret), map every class to a `hostClass`, and show the scheduling knob

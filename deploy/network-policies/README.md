@@ -19,6 +19,7 @@ error, so you apply them on purpose, after reading this.
 | `provider-vsphere.yaml` | `provider-vsphere` | DNS, API server, TCP 443 | `metrics`, `health` |
 | `provider-proxmox.yaml` | `provider-proxmox` | DNS, API server, TCP 8006 | `metrics`, `health` |
 | `provider-azure.yaml` | `provider-azure` | DNS, API server, TCP 443 (ARM and Entra ID) | `metrics`, `health` |
+| `provider-ec2.yaml` | `provider-ec2` | DNS, API server, TCP 443 (STS and EC2) | `metrics`, `health` |
 | `provider-libvirt.yaml` | `provider-libvirt` | DNS, API server, TCP 16514 | `metrics`, `health` |
 | `vsphere-import.yaml` | `vsphere-import` (Job) | DNS, API server, TCP 443 | none |
 | `libvirt-import.yaml` | `libvirt-import` (Job) | DNS, API server, TCP 16514 | none |

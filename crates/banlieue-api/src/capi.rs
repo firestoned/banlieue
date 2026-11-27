@@ -35,7 +35,7 @@ use serde_json::Value;
 
 use crate::banlieue::VirtualMachine;
 use crate::infrastructure::{
-    AzureVirtualMachine, CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, EC2Machine, FirecrackerMachine, LibvirtMachine,
     ProxmoxMachine, VSphereMachine,
 };
 
@@ -402,6 +402,7 @@ bootstrap_target!(
     VSphereMachine => |m| m.spec.provider_id.is_some(),
     ProxmoxMachine => |m| m.spec.provider_id.is_some(),
     AzureVirtualMachine => |m| m.spec.provider_id.is_some(),
+    EC2Machine => |m| m.spec.provider_id.is_some(),
 );
 
 #[cfg(test)]

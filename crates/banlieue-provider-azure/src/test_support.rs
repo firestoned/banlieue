@@ -81,6 +81,7 @@ pub fn connection(azure_block: Option<AzureConnection>) -> ProviderConnection {
         insecure_skip_tls_verify: false,
         ca_bundle: None,
         azure: azure_block,
+        ec2: None,
     }
 }
 

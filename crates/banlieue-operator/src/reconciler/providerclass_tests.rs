@@ -48,6 +48,7 @@ mod tests {
                     insecure_skip_tls_verify: false,
                     ca_bundle: None,
                     azure: None,
+                    ec2: None,
                 },
                 capabilities: Default::default(),
                 paused: false,

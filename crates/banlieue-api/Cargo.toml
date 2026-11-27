@@ -31,6 +31,9 @@ clap = { workspace = true, optional = true }
 [dev-dependencies]
 k8s-openapi.workspace = true
 serde-saphyr.workspace = true
+# Tests only: runs the CRD schema's patterns (src/aws.rs) over the same cases
+# as the Rust checks, so the two cannot drift. Already in the lock file.
+regex = "1"
 
 [features]
 default = []

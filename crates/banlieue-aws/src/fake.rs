@@ -52,7 +52,12 @@
 //!   ID, `InvalidInstanceID.Malformed` (400) for an ID that is not
 //!   `i-<hex>`.
 //! - **NitroTPM**: `UnsupportedOperation` (400) for the EK of an instance
-//!   whose type has no NitroTPM (ADR-0167).
+//!   whose type has no NitroTPM (ADR-0167). `InstanceTpmEkPub.NotFound`
+//!   (400) for the EK of a `pending` instance, and for the first
+//!   [`FakeEc2::set_ek_not_found_reads`] reads after each launch or start
+//!   (none by default): EC2 answered not found for an instance that had
+//!   just reached `running` and the key on the next read (ADR-0167
+//!   Decision 1, seen live 2026-11-27).
 //! - **Unknown names**: `InvalidParameterValue` (400) for a zone or an
 //!   instance type the fake does not know at launch, `InvalidInstanceType`
 //!   (400) for one asked of `DescribeInstanceTypes`, `MissingParameter`
@@ -119,6 +124,7 @@ const CODE_THROTTLED: &str = "RequestLimitExceeded";
 const CODE_INCORRECT_STATE: &str = "IncorrectInstanceState";
 const CODE_UNSUPPORTED_OPERATION: &str = "UnsupportedOperation";
 const CODE_INVALID_INSTANCE_TYPE: &str = "InvalidInstanceType";
+const CODE_EK_NOT_FOUND: &str = "InstanceTpmEkPub.NotFound";
 
 const P_IMAGE_ID: &str = "ImageId";
 const P_INSTANCE_TYPE: &str = "InstanceType";
@@ -211,6 +217,8 @@ struct FakeInstance {
     running_describes: u32,
     console_ready: bool,
     imds_enabled: bool,
+    /// EK reads left that answer not found since the last launch or start.
+    ek_not_found_left: u32,
 }
 
 impl FakeInstance {
@@ -261,6 +269,7 @@ struct State {
     transition_describes: u32,
     terminated_describes: u32,
     console_ready_after: Option<u32>,
+    ek_not_found_reads: u32,
     instances: BTreeMap<String, FakeInstance>,
     tokens: BTreeMap<String, TokenUse>,
     next_instance: u64,
@@ -413,6 +422,7 @@ impl State {
                 running_describes: 0,
                 console_ready: false,
                 imds_enabled,
+                ek_not_found_left: self.ek_not_found_reads,
             },
         );
         id
@@ -745,6 +755,15 @@ impl FakeEc2 {
         self.lock().console_ready_after = describes;
     }
 
+    /// The first `reads` EK reads of an instance after each launch or start,
+    /// once it is past `pending`, answer `InstanceTpmEkPub.NotFound`, as EC2
+    /// did for an instance that had just reached `running` (ADR-0167
+    /// Decision 1). 0 by default; applies to launches and starts from now
+    /// on.
+    pub fn set_ek_not_found_reads(&self, reads: u32) {
+        self.lock().ek_not_found_reads = reads;
+    }
+
     /// The guest wrote its ready line to `/dev/kmsg` (ADR-0175): the
     /// console now carries it, until the next start.
     pub fn guest_reports_ready(&self, instance_id: &str) {
@@ -898,7 +917,9 @@ impl Ec2Api for FakeEc2 {
         }
         s.check_quota(&instance_type)?;
         let transition = s.transition_describes;
+        let ek_not_found = s.ek_not_found_reads;
         let instance = s.instance(instance_id)?;
+        instance.ek_not_found_left = ek_not_found;
         instance.state = InstanceState::Pending;
         instance.transient_describes = transition;
         instance.launch_time = jiff::Timestamp::now();
@@ -923,6 +944,7 @@ impl Ec2Api for FakeEc2 {
         let mut s = self.call()?;
         let instance = s.instance(instance_id)?;
         let gone = instance.is_gone();
+        let pending = instance.state == InstanceState::Pending;
         let instance_type = instance.instance_type.clone();
         if gone {
             return Err(s.incorrect_state(instance_id, "queried"));
@@ -935,6 +957,18 @@ impl Ec2Api for FakeEc2 {
             return Err(s.bad_request(
                 CODE_UNSUPPORTED_OPERATION,
                 &format!("The instance '{instance_id}' does not have NitroTPM enabled."),
+            ));
+        }
+        let not_yet = pending || {
+            let instance = s.instance(instance_id)?;
+            let refuse = instance.ek_not_found_left > 0;
+            instance.ek_not_found_left = instance.ek_not_found_left.saturating_sub(1);
+            refuse
+        };
+        if not_yet {
+            return Err(s.bad_request(
+                CODE_EK_NOT_FOUND,
+                &format!("The TPM EK public key for instance '{instance_id}' was not found."),
             ));
         }
         Ok(TpmEkPub {

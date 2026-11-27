@@ -1,0 +1,86 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Cluster-wide role for the EC2 provider binary (ADR-0158, ADR-0174).
+#
+# Mirrors deploy/provider-azure/rbac/clusterrole.yaml with EC2Machine in place
+# of AzureVirtualMachine, and narrower: the EC2 provider does not serve
+# VMImages yet (publishing AMIs is roadmap 24 phase D), so it has no VMImage
+# rule and no image publish Jobs. Add them in the change that adds that
+# reconciler, not before.
+#
+# No Secrets anywhere, here or in the per-instance Role (ADR-0159 Decision 1):
+# the provider's only cloud credential is the projected ServiceAccount token
+# (audience sts.amazonaws.com) the operator mounts into its pod, exchanged at
+# STS by AssumeRoleWithWebIdentity for a fifteen-minute session (ADR-0174
+# Decision 6). An ec2 Provider carries no credentialsRef (enforced by
+# deploy/admission/provider-connection.yaml, and refused again by the
+# provider).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: banlieue-provider-ec2
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: provider-ec2
+rules:
+  # ---------------------------------------------------------------------------
+  # banlieue.io group: read Providers, patch their status
+  # ---------------------------------------------------------------------------
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # ---------------------------------------------------------------------------
+  # infrastructure.banlieue.io group: EC2Machine lifecycle (ADR-0174)
+  # ---------------------------------------------------------------------------
+  # No `create` and no `delete`: EC2Machines are created and deleted by
+  # banlieue-controller, which owns them. This provider only realises them and
+  # reports back: it can read, patch spec.providerID, own status, and clear its
+  # finalizer. A compromised provider must not be able to mint machines the
+  # controller never scheduled. `list` also feeds the orphan sweep, which must
+  # see every live machine before it judges an instance's owner gone
+  # (ADR-0158 Decision 5).
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - ec2machines
+    verbs: ["get", "list", "watch", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - ec2machines/status
+    verbs: ["get", "update", "patch"]
+  - apiGroups: ["infrastructure.banlieue.io"]
+    resources:
+      - ec2machines/finalizers
+    verbs: ["update"]
+
+  # ---------------------------------------------------------------------------
+  # Core resources
+  # ---------------------------------------------------------------------------
+  # NO secrets / configmaps here, deliberately (security review 2026-07-31
+  # CHAIN-002, ADR-0159 Decision 1). This ClusterRole is bound cluster-wide, so
+  # any rule here would reach EVERY Secret in the cluster. The EC2 provider
+  # reads no Secret at all.
+
+  # Namespaces, read-only (ADR-0133): the shared provider's namespace selector
+  # gate. No write verb: labelling a namespace in is a platform admin's act.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["list", "watch"]
+
+  # Emit Events for state transitions visible via `kubectl describe provider`.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+  - apiGroups: ["events.k8s.io"]
+    resources: ["events"]
+    verbs: ["create", "patch"]
+
+  # Leader-election Leases are NOT granted here: a ClusterRoleBinding would
+  # grant them on every Lease in the cluster. The operator builds a namespaced
+  # Role narrowed to this provider's own Lease instead (ADR-0102).

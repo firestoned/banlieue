@@ -21,6 +21,8 @@ Every banlieue Custom Resource Definition, generated from the Rust types that ar
 - [AzureVirtualMachineTemplate](#azurevirtualmachinetemplate)
 - [CloudHypervisorMachine](#cloudhypervisormachine)
 - [CloudHypervisorMachineTemplate](#cloudhypervisormachinetemplate)
+- [EC2Machine](#ec2machine)
+- [EC2MachineTemplate](#ec2machinetemplate)
 - [FirecrackerMachine](#firecrackermachine)
 - [FirecrackerMachineTemplate](#firecrackermachinetemplate)
 - [LibvirtMachine](#libvirtmachine)
@@ -109,7 +111,9 @@ Same value-or-source shape as `connection.caBundle`: exactly one of
 `CABundleSource`); references resolve in the Provider's namespace.
 Removal of an issuer from this bundle is the revocation mechanism on
 libvirt: swtpm EK certificates never expire. Not used by the
-`firecracker` class, which has no vTPM.
+`firecracker` class, which has no vTPM, and refused at admission on
+`ec2`, whose NitroTPM has no EK certificate to chain (ADR-0167
+Decision 2).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -217,7 +221,7 @@ Network classes the admin asserts are available on this backend.
 | `perZone` | object[] |  | Per-`(datacenter, cluster)` overrides of `target` (ADR-0030). |
 | `perZoneSubnet` | object[] |  | Per-`(datacenter, cluster)` overrides of `subnet` (ADR-0032). |
 | `subnet` | object |  | Default subnet shape (gateway/nameservers/domain) for this network class, used in any zone `per_zone_subnet` does not cover. A port group implies a subnet, so this lives alongside `target`/`per_zone` rather than on `VMClass` — it lets a static-addressing `VirtualMachine` omit gateway/nameservers/domain entirely and have them resolved from whichever zone the scheduler picked (ADR-0032). |
-| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class. Examples: vsphere: { portGroup: "vmnet-prod" } { distributedPortGroup: "dvs-prod-vlan100" } proxmox: { bridge: "vmbr0", vlan: "100" } libvirt: { network: "br-prod" } |
+| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class. Examples: vsphere: { portGroup: "vmnet-prod" } { distributedPortGroup: "dvs-prod-vlan100" } proxmox: { bridge: "vmbr0", vlan: "100" } libvirt: { network: "br-prod" } ec2: { subnetId: "subnet-...", securityGroupIds: "sg-...,sg-..." } (a subnet is zonal, so usually one `perZone` entry per zone) |
 
 ###### `.spec.capabilities.networkClasses[].perZone[]`
 
@@ -228,7 +232,7 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 | `cluster` | string |  | Cluster name as vCenter reports it. Empty on a cloud `Provider`. |
 | `datacenter` | string |  | Datacenter name as vCenter reports it. Empty on a cloud `Provider`. |
 | `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
-| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2`), on a cloud `Provider` (ADR-0158 Decision 3). |
+| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2` on Azure, `ca-central-1a` on EC2), on a cloud `Provider` (ADR-0158 Decision 3). |
 
 ###### `.spec.capabilities.networkClasses[].perZoneSubnet[]`
 
@@ -275,7 +279,7 @@ concrete target.
 | --- | --- | --- | --- |
 | `name` | string | Yes | Abstract name referenced by VMClass.hardware.disks[].storageClass. |
 | `perZone` | object[] |  | Per-`(datacenter, cluster)` overrides of `target` (ADR-0030). |
-| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } azure: { sku: "Premium_LRS" } (a managed-disk SKU, ADR-0160) |
+| `target` | map[string]string |  | Default concrete target, used in any zone `per_zone` does not cover. `None` means this class resolves ONLY in the zones `per_zone` lists. Free-form per provider class; the provider's controller interprets it. Examples by provider class: vsphere: { datastore: "ds-fast-01" } { datastoreCluster: "dsc-gold" } { tagCategory: "tier", tag: "gold" } proxmox: { storage: "ceph-pool-1" } libvirt: { pool: "nvme-pool" } azure: { sku: "Premium_LRS" } (a managed-disk SKU, ADR-0160) ec2: { volumeType: "gp3", iops: "6000", throughput: "250" } (an EBS volume type; iops and throughput optional, ADR-0174) |
 
 ###### `.spec.capabilities.storageClasses[].perZone[]`
 
@@ -286,7 +290,7 @@ Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
 | `cluster` | string |  | Cluster name as vCenter reports it. Empty on a cloud `Provider`. |
 | `datacenter` | string |  | Datacenter name as vCenter reports it. Empty on a cloud `Provider`. |
 | `target` | map[string]string | Yes | Concrete backend target for this zone, same shape as `StorageClassMapping::target` / `NetworkClassMapping::target`. |
-| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2`), on a cloud `Provider` (ADR-0158 Decision 3). |
+| `zone` | string |  | Availability zone name as the cloud reports it (`1`, `2` on Azure, `ca-central-1a` on EC2), on a cloud `Provider` (ADR-0158 Decision 3). |
 
 #### `.spec.connection`
 
@@ -297,7 +301,8 @@ Connection details for the backend.
 | `azure` | object |  | `azure` only: the subscription, region and resource group this `Provider` creates into, and the Entra ID identity it federates to (ADR-0158 Decision 1, ADR-0159 Decision 1). `endpoint` is the ARM endpoint (`https://management.azure.com`) and `credentialsRef` is not set: the provider's ServiceAccount token is its only credential. |
 | `caBundle` | object |  | Optional CA bundle to validate the endpoint's TLS certificate. |
 | `credentialsRef` | object |  | Reference to a Secret in the Provider's namespace containing the credentials. Required keys depend on provider class: vsphere: username, password proxmox: username (the full API token id, user@realm!tokenid), tokenValue (API tokens only; password/ticket auth is not supported, ADR-0074) libvirt: tls.crt, tls.key (mutual TLS, ADR-0011) |
-| `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system azure: https://management.azure.com |
+| `ec2` | object |  | `ec2` only: the region this `Provider` launches into and the IAM role it assumes by web identity (ADR-0174 Decision 5, ADR-0159). `endpoint` is the region's EC2 endpoint (`https://ec2.<region>.amazonaws.com`, or the DNS name of an interface VPC endpoint for it) and `credentialsRef` is not set: the provider's ServiceAccount token is its only credential. |
+| `endpoint` | string | Yes | Endpoint URL or URI. Format depends on provider class: vsphere: https://vcenter.example.com/sdk proxmox: https://pve.example.com:8006 libvirt: qemu+ssh://kvm-host.example.com/system azure: https://management.azure.com ec2: https://ec2.<region>.amazonaws.com (or a VPC endpoint of it) |
 | `insecureSkipTLSVerify` | boolean |  | Skip TLS verification. Applies to vsphere and proxmox. |
 
 ##### `.spec.connection.azure`
@@ -423,6 +428,39 @@ the operator grants no Secret access whatsoever.
 | --- | --- | --- | --- |
 | `name` | string | Yes |  |
 
+##### `.spec.connection.ec2`
+
+`ec2` only: the region this `Provider` launches into and the IAM role
+it assumes by web identity (ADR-0174 Decision 5, ADR-0159). `endpoint`
+is the region's EC2 endpoint (`https://ec2.<region>.amazonaws.com`, or
+the DNS name of an interface VPC endpoint for it) and
+`credentialsRef` is not set: the provider's ServiceAccount token is
+its only credential.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kmsKeyId` | string |  | KMS key that encrypts every root volume this `Provider` creates: a key ID, key ARN, alias name or alias ARN. Unset: the account's default EBS key. Volumes are encrypted either way (ADR-0174 Decision 3). The provider's role needs `kms:CreateGrant` on it. |
+| `publisher` | object |  | The image publisher's own identity and staging (ADR-0162 Decision 9, ADR-0159 Decision 3), separate from `roleArn`: the publish Job assumes it, and only it can import, register and delete images. Unset: no `Url` source is published to this `Provider` (`PublisherNotConfigured`); `Template` AMIs need none. |
+| `region` | string | Yes | The region, such as `ca-central-1`. Its availability zones are the failure domains (ADR-0158 Decisions 1 and 3). Only the `aws`, `aws-cn` and `aws-us-gov` partitions. |
+| `roleArn` | string | Yes | ARN of the IAM role the provider assumes with `AssumeRoleWithWebIdentity`, whose trust policy names this provider's ServiceAccount as the subject (ADR-0159): `arn:aws:iam::<account>:role/<path/><name>`. Its partition must be the region's. |
+| `stsEndpoint` | string |  | STS endpoint the ServiceAccount token is exchanged at. Unset: the region's own (`https://sts.<region>.amazonaws.com`). Set only to the DNS name of an interface VPC endpoint for STS in the same region (`https://vpce-<id>-<suffix>.sts.<region>.vpce.amazonaws.com`) or the regional name itself; admission refuses any other host, since this is where the token goes. |
+| `tags` | map[string]string |  | Extra tags put on every resource this `Provider` and its publisher create (instances and their volumes, import tasks, snapshots and AMIs), in the create call itself, for an account whose service control or tag policies require them (the EC2 counterpart of ADR-0172 Decision 1). |
+
+###### `.spec.connection.ec2.publisher`
+
+The image publisher's own identity and staging (ADR-0162 Decision 9,
+ADR-0159 Decision 3), separate from `roleArn`: the publish Job
+assumes it, and only it can import, register and delete images.
+Unset: no `Url` source is published to this `Provider`
+(`PublisherNotConfigured`); `Template` AMIs need none.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kmsKeyId` | string |  | KMS key that encrypts the imported snapshot (and so the AMI's). Unset: the account's default EBS key. |
+| `roleArn` | string | Yes | ARN of the publisher's IAM role, in the `Provider`'s account and not the provider's own role. It may write to `stagingBucket`, pass `vmImportRoleName` to VM Import, and import, register, tag and delete images; it has no S3 read. |
+| `stagingBucket` | string | Yes | The admin-owned S3 bucket the disk is staged in, in the `Provider`'s region, with block public access on and a lifecycle rule expiring objects after a day. banlieue never creates or deletes it; it deletes each object once its import completes. Dots are refused: they break virtual-hosted-style HTTPS. |
+| `vmImportRoleName` | string | Yes | Name of the admin's VM Import service role (trusted by `vmie.amazonaws.com`, reading only `stagingBucket`), passed to `ImportSnapshot`. A name, not an ARN: it is in the `Provider`'s account. |
+
 #### `.spec.failureDomainNameOverrides[]`
 
 Explicit overrides for individual discovered failure domains'
@@ -476,7 +514,7 @@ Reference to a ProviderClass that identifies the backend type.
 
 For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
 drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
-`cloud-hypervisor`, `azure`. A future
+`cloud-hypervisor`, `azure`, `ec2`. A future
 ProviderClass CRD will provide install metadata (image, RBAC) without
 changing this reference.
 
@@ -2346,7 +2384,7 @@ on the siblings, so the controller's status mirror treats backends alike.
 | `initialization` | object |  | CAPI contract field. |
 | `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
 | `observedPowerState` | string |  | The VM's last observed run state (deallocated reads `PoweredOff`). Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
-| `osDiskTagged` | boolean |  | Sticky: the OS disk carries this machine's ownership tags. ARM takes none in the VM body, so the provider merges them onto the disk once the VM exists (ADR-0173). |
+| `osDiskTagged` | boolean |  | Deprecated, no longer written. v0.6.1 providers set it once they had merged the ownership tags onto the OS disk; ARM already creates the disk with the VM's tags, so the merge is gone (ADR-0173 as amended 2026-11-27). Kept so stored objects stay valid; a value already set is left as it is. |
 | `pendingOperation` | object |  | The ARM operation in flight, if any. |
 | `provisioningState` | string |  | The VM's ARM `provisioningState` (`Creating`, `Succeeded`, `Failed`). |
 | `vmName` | string |  | The VM's resource name, derived from this object's UID. |
@@ -2939,6 +2977,177 @@ Static IPAM parameters (address, prefix, gateway, nameservers, domain).
 ###### `.spec.template.spec.providerRef`
 
 The `Provider` for the one host that runs this machine (ADR-0060).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
+
+---
+
+## EC2Machine
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `EC2Machine` · **Scope:** Namespaced · **Short names:** `ec2m`
+
+EC2Machine: the concrete, scheduled instance request for Amazon EC2.
+
+You normally do not create this by hand: banlieue's controller does,
+owned by the `VirtualMachine` it was scheduled from, and the EC2 provider
+launches the instance and reports CAPI-shaped status.
+
+**Printer columns** (`kubectl get`):
+
+| Name | Type | JSON path | Priority |
+| --- | --- | --- | --- |
+| Provider | string | `.spec.providerRef.name` | 0 |
+| Zone | string | `.spec.zone` | 0 |
+| InstanceType | string | `.spec.instanceType` | 0 |
+| Provisioned | boolean | `.status.initialization.provisioned` | 0 |
+| State | string | `.status.instanceState` | 0 |
+| Power | string | `.status.observedPowerState` | 0 |
+| ProviderID | string | `.spec.providerID` | 1 |
+| Age | date | `.metadata.creationTimestamp` | 0 |
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. `PoweredOff` stops the instance, which stops compute billing (volumes are still billed). `Suspended` is refused. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement, the name of one of the `Provider`'s failure domains (one per availability zone). |
+| `imageId` | string | Yes | The AMI to launch (`ami-` and 8 or 17 hex digits), from the `VMImage`'s `ec2` source: published by banlieue (ADR-0162 Decision 9) or a hand-published `Template`. When `tpmEnabled` is set, the AMI must be registered with `TpmSupport=v2.0` and `BootMode=uefi` (ADR-0167 Decision 5). |
+| `instanceType` | string | Yes | Instance type (`m7i.large`), resolved from the `Provider`'s `instanceSizes` mapping for the `VMClass` (ADR-0160). |
+| `iops` | integer |  | Provisioned IOPS: required for `io1` and `io2`, optional for `gp3` (above its baseline), refused for `gp2`. From the storage class's `iops` target. EC2 refuses a value outside the type's range. |
+| `kmsKeyId` | string |  | KMS key that encrypts the root volume: a key ID, key ARN, alias name or alias ARN, from the `Provider`'s `connection.ec2.kmsKeyId`. Unset: the account's default EBS key. Volumes are encrypted either way. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node. Format: `aws:///<zone-name>/<instance-id>`, the form the AWS cloud controller manager writes. Set by the provider once the instance exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection names the region and the role to assume (ADR-0133: a shared provider serves tenant namespaces). |
+| `rootDeviceName` | string |  | The AMI's root device name, which the root volume's block device mapping names. Defaults to `/dev/xvda`, the name banlieue registers its AMIs with. |
+| `rootVolumeGiB` | integer | Yes | Root volume size in GiB, from the `VMClass` (ADR-0160 Decision 4). At least the AMI's snapshot size, which EC2 enforces. |
+| `securityGroupIds` | string[] | Yes | Security groups of the primary network interface, from the network class's `securityGroupIds` target. At least one. |
+| `subnetId` | string | Yes | Subnet the primary network interface is created in, from the network class's `subnetId` target for this zone. No public IP is assigned. |
+| `throughput` | integer |  | Throughput in MiB/s, `gp3` only, from the storage class's `throughput` target. EC2 refuses a value outside the type's range. |
+| `tpmEnabled` | boolean |  | NitroTPM: the instance gets a TPM 2.0 (ADR-0167). Set from the `VMClass`'s `tpmEnabled`; the AMI must be registered with `TpmSupport=v2.0` and the instance type must support NitroTPM. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Sent as instance user data; at most 16,384 bytes before encoding. The provider reads no Secret or ConfigMap. IMDS is disabled once the guest is ready, so the guest reads it only during its first boot (ADR-0174 Decision 3). |
+| `volumeType` | string |  | EBS volume type of the root volume, from the storage class's `volumeType` target. Defaults to `gp3`. Allowed: `gp3`, `gp2`, `io1`, `io2`. |
+| `zone` | string | Yes | Availability zone **name** the instance is launched in, as the account names it (`ca-central-1a`). Resolved from the failure domain's `labels.zone`; the zone ID is reported in status (ADR-0158 Decision 3). |
+
+#### `.spec.providerRef`
+
+The `Provider` whose connection names the region and the role to
+assume (ADR-0133: a shared provider serves tenant namespaces).
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `name` | string | Yes | Name of the `Provider`. |
+| `namespace` | string |  | Namespace of the `Provider`. Defaults to the referrer's namespace. |
+
+### `.status`
+
+Observed state of an EC2Machine, shaped to the CAPI v1beta2 InfraMachine
+status contract. The non-contract fields mean what they mean on the
+siblings, so the controller's status mirror treats backends alike.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `addresses` | object[] |  | CAPI contract field (optional): the primary private IPv4 address (`InternalIP`) and the instance's private DNS name (`InternalDNS`). No public or Elastic IP in v1. |
+| `conditions` | object[] |  | Standard Kubernetes conditions. |
+| `createFailures` | integer |  | Consecutive failed creates of this generation: the provider waits `min(5 min * 2^(n - 1), 1 h)` before creating again (ADR-0173 Decision 5). Reset when the instance exists. |
+| `failureDomain` | string |  | CAPI contract field (optional): observed failure domain. |
+| `guestInstalled` | boolean |  | Sticky: the guest reported ready once on the serial console (ADR-0175, ADR-0043 Decision 5). |
+| `imdsDisabled` | boolean |  | Sticky: the provider turned the instance metadata endpoint off after the guest reported ready (ADR-0174 Decision 3). Never turned back on automatically. |
+| `initialization` | object |  | CAPI contract field. |
+| `instanceId` | string |  | The instance ID (`i-...`), once `RunInstances` returned it or the provider adopted the instance by its ownership tag. |
+| `instanceState` | string |  | The instance's EC2 state name (`pending`, `running`, `stopping`, `stopped`, `shutting-down`, `terminated`). |
+| `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
+| `observedPowerState` | string |  | The instance's last observed run state (`stopped` reads `PoweredOff`). Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
+| `tpmEndorsementPublicKeys` | string[] |  | The NitroTPM's endorsement key public keys, PEM `SubjectPublicKeyInfo` (RSA-2048 and ECC P-384), read host-side by the provider with `GetInstanceTpmEkPub` once the instance runs (ADR-0167 Decision 1). Never read from the guest. Empty unless `tpmEnabled`. banlieue publishes these and vouches for nothing: the source is the EC2 API its own identity called. |
+| `zoneId` | string |  | The zone **ID** (`cac1-az1`) of `spec.zone` in this account: zone names differ per account, IDs do not, so two accounts compare by ID (ADR-0158 Decision 3). |
+
+#### `.status.addresses[]`
+
+CAPI contract field (optional): the primary private IPv4 address
+(`InternalIP`) and the instance's private DNS name (`InternalDNS`).
+No public or Elastic IP in v1.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | The address itself. |
+| `type` | string | Yes | Address type. Accepted: Hostname, ExternalIP, InternalIP, ExternalDNS, InternalDNS. Allowed: `Hostname`, `ExternalIP`, `InternalIP`, `ExternalDNS`, `InternalDNS`. |
+
+#### `.status.conditions[]`
+
+Standard Kubernetes conditions.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `lastTransitionTime` | string | Yes | lastTransitionTime is the last time the condition transitioned from one status to another. This should be when the underlying condition changed. If that is not known, then using the time when the API field changed is acceptable. |
+| `message` | string | Yes | message is a human readable message indicating details about the transition. This may be an empty string. |
+| `observedGeneration` | integer |  | observedGeneration represents the .metadata.generation that the condition was set based upon. For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date with respect to the current state of the instance. |
+| `reason` | string | Yes | reason contains a programmatic identifier indicating the reason for the condition's last transition. Producers of specific condition types may define expected values and meanings for this field, and whether the values are considered a guaranteed API. The value should be a CamelCase string. This field may not be empty. |
+| `status` | string | Yes | status of the condition, one of True, False, Unknown. |
+| `type` | string | Yes | type of condition in CamelCase or in foo.example.com/CamelCase. |
+
+#### `.status.initialization`
+
+CAPI contract field.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `provisioned` | boolean |  | True when the infrastructure provider reports that the resource's infrastructure is fully provisioned. |
+
+---
+
+## EC2MachineTemplate
+
+**API:** `infrastructure.banlieue.io/v1alpha1` · **Kind:** `EC2MachineTemplate` · **Scope:** Namespaced · **Short names:** `ec2mt`
+
+EC2MachineTemplate: a stamped-out EC2Machine spec.
+
+CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+can mint identical machines. banlieue ships it for CAPI compatibility;
+standalone VirtualMachine users do not need it.
+
+### `.spec`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `template` | object | Yes | The spec stamped into every machine created from this template. |
+
+#### `.spec.template`
+
+The spec stamped into every machine created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `spec` | object | Yes | The EC2Machine spec for machines created from this template. |
+
+##### `.spec.template.spec`
+
+The EC2Machine spec for machines created from this template.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `desiredPowerState` | string |  | Desired power state, resolved from the parent `VirtualMachine`. `PoweredOff` stops the instance, which stops compute billing (volumes are still billed). `Suspended` is refused. Allowed: `PoweredOn`, `PoweredOff`, `Suspended`. |
+| `failureDomain` | string |  | CAPI contract (optional): failure domain placement, the name of one of the `Provider`'s failure domains (one per availability zone). |
+| `imageId` | string | Yes | The AMI to launch (`ami-` and 8 or 17 hex digits), from the `VMImage`'s `ec2` source: published by banlieue (ADR-0162 Decision 9) or a hand-published `Template`. When `tpmEnabled` is set, the AMI must be registered with `TpmSupport=v2.0` and `BootMode=uefi` (ADR-0167 Decision 5). |
+| `instanceType` | string | Yes | Instance type (`m7i.large`), resolved from the `Provider`'s `instanceSizes` mapping for the `VMClass` (ADR-0160). |
+| `iops` | integer |  | Provisioned IOPS: required for `io1` and `io2`, optional for `gp3` (above its baseline), refused for `gp2`. From the storage class's `iops` target. EC2 refuses a value outside the type's range. |
+| `kmsKeyId` | string |  | KMS key that encrypts the root volume: a key ID, key ARN, alias name or alias ARN, from the `Provider`'s `connection.ec2.kmsKeyId`. Unset: the account's default EBS key. Volumes are encrypted either way. |
+| `providerID` | string |  | CAPI contract: Provider ID for the resulting Node. Format: `aws:///<zone-name>/<instance-id>`, the form the AWS cloud controller manager writes. Set by the provider once the instance exists. |
+| `providerRef` | object | Yes | The `Provider` whose connection names the region and the role to assume (ADR-0133: a shared provider serves tenant namespaces). |
+| `rootDeviceName` | string |  | The AMI's root device name, which the root volume's block device mapping names. Defaults to `/dev/xvda`, the name banlieue registers its AMIs with. |
+| `rootVolumeGiB` | integer | Yes | Root volume size in GiB, from the `VMClass` (ADR-0160 Decision 4). At least the AMI's snapshot size, which EC2 enforces. |
+| `securityGroupIds` | string[] | Yes | Security groups of the primary network interface, from the network class's `securityGroupIds` target. At least one. |
+| `subnetId` | string | Yes | Subnet the primary network interface is created in, from the network class's `subnetId` target for this zone. No public IP is assigned. |
+| `throughput` | integer |  | Throughput in MiB/s, `gp3` only, from the storage class's `throughput` target. EC2 refuses a value outside the type's range. |
+| `tpmEnabled` | boolean |  | NitroTPM: the instance gets a TPM 2.0 (ADR-0167). Set from the `VMClass`'s `tpmEnabled`; the AMI must be registered with `TpmSupport=v2.0` and the instance type must support NitroTPM. |
+| `userData` | string |  | Guest bootstrap payload, already resolved and placeholder-substituted by `banlieue-controller` (ADR-0025, ADR-0038). Sent as instance user data; at most 16,384 bytes before encoding. The provider reads no Secret or ConfigMap. IMDS is disabled once the guest is ready, so the guest reads it only during its first boot (ADR-0174 Decision 3). |
+| `volumeType` | string |  | EBS volume type of the root volume, from the storage class's `volumeType` target. Defaults to `gp3`. Allowed: `gp3`, `gp2`, `io1`, `io2`. |
+| `zone` | string | Yes | Availability zone **name** the instance is launched in, as the account names it (`ca-central-1a`). Resolved from the failure domain's `labels.zone`; the zone ID is reported in status (ADR-0158 Decision 3). |
+
+###### `.spec.template.spec.providerRef`
+
+The `Provider` whose connection names the region and the role to
+assume (ADR-0133: a shared provider serves tenant namespaces).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

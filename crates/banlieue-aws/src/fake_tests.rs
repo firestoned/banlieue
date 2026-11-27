@@ -790,8 +790,56 @@ mod tests {
         fake.stop_instance(&a).await.expect("stops");
         state(&fake, &a).await;
         fake.start_instance(&a).await.expect("starts");
+        state(&fake, &a).await;
         let again = fake.tpm_ek_pub(&a, EkKeyType::Rsa2048).await.expect("ek");
         assert_eq!(again, a_rsa);
+    }
+
+    /// ADR-0167 Decision 1: EC2 answered `InstanceTpmEkPub.NotFound` for an
+    /// instance that had just reached `running`, and the key on the next
+    /// read. A `pending` instance has no key to read either.
+    #[tokio::test]
+    async fn the_ek_is_not_found_while_pending_and_for_the_configured_reads() {
+        let fake = fake();
+        fake.set_ek_not_found_reads(1);
+        let id = fake.run_instance(&request()).await.expect("launches");
+        let err = fake
+            .tpm_ek_pub(&id, EkKeyType::Rsa2048)
+            .await
+            .expect_err("pending");
+        assert!(err.is_not_found());
+        assert_eq!(code(&err), (400, "InstanceTpmEkPub.NotFound"));
+
+        visible(&fake, &id).await;
+        assert_eq!(state(&fake, &id).await, InstanceState::Running);
+        let err = fake
+            .tpm_ek_pub(&id, EkKeyType::Rsa2048)
+            .await
+            .expect_err("just running");
+        assert!(err.is_not_found());
+        fake.tpm_ek_pub(&id, EkKeyType::Rsa2048)
+            .await
+            .expect("the next read has it");
+
+        fake.stop_instance(&id).await.expect("stops");
+        state(&fake, &id).await;
+        fake.start_instance(&id).await.expect("starts");
+        assert!(
+            fake.tpm_ek_pub(&id, EkKeyType::EccSecP384)
+                .await
+                .expect_err("pending again")
+                .is_not_found()
+        );
+        state(&fake, &id).await;
+        assert!(
+            fake.tpm_ek_pub(&id, EkKeyType::EccSecP384)
+                .await
+                .expect_err("a start reads not found again")
+                .is_not_found()
+        );
+        fake.tpm_ek_pub(&id, EkKeyType::EccSecP384)
+            .await
+            .expect("then it reads");
     }
 
     #[tokio::test]

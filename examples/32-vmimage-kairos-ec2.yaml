@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # DRAFT, roadmap 24 (EC2). A Kairos VMImage with the cloud-config layer an EC2
-# guest needs, measured by the roadmap 22/24 spike. There is no `ec2`
-# ProviderClass in the API yet: the source below names the conventional
-# `ec2` class so the image can be built and carried now; nothing consumes it
-# until the EC2 provider lands (ADR-0166/0167 are still to be written).
+# guest needs, measured by the roadmap 22/24 spike. The `ec2` Provider class
+# and the EC2Machine API exist (roadmap 24 phase B, ADR-0174; a Provider and
+# VirtualMachine are in examples/33-virtualmachine-ec2.yaml), but nothing
+# publishes or consumes this image until the EC2 provider and its publisher
+# land (phases C and D). ADR-0175 has the image builder add this layer and a
+# Rust helper (banlieue-ec2-guest) to every build with an ec2 source.
 #
 # WHY A LAYER AND NOT THE AZURE-STYLE HELPER
 #

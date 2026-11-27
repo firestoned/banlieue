@@ -15,8 +15,10 @@
 #
 #   - it is in the build namespace;
 #   - its pod runs as `banlieue-import` (the read-only import identity,
-#     ADR-0016 section 4) or `banlieue-azure-publisher` (no RBAC, no API token,
-#     ADR-0159 Decision 3), never the provider's own identity or another one;
+#     ADR-0016 section 4), `banlieue-azure-publisher` or `banlieue-ec2-publisher`
+#     (no RBAC, no API token, ADR-0159 Decision 3; the EC2 publish Job of
+#     ADR-0162 Decision 9 lands with roadmap 24 phase D), never the provider's
+#     own identity or another one;
 #   - its pod is restricted: runAsNonRoot, no runAsUser 0, no host network,
 #     PID or IPC namespace, no privileged container, no privilege escalation,
 #     no added capability, no Unconfined seccomp;
@@ -78,10 +80,10 @@ spec:
       reason: Forbidden
     - expression: >-
         has(variables.pod.serviceAccountName)
-        && variables.pod.serviceAccountName in ['banlieue-azure-publisher', 'banlieue-import']
+        && variables.pod.serviceAccountName in ['banlieue-azure-publisher', 'banlieue-ec2-publisher', 'banlieue-import']
         && (!has(variables.pod.serviceAccount)
             || variables.pod.serviceAccount == variables.pod.serviceAccountName)
-      message: "a provider's Job runs as spec.template.spec.serviceAccountName banlieue-import or banlieue-azure-publisher only"
+      message: "a provider's Job runs as spec.template.spec.serviceAccountName banlieue-import, banlieue-azure-publisher or banlieue-ec2-publisher only"
       reason: Forbidden
     - expression: >-
         !(has(variables.pod.hostNetwork) && variables.pod.hostNetwork)

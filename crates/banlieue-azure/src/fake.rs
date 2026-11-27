@@ -819,7 +819,9 @@ impl ArmApi for FakeArm {
             disk_key.clone(),
             FakeDisk {
                 name: disk_name,
-                tags: BTreeMap::new(),
+                // ARM creates the implicit OS disk with the VM's tags, in the
+                // same write: no later tag call (observed 2026-11-27).
+                tags: request.tags.clone(),
                 created: now,
             },
         );
@@ -917,26 +919,6 @@ impl ArmApi for FakeArm {
         Ok(None)
     }
 
-    async fn merge_disk_tags(
-        &self,
-        resource_group: &str,
-        name: &str,
-        tags: &BTreeMap<String, String>,
-    ) -> Result<()> {
-        crate::tags::validate_tags(tags)?;
-        let mut s = self.lock();
-        let disk = s
-            .disks
-            .get_mut(&key(resource_group, name))
-            .ok_or_else(|| not_found("ResourceNotFound", "The managed disk"))?;
-        let mut merged = disk.tags.clone();
-        merged.extend(tags.iter().map(|(k, v)| (k.clone(), v.clone())));
-        // ARM counts the tags the resource ends up with, not the request's.
-        crate::tags::validate_tags(&merged)?;
-        disk.tags = merged;
-        Ok(())
-    }
-
     async fn operation_status(&self, _handle: &OperationHandle) -> Result<OperationStatus> {
         // The fake completes every call synchronously.
         Ok(OperationStatus::Succeeded)
@@ -980,8 +962,6 @@ impl ArmApi for FakeArm {
                 tags: v.tags.clone(),
                 created_time: Some(v.created),
             });
-        // ARM does not copy a VM's tags onto the OS disk it creates; only
-        // `merge_disk_tags` puts any there.
         let disks = s
             .disks
             .iter()

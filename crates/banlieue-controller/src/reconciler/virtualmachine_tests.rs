@@ -527,4 +527,52 @@ mod tests {
             assert!(!waits_for_infra(state), "{state:?}");
         }
     }
+
+    // ---- an image republish does not touch a running machine ------------------
+
+    fn missing_image_ref() -> InfraBuildError {
+        InfraBuildError::MissingResolvedImageRef {
+            image: "img".into(),
+            provider: "foo".into(),
+            zone: "bar".into(),
+        }
+    }
+
+    fn initialization(provisioned: Option<bool>) -> InitializationStatus {
+        InitializationStatus { provisioned }
+    }
+
+    /// While a `VMImage` republishes, its row for the provider is not ready
+    /// and the builder has no image ref. The image is used only to create a
+    /// machine, so a provisioned infra CR is left as it is and mirrored,
+    /// instead of the VM reporting `InfraBuildFailed` (found live: a running
+    /// Azure VM went `Ready=False` for the 14 minutes a gallery version took).
+    #[test]
+    fn a_missing_image_ref_keeps_a_provisioned_infra_cr() {
+        assert!(keeps_provisioned_infra(
+            &missing_image_ref(),
+            Some(&initialization(Some(true)))
+        ));
+    }
+
+    /// A machine that has not provisioned still needs the image: it waits.
+    #[test]
+    fn a_missing_image_ref_still_fails_a_machine_not_yet_provisioned() {
+        assert!(!keeps_provisioned_infra(&missing_image_ref(), None));
+        for provisioned in [None, Some(false)] {
+            assert!(
+                !keeps_provisioned_infra(&missing_image_ref(), Some(&initialization(provisioned))),
+                "{provisioned:?}"
+            );
+        }
+    }
+
+    /// Any other build failure is a real error, even on a running machine.
+    #[test]
+    fn another_build_failure_is_reported_on_a_provisioned_machine() {
+        assert!(!keeps_provisioned_infra(
+            &InfraBuildError::UnresolvedClass("small".into()),
+            Some(&initialization(Some(true)))
+        ));
+    }
 }
