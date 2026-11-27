@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0145: A controller audits its own progress and fails liveness when objects it should reconcile go unreconciled
 
-- **Status:** Proposed
-- **Date:** 2026-11-19
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-19
+- **Notes:** Not implemented.
 - **Deciders:** Erick Bourgeois
 - **Related:** Amends [ADR-0093](0093-health-endpoints-reflect-leadership.md) (`/livez`
   is no longer "200 while the process can answer at all"). Builds on

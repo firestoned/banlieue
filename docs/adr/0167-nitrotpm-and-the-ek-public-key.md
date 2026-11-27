@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0167: NitroTPM and the EK public key on EC2
 
-- **Status:** Proposed
-- **Date:** 2026-11-26
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-26
+- **Notes:** Not implemented.
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 24 (EC2), roadmap 17 (pools), roadmap 18 (sealing
   isolation). Amends, for EC2 only, [ADR-0045](0045-vtpm-endorsement-key-certificate.md)

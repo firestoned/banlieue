@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0082: No inbound to sandboxes
 
-- **Status:** Proposed
-- **Date:** 2026-09-30
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-09-30
+- **Notes:** Not implemented.
 - **Moved:** 2026-10-12, by [ADR-0097](0097-api-ends-at-virtualmachineclaim.md).
   The canonical copy is mediatore
   [ADR-0010](https://github.com/firestoned/mediatore/blob/main/docs/adr/0010-no-inbound-to-sandboxes.md).

@@ -126,6 +126,7 @@ Consequences:
 1. Lock the principle as a decision in `01-decisions.md` (D-NNN: "Availability
    Zones = local compute + local datastore; uniform tiering; no cross-datastore
    access").
+   *Closed 2026-11-27 against the tree:* landed as D-023 in `01-decisions.md`.
 2. Per-provider: define "local datastore" and surface local datastore identity
    in `status.failureDomains[].attributes` (Phase 1B vSphere first).
 3. Scheduler: enforce all-disks-local co-location and reject remote-datastore

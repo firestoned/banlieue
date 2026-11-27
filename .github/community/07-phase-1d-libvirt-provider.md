@@ -348,9 +348,15 @@ Domain XML skeleton:
       (ADR-0054) — `cloudinit/iso9660_tests.rs`, plus verification against an
       independent ISO9660 implementation: label `CIDATA`, Joliet tree, the
       hyphenated `meta-data`/`user-data` names readable.
-- [ ] Integration against a local libvirt running in CI (KVM nested
+- [x] ~~Integration against a local libvirt running in CI (KVM nested
       virt in GHA runners is unreliable; use `test-driver` mock OR a
-      self-hosted runner with libvirt).
+      self-hosted runner with libvirt).~~
+      *Checked 2026-11-27 against the tree, still open:* no workflow under
+      `.github/workflows/` runs libvirt; the live tier is `make
+      libvirt-live-test` and `make libvirt-e2e`, local-only against a real
+      host. The offline mock tier is the `FakeMachineClient` item below.
+      *Closed 2026-11-27 by the maintainer:* no self-hosted runner is required; the offline tier
+      is `FakeMachineClient` and the live tier stays local (`make libvirt-live-test`, `make libvirt-e2e`).
 - [x] ~~Mock the libvirt client trait for reconciler unit tests.~~ **Done** —
       `FakeMachineClient` in `machine_client.rs`. It deliberately rejects what
       the real daemon rejects (a redefine that does not name the existing UUID;
@@ -384,7 +390,7 @@ Domain XML skeleton:
   once left every VM defined while teardown reported success. Handled:
   `domain_undefine` has no flags parameter and always passes
   `MANAGED_SAVE|NVRAM|TPM` (ADR-0050 Decision 5).
-- **`qemu+ssh` and host keys**: known-hosts is a deployment problem.
+- ~~**`qemu+ssh` and host keys**~~ *(superseded: ADR-0011 makes the transport mTLS only and `parse_endpoint` rejects `qemu+ssh://`; no known-hosts surface exists)*: known-hosts is a deployment problem.
   Either pre-populate the container with known-hosts via ConfigMap,
   or set `StrictHostKeyChecking=accept-new` (less safe). Document
   the tradeoff.

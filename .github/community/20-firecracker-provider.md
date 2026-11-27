@@ -319,11 +319,11 @@ the ADR is written, not that anything is built.
 - [x] **ADR-0142** (was 0119): the kernel-plus-rootfs image: one OCI artifact,
       the `OciArtifact` source kind, a directory cache, a shared read-only
       root, a provider-composed command line, a fail-closed pull.
-- [ ] **ADR-0120**: `banlieue-firecracker`, the VMM client crate (as
+- [x] **ADR-0120**: `banlieue-firecracker`, the VMM client crate (as
       ADR-0061 is for Cloud Hypervisor). *Config file vs API for boot is
       decided by ADR-0140 (config file, no API socket); with no API socket there
       is no HTTP client to write in v1, so this ADR is not needed unless a
-      later amendment adds the socket.*
+      later amendment adds the socket.* *Closed 2026-11-27 against the tree:* superseded by ADR-0140 Decision 3; no such crate exists.
 - [x] **ADR-0141** (was 0121): the shared host-provider layer and its VMM
       trait, crate `banlieue-provider-host`.
 - [x] **ADR-0143** (new): the host attestation CA, the admin-asserted
@@ -357,15 +357,18 @@ the ADR is written, not that anything is built.
 > unit tests. The checklist below is kept as the plan this replaces; it
 > applies only if an amendment adds the API socket.
 
-- [ ] Pure-Rust HTTP over the API Unix socket, typed requests for
+- [x] Pure-Rust HTTP over the API Unix socket, typed requests for
       boot-source, drives, network interfaces, machine config, vsock,
       balloon, entropy, logger, metrics and actions; the config-file
       document if ADR-0120 picks it.
-- [ ] Unit tests against a fake that **rejects** what the real VMM rejects
+      *Closed 2026-11-27 against the tree:* superseded by ADR-0140 Decision 3 (config file, `--no-api`, no API socket); no `banlieue-firecracker` crate exists or is needed.
+- [x] Unit tests against a fake that **rejects** what the real VMM rejects
       (a second `InstanceStart`, configuration after start), per
       `rules/testing.md` rule 1.
-- [ ] Live protocol tier against a real VMM on a host (`#[ignore]`,
+      *Closed 2026-11-27 against the tree:* superseded by ADR-0140 Decision 3 (config file, `--no-api`, no API socket); no `banlieue-firecracker` crate exists or is needed.
+- [x] Live protocol tier against a real VMM on a host (`#[ignore]`,
       fails loudly when no host is configured).
+      *Closed 2026-11-27 against the tree:* superseded by ADR-0140 Decision 3 (config file, `--no-api`, no API socket); no `banlieue-firecracker` crate exists or is needed.
 
 ## D. API, CRDs and dispatch
 
