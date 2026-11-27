@@ -1252,6 +1252,100 @@
       "node-type": "data-asset",
       "name": "Azure disk encryption set (external, admin-owned)",
       "description": "A disk encryption set the subscription's admin creates and points at a customer-managed key in Key Vault (ADR-0172 Decision 2). banlieue never creates, reads the key of, or deletes it: it names the set's resource ID (Provider spec.connection.azure.diskEncryptionSetId, same subscription and region) on every OS disk, upload disk, snapshot and image version it creates, and ARM checks that the caller may read the set. Revoking the key stops every VM whose disk uses it: the key owner's control, not banlieue's."
+    },
+    {
+      "unique-id": "service-provider-ec2",
+      "node-type": "service",
+      "name": "banlieue-provider-ec2",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174, Proposed). In-cluster provider for the `ec2` class (`banlieue provider ec2`), Deployment Managed like the Azure provider (ADR-0158 Decision 2): one workload per Provider, one Provider per account and region. Watches its Provider, EC2Machines (in its own and its served tenant namespaces, ADR-0133) and VMImages. Talks to AWS through the first-party `banlieue-aws` client (ADR-0174 Decision 2): one reqwest client on rustls with aws-lc-rs offering X25519MLKEM768 first (ADR-0170), SigV4 written in the crate and pinned by AWS's published test vectors, typed requests for the EC2 Query API (version 2016-11-15), Service Quotas and the Tagging API, errors typed by AWS error code, throttling retried with capped exponential back-off and full jitter. Authenticates by workload identity federation only: its projected ServiceAccount token (audience sts.amazonaws.com) is exchanged by AssumeRoleWithWebIdentity for a one-hour session of the role the Provider names; it holds no static key, no Secret, and its Role reads none (ADR-0159). Publishes per-zone failure domains (zone name and zone ID, offered instance types) and vCPU quota headroom as capacity (ADR-0160, ADR-0161); reads GuestReady from the guest's console line through GetConsoleOutput (ADR-0174 Decision 3, ADR-0175); reads the NitroTPM EK public key host-side with GetInstanceTpmEkPub (ADR-0167); disables IMDS once the guest is ready; runs the tag-scoped orphan sweep (ADR-0158 Decision 5). Nothing of this exists in crates/ or deploy/ yet."
+    },
+    {
+      "unique-id": "service-ec2-image-publisher",
+      "node-type": "service",
+      "name": "EC2 image publish Job",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9, ADR-0175 Decision 2). A Job in the imagebuild namespace with its own federated identity, separate from the provider's (ADR-0159 Decision 3): verifies the VMImage's source digest, writes the pre-laid disk (ADR-0113) as a stream-optimized VMDK in banlieue-diskformat (all-zero grains omitted, the rest compressed), uploads it by S3 multipart upload (64 MiB parts in parallel) to the admin-owned staging bucket under a key derived from the source digest, starts ImportSnapshot with Encrypted=true and the admin's VM Import service role (the one role it may pass, iam:PassRole to vmie.amazonaws.com only), tags the resulting snapshot with CreateTags, registers an AMI with RegisterImage (BootMode=uefi, EnaSupport=true, TpmSupport=v2.0 when the VMImage declares tpmEnabled or firstBootSealing, one gp3 root volume with DeleteOnTermination), deletes the staging object, and records the AMI ID, region, source digest and minimum OS disk size on the VMImage's per-Provider status. Every step is named or tagged from the source digest, so a restarted Job adopts the upload (ListParts), the import task or the snapshot in flight. Deletion is DeregisterImage then DeleteSnapshot, only for a tagged, unreferenced image (ADR-0162 Decision 8). The EBS direct APIs are not used."
+    },
+    {
+      "unique-id": "network-aws-sts",
+      "node-type": "network",
+      "name": "AWS Security Token Service (external)",
+      "description": "Exchanges a federated assertion (a Kubernetes ServiceAccount token) for a temporary session of the IAM role whose trust policy names the cluster's IAM OIDC identity provider, subject and audience, by AssumeRoleWithWebIdentity: the one unsigned call banlieue makes to AWS (ADR-0174 finding 3). Fetches the issuer's discovery document and JWKS to verify the assertion. Negotiates X25519MLKEM768 with rustls and aws-lc-rs (measured in the roadmap 24 spike, ADR-0174 finding 2). External to banlieue.",
+      "interfaces": [
+        {
+          "unique-id": "aws-sts-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-aws-ec2",
+      "node-type": "network",
+      "name": "Amazon EC2 Query API (external)",
+      "description": "AWS's control plane for the account and region: instances, volumes, snapshots, AMIs, VM Import tasks, instance-type offerings, availability zones, the serial console buffer (GetConsoleOutput) and the NitroTPM EK public key (GetInstanceTpmEkPub). Query protocol (form-encoded POST, XML responses), every request SigV4-signed. Negotiates X25519MLKEM768 (ADR-0174 finding 2). The Service Quotas and Resource Groups Tagging endpoints the provider also calls are modelled with it. External to banlieue.",
+      "interfaces": [
+        {
+          "unique-id": "aws-ec2-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-aws-s3-staging",
+      "node-type": "network",
+      "name": "S3 staging bucket (external, admin-owned)",
+      "description": "An S3 bucket the account's admin creates and names on the Provider (ADR-0162 Decision 9): block public access on, a lifecycle rule expiring objects after one day and aborting incomplete multipart uploads as a backstop. The publish Job writes the VMDK there by SigV4-signed multipart upload and deletes it when the import completes; it holds no S3 read. AWS VM Import reads the object under the admin's service role. banlieue never creates or deletes the bucket. Negotiates X25519MLKEM768 (ADR-0174 finding 2).",
+      "interfaces": [
+        {
+          "unique-id": "aws-s3-staging-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-aws-vm-import",
+      "node-type": "network",
+      "name": "AWS VM Import service (external)",
+      "description": "The AWS service (principal vmie.amazonaws.com) that runs an ImportSnapshot task: it assumes the admin's VM Import service role (trust policy for vmie.amazonaws.com with sts:ExternalId=vmimport, permissions to read only the staging bucket), reads the staged VMDK, and writes an encrypted EBS snapshot into the account (ADR-0162 Decision 9). banlieue never holds that role's credentials: the publisher only passes the role by name. External to banlieue."
+    },
+    {
+      "unique-id": "network-aws-imds",
+      "node-type": "network",
+      "name": "EC2 Instance Metadata Service (link-local, external)",
+      "description": "The per-instance metadata service at the link-local address 169.254.169.254, plain HTTP as AWS designs it, reachable only from inside the instance. banlieue launches every instance with IMDSv2 required (HttpTokens=required, a session token from PUT /latest/api/token) and a response hop limit of 1, so the token cannot be fetched from a container behind another network hop (ADR-0174 Decision 3). The provider disables the endpoint (ModifyInstanceMetadataOptions HttpEndpoint=disabled) once the guest reports ready; it is never re-enabled automatically.",
+      "interfaces": [
+        {
+          "unique-id": "aws-imds-http",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 80,
+            "protocol": "HTTP"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "data-asset-ec2-machine-cr",
+      "node-type": "data-asset",
+      "name": "EC2Machine Custom Resource",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 1, Proposed). infrastructure.banlieue.io/v1alpha1 InfraMachine for the ec2 class (short name ec2m; deliberately not CAPA's AWSMachine), with EC2MachineTemplate. CAPI v1beta2 contract: providerID aws:///<zone-name>/<instance-id>, addresses (the primary private IPv4 as InternalIP and the private DNS name as InternalDNS, no public or Elastic IP), failureDomain (the zone name, with the zone ID recorded in status), initialization.provisioned. Status carries tpmEndorsementPublicKeys: the instance's NitroTPM EK public keys (RSA-2048 and ECC P-384, PEM SubjectPublicKeyInfo) read host-side by the provider with GetInstanceTpmEkPub and mirrored to the VirtualMachine and a bound VirtualMachineClaim; tpmEndorsementCertificates stays empty on EC2 and an ec2 Provider's ekTrustBundle is refused at admission (ADR-0167)."
+    },
+    {
+      "unique-id": "system-ec2-guest",
+      "node-type": "system",
+      "name": "EC2 NitroTPM guest",
+      "description": "DESIGNED, NOT IMPLEMENTED, NOT VERIFIED LIVE (ADR-0175, ADR-0167, both Proposed). A UEFI instance with a NitroTPM booted from a banlieue-published AMI of the pre-laid disk (ADR-0113): no EK certificate, the EK public key reported by the EC2 API instead (ADR-0167). Every build of a VMImage with an ec2 source carries the EC2 guest layer and the banlieue-ec2-guest helper (crates/banlieue-guest-ec2, a static musl binary delivered as a digest-pinned bundle in the OSArtifact's bundles, installed at /usr/bin, --ec2-guest-image must be digest-pinned), every step gated on the Amazon EC2 DMI identity so the image is unchanged on other backends. In the initramfs stage it masks systemd-networkd-wait-online and runs `userdata`: an IMDSv2 token, then GET /latest/user-data within 16 KiB, only a #cloud-config document, written to /oem/91_ec2_userdata.yaml 0600 atomically, so the same boot applies it; IMDS turned off on later boots is not an error, the copy on COS_OEM is applied. In the boot stage `grow` extends COS_PERSISTENT (and its LUKS mapping) to the volume with no shell. banlieue-ec2-ready.service, after cos-setup-network.service on active or passive boots only, writes `banlieue-ec2-guest: GuestReady instance=<instance-id>` to /dev/kmsg at level 3, which reaches the serial console even on a quiet boot. User data is never logged. No public IP and no instance profile."
     }
   ],
   "relationships": [
@@ -1268,7 +1362,8 @@
             "service-provider-proxmox",
             "service-provider-libvirt",
             "service-banlieue-imagebuilder",
-            "service-provider-azure"
+            "service-provider-azure",
+            "service-provider-ec2"
           ]
         }
       }
@@ -1289,7 +1384,8 @@
             "service-provider-libvirt",
             "service-banlieue-imagebuilder",
             "service-kairos-operator",
-            "service-provider-azure"
+            "service-provider-azure",
+            "service-provider-ec2"
           ]
         }
       }
@@ -4247,6 +4343,507 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-provider-ec2-kube-api",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174): watches its Provider, EC2Machines and VMImages; server-side-applies Provider status (zones by name and ID, offered instance types, vCPU quota headroom, throttling), machine status (including tpmEndorsementPublicKeys, ADR-0167) and its perProvider VMImage row. Same CRD-only contract as every provider. Also creates the EC2 image publish Job in the imagebuild namespace for each VMImage with an ec2 Url source (ADR-0162 Decisions 4 and 9), as the Azure provider does.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-ec2"
+          },
+          "destination": {
+            "node": "service-kubernetes-api",
+            "interfaces": [
+              "kube-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-provider-no-secret-reads": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159 Decision 1, ADR-0174 Decision 5): the per-Provider Role grants no get on any Secret; credentialsRef is refused at admission for an ec2 Provider. The only credential is the projected ServiceAccount token the operator mounts with the audience sts.amazonaws.com.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "IA-5"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-provider-ec2-sts",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159, ADR-0174 Decision 2): exchanges its projected ServiceAccount token (audience sts.amazonaws.com, 1 hour, kubelet-refreshed) by AssumeRoleWithWebIdentity for a one-hour session of the role named in Provider spec.connection.ec2; the token is re-read on every exchange and the session refreshed five minutes before it expires. Verified in the roadmap 24 spike: a token for the wrong subject or the wrong audience was refused (ADR-0174 finding 4).",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-ec2"
+          },
+          "destination": {
+            "node": "network-aws-sts",
+            "interfaces": [
+              "aws-sts-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-federated-identity-binding": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): the role's trust policy binds exactly one issuer (the cluster's IAM OIDC identity provider), one subject (the provider's ServiceAccount) and one audience; nothing else in the cluster can assume the Provider's role, and no static access key exists.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-2",
+                  "IA-8",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        },
+        "ec2-session-bounded-bound-revocable": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 6). A stolen credential is short-lived, bound to the site and revocable: STS sessions requested at the 900 s minimum and refreshed at 10 min; the projected ServiceAccount token at Kubernetes' 600 s minimum (STS checks only its signature and expiry); every action in the shipped IAM policies denied unless aws:SourceIp is one of the site's egress addresses (or aws:SourceVpce for a VPC endpoint), on by default and dropped only by an explicit, documented choice; role-wide revocation by a deny on aws:TokenIssueTime as the incident step. Held in memory only, never logged or persisted (ADR-0159).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-12",
+                  "IA-5",
+                  "AC-12",
+                  "IR-4"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        },
+        "ec2-pq-key-exchange": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 2, ADR-0170): STS negotiates X25519MLKEM768 with rustls and aws-lc-rs (measured in the roadmap 24 spike, ADR-0174 finding 2), so the exchange and the session it returns cross a post-quantum key exchange.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-8",
+                  "SC-13"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-aws-sts-fetches-sa-issuer",
+      "description": "AWS STS, through the account's IAM OIDC identity provider, fetches the published discovery document and JWKS to verify a ServiceAccount assertion (ADR-0159 Decision 2). The publication is public by design: it contains public keys only.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-aws-sts"
+          },
+          "destination": {
+            "node": "network-sa-issuer-publication",
+            "interfaces": [
+              "sa-issuer-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {}
+    },
+    {
+      "unique-id": "rel-provider-ec2-ec2",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3, ADR-0167): one RunInstances per machine with a ClientToken derived from the EC2Machine's UID and TagSpecifications on the instance and its volumes, after an adopt-by-tag lookup; DescribeInstances for state and address; GetConsoleOutput with Latest to read the guest's GuestReady line (ADR-0175), requeued on ADR-0043 Decision 8's cadence; ModifyInstanceMetadataOptions HttpEndpoint=disabled once the guest is ready; GetInstanceTpmEkPub once running, for tpmEndorsementPublicKeys; StopInstances and StartInstances for power; TerminateInstances then a tag sweep for leftover volumes; DescribeInstanceTypeOfferings, DescribeInstanceTypes, DescribeAvailabilityZones, Service Quotas GetServiceQuota and the Tagging API's GetResources for failure domains, quota and the orphan sweep. InsufficientInstanceCapacity and Unsupported re-place the machine in another zone under ADR-0173. It cannot register, import or delete images.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-ec2"
+          },
+          "destination": {
+            "node": "network-aws-ec2",
+            "interfaces": [
+              "aws-ec2-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-ownership-tags": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0158 Decisions 4-6, ADR-0174 Decision 3): every instance and volume carries banlieue-owner-uid, banlieue-owner-kind and banlieue-provider at creation; the provider deletes only what carries its owner's UID, adopts instead of duplicating (the ClientToken makes a retried create return the same instance), and sweeps tagged orphans after a grace period.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "CM-8",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0158-shape-of-a-cloud-provider-class.md"
+              }
+            }
+          ]
+        },
+        "ec2-launch-hardening-by-iam-condition": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3): every instance is launched with IMDSv2 required, hop limit 1, encrypted EBS volumes with DeleteOnTermination, no public IP and no instance profile, not configurable down. The IAM policy to ship in deploy/provider-ec2/ requires each by condition key (ec2:MetadataHttpTokens, hop limit, encryption, ownership tag on the request, the account's own tagged AMIs, tagged security groups, mapped instance types), so a provider bug cannot launch an instance without them. The spike's policy passed Access Analyzer with no findings and 60 of 60 simulated cases (ADR-0174 finding 5).",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "CM-7",
+                  "SC-28"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        },
+        "ec2-imds-disabled-after-guestready": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3): once GuestReady is observed the provider sets the instance's metadata endpoint to disabled, so user data (which may carry a join secret) is unreadable from inside the guest by any process; re-enabling is never automatic.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7",
+                  "SC-28"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        },
+        "ec2-ek-public-key-host-side": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0167 Decisions 1-2): the EK public key is read from the EC2 API over SigV4-authenticated TLS for the provider's own tagged instance, never from the guest; banlieue publishes it and never vouches for it (no banlieue-issued certificate), and ekTrustBundle is refused for an ec2 Provider. The role grants ec2:GetInstanceTpmEkPub scoped to tagged instances.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-3",
+                  "SI-7",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0167-nitrotpm-and-the-ek-public-key.md"
+              }
+            }
+          ]
+        },
+        "ec2-pq-key-exchange": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 2, ADR-0170): the EC2 Query API negotiates X25519MLKEM768 with rustls and aws-lc-rs (ADR-0174 finding 2); every request is SigV4-signed on aws-lc-rs's HMAC-SHA-256, pinned by AWS's published SigV4 test vectors.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-8",
+                  "SC-13"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ec2-image-publisher-sts",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 1, ADR-0159 Decision 3): the publish Job exchanges its own projected ServiceAccount token by AssumeRoleWithWebIdentity for a session of the publisher role, separate from the provider's.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ec2-image-publisher"
+          },
+          "destination": {
+            "node": "network-aws-sts",
+            "interfaces": [
+              "aws-sts-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-federated-identity-binding": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): the publisher role's trust policy binds exactly one issuer, one subject (the publish Job's ServiceAccount) and one audience; no static access key exists.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-2",
+                  "IA-8",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0159-cloud-credentials-by-workload-identity-federation.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ec2-image-publisher-ec2",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9): ImportSnapshot (Encrypted=true, the account's default EBS key or a KMS key the Provider names, the admin's VM Import service role), DescribeImportSnapshotTasks, CreateTags on the resulting snapshot, RegisterImage (BootMode=uefi, EnaSupport=true, TpmSupport=v2.0 when needed, ADR-0167), and DeregisterImage then DeleteSnapshot for a superseded or deleted VMImage; every task, snapshot and AMI tagged.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ec2-image-publisher"
+          },
+          "destination": {
+            "node": "network-aws-ec2",
+            "interfaces": [
+              "aws-ec2-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-publisher-separate-identity": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 1, ADR-0159 Decision 3): the publisher has its own federated role and policy; the runtime provider cannot import, register or delete images.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-5",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "ec2-passrole-scoped": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9): the publisher role holds iam:PassRole for the admin's VM Import service role only, conditioned on iam:PassedToService vmie.amazonaws.com, so it cannot hand any other role to any other service.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "ec2-published-digest": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 6): the source digest is verified before upload and recorded as a tag on the AMI and its snapshot; a provider boots only an AMI whose digest matches the VMImage.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SI-7"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ec2-image-publisher-s3-staging",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9): the stream-optimized VMDK is written by SigV4-signed multipart upload, 64 MiB parts in parallel, under a key derived from the source digest; a restarted Job resumes by ListParts; the object is deleted once the import completes.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-ec2-image-publisher"
+          },
+          "destination": {
+            "node": "network-aws-s3-staging",
+            "interfaces": [
+              "aws-s3-staging-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "ec2-staging-write-only": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9): the publisher can write, list parts of, abort and delete objects in the staging bucket and cannot read them; the bucket is admin-owned with block public access on and a one-day expiry and abort of incomplete multipart uploads, so a failed Job leaves nothing behind for longer than a day.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-6",
+                  "SC-28",
+                  "MP-6"
+                ],
+                "evidence": "docs/adr/0162-publishing-a-vmimage-into-a-cloud.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-aws-vm-import-reads-s3-staging",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0162 Decision 9): AWS VM Import reads the staged VMDK under the admin's VM Import service role (trusted by vmie.amazonaws.com with sts:ExternalId=vmimport, reading only the staging bucket) and writes an encrypted EBS snapshot. No banlieue identity holds this read.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-aws-vm-import"
+          },
+          "destination": {
+            "node": "network-aws-s3-staging",
+            "interfaces": [
+              "aws-s3-staging-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {}
+    },
+    {
+      "unique-id": "rel-ec2-guest-imds-userdata",
+      "description": "DESIGNED, NOT IMPLEMENTED, NOT VERIFIED LIVE (ADR-0175 Decision 5): banlieue-ec2-guest userdata, in the initramfs stage of an active or passive boot, waits up to 60 s for a route to 169.254.169.254, PUTs /latest/api/token (TTL 60 s) and GETs /latest/user-data with that token, within 16 KiB and only a #cloud-config document; it also records the instance ID for the ready line. Plain HTTP on a link-local address, as AWS designs it; no TLS stack in the helper. After the first GuestReady the provider disables IMDS, and later boots apply the copy already on COS_OEM.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-ec2-guest"
+          },
+          "destination": {
+            "node": "network-aws-imds",
+            "interfaces": [
+              "aws-imds-http"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTP",
+      "controls": {
+        "ec2-imdsv2-hop-limit-one": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3): IMDSv2 is required and the response hop limit is 1 on every instance, enforced by the IAM policy's condition keys, so an IMDSv1 request or a request from a container behind another hop gets no token.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "AC-4",
+                  "SC-7"
+                ],
+                "evidence": "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md"
+              }
+            }
+          ]
+        },
+        "ec2-guest-helper-local-only": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0175 Decisions 3 and 5): the helper is baked into the image at build time from a digest-pinned bundle (the build is refused when --ec2-guest-image is unset), fetches nothing but user data at boot, its IMDS address is a constant with no flags, it never logs user data, and it writes the file mode 0600 through a temporary file, fsync and rename. Off EC2 (DMI identity) it does nothing.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SR-4",
+                  "SI-7",
+                  "CM-14"
+                ],
+                "evidence": "docs/adr/0175-ec2-guest-layer.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-ec2-guest-console-ready",
+      "description": "DESIGNED, NOT IMPLEMENTED, NOT VERIFIED LIVE (ADR-0175 Decision 5, ADR-0174 Decision 3): banlieue-ec2-guest ready, run by banlieue-ec2-ready.service after cos-setup-network.service so user data has applied, only on an active or passive boot, writes `banlieue-ec2-guest: GuestReady instance=<instance-id>` to /dev/kmsg at level 3; it reaches the serial console (console=ttyS0) even on a quiet boot, and EC2 captures it. The provider reads it through the EC2 API with GetConsoleOutput Latest (refreshed roughly every 30 s) and accepts it only with its own instance's ID. The guest only writes to its own console; it receives nothing back, and banlieue's side is read-only.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "system-ec2-guest"
+          },
+          "destination": {
+            "node": "network-aws-ec2"
+          }
+        }
+      },
+      "controls": {
+        "ec2-guestready-read-only": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0163 Decision 1, ADR-0174 Decision 3): banlieue only reads the console buffer through the EC2 API; it opens no channel into the guest. GuestReady gates readiness, not identity, which is the EK from the API (ADR-0167): any root process in the guest could write the same line, the same trust as Azure's ready report.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-7",
+                  "AC-4"
+                ],
+                "evidence": "docs/adr/0163-guestready-on-a-cloud.md"
+              }
+            }
+          ]
+        },
+        "ec2-guestready-instance-bound": {
+          "description": "DESIGNED, NOT IMPLEMENTED (ADR-0175 Decision 5): the provider accepts the ready line only when it names the EC2Machine's own instance ID; GuestReady is sticky (ADR-0043 Decision 5), so a later line only confirms.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SI-10"
+                ],
+                "evidence": "docs/adr/0175-ec2-guest-layer.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-controller-applies-ec2-machine",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174): banlieue-controller schedules a VirtualMachine onto an ec2 Provider (a mapped instance type offered in the zone, vCPU quota headroom, NitroTPM support when tpmEnabled or firstBootSealing, ADR-0167 Decision 5) and applies an EC2Machine naming the zone, instance type, root volume size, network class and the AMI from the VMImage's perProvider row. installMode Deferred, trustedBoot, ISO images, an ekTrustBundle on the Provider and a root volume below the image's floor are refused at admission. When the EC2Machine of the recorded placement reports VMCreated=False/ZoneUnavailable (InsufficientInstanceCapacity or Unsupported) and was never provisioned, the controller re-places it exactly as for Azure (ADR-0173).",
+      "relationship-type": {
+        "interacts": {
+          "actor": "service-banlieue-controller",
+          "nodes": [
+            "data-asset-ec2-machine-cr",
+            "data-asset-provider-cr"
+          ]
+        }
+      }
     }
   ],
   "flows": [
@@ -5405,6 +6002,34 @@
           "description": "With another placement, the controller writes status.scheduled and deletes the AzureVirtualMachine; the provider's finalizer removes the NIC and leftovers by owner tag, and the next pass applies a fresh machine in the new zone. With none, the machine stays and the provider retries in place after its back-off."
         }
       ]
+    },
+    {
+      "unique-id": "flow-replace-ec2-machine-after-allocation-failure",
+      "name": "An EC2 capacity failure re-places the machine in another zone (ADR-0173, ADR-0174)",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3, ADR-0173 unchanged). The provider reports a zone-specific create failure; the controller, the only placer, re-places a machine that never ran, excluding the failed zone for a bounded, exponential time. Nothing new crosses the CRD-only bus.",
+      "transitions": [
+        {
+          "relationship-unique-id": "rel-provider-ec2-ec2",
+          "sequence-number": 1,
+          "description": "RunInstances is refused with InsufficientInstanceCapacity, or with Unsupported for an instance type not offered in the zone."
+        },
+        {
+          "relationship-unique-id": "rel-provider-ec2-kube-api",
+          "sequence-number": 2,
+          "description": "The provider sets EC2Machine VMCreated=False reason ZoneUnavailable (lastTransitionTime = the failure) and increments status.createFailures; it never edits spec.failureDomain."
+        },
+        {
+          "relationship-unique-id": "rel-controller-applies-ec2-machine",
+          "sequence-number": 3,
+          "direction": "destination-to-source",
+          "description": "The controller reads the failure for the recorded placement, records it on VirtualMachine.status.placementFailures and schedules again with that failure domain excluded."
+        },
+        {
+          "relationship-unique-id": "rel-controller-applies-ec2-machine",
+          "sequence-number": 4,
+          "description": "With another placement, the controller writes status.scheduled and deletes the EC2Machine; the provider's finalizer removes leftovers by owner tag, and the next pass applies a fresh machine in the new zone. With none, the machine stays and the provider retries in place after its back-off."
+        }
+      ]
     }
   ],
   "controls": {
@@ -5941,7 +6566,10 @@
     "docs/adr/0163-guestready-on-a-cloud.md",
     "docs/adr/0164-azure-inframachine-and-a-first-party-arm-client.md",
     "docs/adr/0165-trusted-launch-vtpm-identity-on-azure.md",
+    "docs/adr/0167-nitrotpm-and-the-ek-public-key.md",
     "docs/adr/0172-azure-policy-governed-subscriptions.md",
-    "docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md"
+    "docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md",
+    "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md",
+    "docs/adr/0175-ec2-guest-layer.md"
   ]
 }
