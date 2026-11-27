@@ -26,9 +26,17 @@ base64.workspace = true
 jiff.workspace = true
 # EC2, STS and S3 answer in XML (ADR-0174 Decision 2).
 quick-xml = { version = "0.42", features = ["serialize"] }
+# The workspace's reqwest (rustls, no bundled provider): TLS uses the
+# process provider banlieue-tls installs (ADR-0170), as banlieue-azure does.
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The token file read, the session cache's lock, the retry back-off.
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }
+# reqwest's `rustls-no-provider` panics at client build without a process
+# default provider; the binary installs it, tests do it themselves.
+banlieue-tls.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time", "test-util"] }

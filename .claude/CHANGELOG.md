@@ -1,12 +1,11 @@
 # Changelog
 
-## [2026-11-27 04:00] - banlieue-aws: the EC2 client core (ADR-0174, roadmap 24 phase A)
+## [2026-11-27 05:30] - banlieue-aws: the EC2 client, core and network layer, verified live (ADR-0174, roadmap 24 phase A)
 
 **Author:** Erick Bourgeois
 
 ### Added
-- `crates/banlieue-aws`: the pure core of the first-party AWS client, no network calls yet (the HTTP client,
-  STS web identity and the live tier follow, as #238 did for Azure). Compiles no new third-party code: every
+- `crates/banlieue-aws`: the first-party AWS client. Compiles no new third-party code: every
   dependency was already locked; `quick-xml` gains its `serialize` feature.
   - `error`: AWS faults from EC2, STS, S3 and JSON shapes, classified once: throttled, insufficient capacity,
     not offered in the zone (both re-place under ADR-0173), quota, idempotent mismatch, not found, forbidden by
@@ -33,10 +32,22 @@
     capacity, vCPU quota, IMDSv1, hop limit above 1, an unencrypted volume, a public IP, a launch without the
     ownership tag, an instance profile, oversized user data, eventual consistency on a fresh ID, throttling,
     lifecycle states), with a preset matching the spike's region.
-- 233 unit tests.
+- The network layer, as `banlieue-azure` has it: `sts` (`AssumeRoleWithWebIdentity` at STS's 900 s floor,
+  ADR-0174 Decision 6), `auth` (`WebIdentitySource` re-reading the projected token on every exchange and
+  refreshing at ten minutes of fifteen; `StaticSource` as ADR-0159's documented fallback), `client`
+  (`Ec2Client`: signed Query POSTs, throttling retried per `retry`, sustained throttling reported, `NextToken`
+  followed, plain HTTP only to a loopback test server), a test HTTP server, and the live tier
+  `tests/live_ec2.rs` (fails loudly without an account).
+- 294 unit tests.
+- **Live, against a real account (2026-11-27, `ca-central-1`):** a Kubernetes ServiceAccount token exchanged
+  at STS by the Rust client, then signed EC2 reads (zones with IDs); with an operator session, offerings and
+  `DescribeInstanceTypes` (NitroTPM 2.0 and boot modes read as parsed, confirming element names the docs give
+  no sample of), and a hardened instance launched from a sealed AMI, observed `running`, both EK types read,
+  IMDS disabled, found by owner tag and terminated in 13 s. Found: EC2 can answer `InstanceTpmEkPub.NotFound`
+  right at `running`; recorded in ADR-0167 Decision 1 as "not yet".
 
 ### Why
-Roadmap 24 phase A, after ADR-0174 (#257). Same order as the Azure client (#236 then #238).
+Roadmap 24 phase A, after ADR-0174 (#257). Same order as the Azure client (#236 then #238), in one branch.
 
 ### Impact
 - [ ] Breaking change

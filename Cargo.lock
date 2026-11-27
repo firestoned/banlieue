@@ -305,9 +305,11 @@ version = "0.6.0"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
+ "banlieue-tls",
  "base64 0.23.1",
  "jiff 0.2.46",
  "quick-xml",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",

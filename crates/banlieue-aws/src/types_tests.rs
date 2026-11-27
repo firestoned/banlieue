@@ -364,4 +364,32 @@ mod tests {
             crate::error::MAX_MESSAGE_LEN
         );
     }
+
+    #[test]
+    fn next_token_is_read_when_present() {
+        let body = r#"<DescribeInstanceTypeOfferingsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+            <requestId>r</requestId>
+            <instanceTypeOfferingSet><item><instanceType>t3.small</instanceType></item></instanceTypeOfferingSet>
+            <nextToken>page-2</nextToken>
+          </DescribeInstanceTypeOfferingsResponse>"#;
+        assert_eq!(parse_next_token(body).unwrap().as_deref(), Some("page-2"));
+    }
+
+    #[test]
+    fn an_absent_or_empty_next_token_is_the_last_page() {
+        assert_eq!(parse_next_token(DESCRIBE).unwrap(), None);
+        let empty = r#"<DescribeInstancesResponse><reservationSet/><nextToken/></DescribeInstancesResponse>"#;
+        assert_eq!(parse_next_token(empty).unwrap(), None);
+        let blank =
+            r#"<DescribeInstancesResponse><nextToken>  </nextToken></DescribeInstancesResponse>"#;
+        assert_eq!(parse_next_token(blank).unwrap(), None);
+    }
+
+    #[test]
+    fn next_token_of_malformed_xml_is_a_decode_error() {
+        assert!(matches!(
+            parse_next_token("<a><b></a>"),
+            Err(Error::Decode(_))
+        ));
+    }
 }

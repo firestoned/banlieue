@@ -37,9 +37,17 @@ impl QueryParams {
     /// Parameters for `action`, with [`EC2_API_VERSION`].
     #[must_use]
     pub fn new(action: &str) -> Self {
+        Self::with_version(action, EC2_API_VERSION)
+    }
+
+    /// Parameters for `action` of another Query protocol service, with that
+    /// service's own pinned `version` (STS is `2011-06-15`, see
+    /// [`crate::sts::STS_API_VERSION`]).
+    #[must_use]
+    pub fn with_version(action: &str, version: &str) -> Self {
         let mut params = BTreeMap::new();
         params.insert(ACTION_KEY.to_string(), action.to_string());
-        params.insert(VERSION_KEY.to_string(), EC2_API_VERSION.to_string());
+        params.insert(VERSION_KEY.to_string(), version.to_string());
         Self { params }
     }
 

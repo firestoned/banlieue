@@ -19,6 +19,7 @@
 //!   (ADR-0167).
 //! - [`parse_availability_zones`], [`parse_instance_type_offerings`],
 //!   [`parse_instance_types`]: what the `Provider` publishes.
+//! - [`parse_next_token`]: a paginated response's `nextToken`.
 //! - [`parse_error`]: EC2's, STS's or S3's error body, classified.
 //!
 //! The readers take the body as text; a caller holding bytes converts with
@@ -590,6 +591,26 @@ pub fn parse_instance_types(body: &str) -> Result<Vec<InstanceTypeInfo>> {
             boot_modes: t.supported_boot_modes.item,
         })
         .collect())
+}
+
+// ----- pagination --------------------------------------------------------
+
+/// Any paginated response; only `nextToken` is read.
+#[derive(Deserialize)]
+struct RawNextToken {
+    #[serde(rename = "nextToken", default)]
+    next_token: Option<String>,
+}
+
+/// The `nextToken` of a paginated response (`DescribeInstances`,
+/// `DescribeInstanceTypeOfferings`, ...): `None` when absent or empty,
+/// which is the last page.
+///
+/// # Errors
+/// [`Error::Decode`] for malformed XML.
+pub fn parse_next_token(body: &str) -> Result<Option<String>> {
+    let raw: RawNextToken = decode("nextToken", body)?;
+    Ok(non_empty(raw.next_token))
 }
 
 // ----- errors ------------------------------------------------------------

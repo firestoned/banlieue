@@ -23,6 +23,21 @@ mod tests {
     }
 
     #[test]
+    fn with_version_sets_another_services_version() {
+        let mut params = QueryParams::with_version("AssumeRoleWithWebIdentity", "2011-06-15");
+        assert_eq!(params.get("Action"), Some("AssumeRoleWithWebIdentity"));
+        assert_eq!(params.get("Version"), Some("2011-06-15"));
+        assert!(
+            params.push("Version", EC2_API_VERSION).is_err(),
+            "the version is still set once"
+        );
+        assert_eq!(
+            params.encode(),
+            "Action=AssumeRoleWithWebIdentity&Version=2011-06-15"
+        );
+    }
+
+    #[test]
     fn the_body_is_sorted_by_key_whatever_the_insertion_order() {
         let mut params = QueryParams::new("RunInstances");
         params.push("MinCount", "1").expect("push");
