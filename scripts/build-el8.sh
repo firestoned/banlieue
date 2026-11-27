@@ -44,10 +44,11 @@ readonly EL8_MAX_GLIBC="2.28"
 readonly BYTES_PER_GIB=1073741824
 readonly EL8_MIN_MEMORY_GIB=12
 readonly EL8_DEFAULT_JOBS=2
-readonly DNF_ATTEMPTS=6
+readonly DNF_ATTEMPTS=12
 readonly DNF_RETRIES=10
 readonly DNF_TIMEOUT_SECS=60
-readonly DNF_BACKOFF_SECS=5
+readonly DNF_BACKOFF_SECS=15
+readonly CONTAINER_PATH="/root/.cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 # glibc_within <found> <ceiling>: true when <found> <= <ceiling> as versions.
 glibc_within() {
@@ -132,27 +133,38 @@ directory = "/out/vendor"
 EOF
 
   # 2. the el8 toolchain image, cached under a tag that names the toolchain.
+  # Made with `run` + `commit` rather than `build`: a proxy reachable from a
+  # container is not always reachable from the image builder's network.
   echo "==> toolchain image $tag (RUST_VERSION=$rust)"
   if [ -n "${EL8_DRY_RUN:-}" ] || ! "$docker" image inspect "$tag" >/dev/null 2>&1; then
-    local dockerfile
-    dockerfile="$(cat <<EOF
-ARG BASE
-FROM \${BASE}
-ARG RUST_VERSION
-ARG http_proxy
-ARG https_proxy
-COPY ca.pem /tmp/ca.pem
-RUN if [ -s /tmp/ca.pem ]; then cp /tmp/ca.pem /etc/pki/ca-trust/source/anchors/extra-ca.pem && update-ca-trust; fi
-RUN for i in \$(seq 1 $DNF_ATTEMPTS); do dnf -y -q --setopt=retries=$DNF_RETRIES --setopt=timeout=$DNF_TIMEOUT_SECS --setopt=max_parallel_downloads=1 install gcc gcc-c++ make cmake perl-interpreter binutils && break; sleep $DNF_BACKOFF_SECS; done; command -v gcc && command -v objdump
-RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain \${RUST_VERSION}
-ENV PATH=/root/.cargo/bin:\$PATH
+    local setup_name="banlieue-el8-toolchain-setup"
+    local setup
+    setup="$(cat <<EOF
+set -eu
+if [ -s /tmp/ca.pem ]; then cp /tmp/ca.pem /etc/pki/ca-trust/source/anchors/extra-ca.pem && update-ca-trust; fi
+ok=
+for i in \$(seq 1 $DNF_ATTEMPTS); do
+  if dnf -y -q --setopt=retries=$DNF_RETRIES --setopt=timeout=$DNF_TIMEOUT_SECS --setopt=max_parallel_downloads=1 install gcc gcc-c++ make cmake perl-interpreter binutils; then ok=1; break; fi
+  sleep $DNF_BACKOFF_SECS
+done
+[ -n "\$ok" ] || { echo "dnf failed after $DNF_ATTEMPTS attempts" >&2; exit 1; }
+command -v gcc >/dev/null && command -v objdump >/dev/null
+curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain "\$RUST_VERSION"
 EOF
 )"
     if [ -n "${EL8_DRY_RUN:-}" ]; then
-      echo "+ $docker build --platform $platform --build-arg BASE=$image --build-arg RUST_VERSION=$rust ${proxy_build[*]:-} -t $tag $out/ctx"
+      echo "+ $docker run --name $setup_name --platform $platform -v $out/ctx/ca.pem:/tmp/ca.pem:ro -e RUST_VERSION=$rust ${proxy_run[*]:-} $image sh -c <toolchain setup>"
+      echo "+ $docker commit $setup_name $tag"
     else
-      "$docker" build --platform "$platform" --build-arg "BASE=$image" --build-arg "RUST_VERSION=$rust" \
-        ${proxy_build[@]+"${proxy_build[@]}"} -t "$tag" -f - "$out/ctx" <<<"$dockerfile"
+      "$docker" rm -f "$setup_name" >/dev/null 2>&1 || true
+      if ! "$docker" run --name "$setup_name" --platform "$platform" \
+        -v "$out/ctx/ca.pem:/tmp/ca.pem:ro" -e "RUST_VERSION=$rust" ${proxy_run[@]+"${proxy_run[@]}"} \
+        "$image" sh -c "$setup"; then
+        "$docker" rm -f "$setup_name" >/dev/null 2>&1 || true
+        die "the toolchain image could not be made (see the output above)"
+      fi
+      "$docker" commit --change "ENV PATH=$CONTAINER_PATH" "$setup_name" "$tag" >/dev/null
+      "$docker" rm -f "$setup_name" >/dev/null
     fi
   fi
 
