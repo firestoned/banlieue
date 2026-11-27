@@ -65,7 +65,11 @@ mirrored to the `VirtualMachine` and a bound `VirtualMachineClaim` beside
 The source is the cloud's control plane, not the guest: ADR-0045's rule
 holds (banlieue publishes, it never vouches), and the provenance is
 recorded so a verifier knows what it is reading. The key is read
-**host-side only**; nothing the guest says changes it.
+**host-side only**; nothing the guest says changes it. EC2 can answer
+`InstanceTpmEkPub.NotFound` for an instance that has just reached
+`running` (seen live 2026-11-27; the next read, a fraction of a second
+later, succeeded), so the provider treats not-found as "not yet" and reads
+again on its next reconcile, never as an instance without a TPM.
 
 ### 2. `ekTrustBundle` does not apply on EC2
 

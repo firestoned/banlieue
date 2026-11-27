@@ -1,5 +1,65 @@
 # Changelog
 
+## [2026-11-27 05:30] - banlieue-aws: the EC2 client, core and network layer, verified live (ADR-0174, roadmap 24 phase A)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-aws`: the first-party AWS client. Compiles no new third-party code: every
+  dependency was already locked; `quick-xml` gains its `serialize` feature.
+  - `error`: AWS faults from EC2, STS, S3 and JSON shapes, classified once: throttled, insufficient capacity,
+    not offered in the zone (both re-place under ADR-0173), quota, idempotent mismatch, not found, forbidden by
+    policy, unauthenticated, invalid, server.
+  - `sigv4`: Signature Version 4 on aws-lc-rs's HMAC-SHA-256, verified byte for byte against 36 cases of AWS's
+    own signing test suite (aws-c-auth) and four worked S3 examples; secrets and session tokens redacted from
+    `Debug`.
+  - `query`: the EC2 Query form body (`Version=2016-11-15`), deterministic, duplicate keys refused.
+  - `tags`: ADR-0158's ownership tags under EC2's rules (128/256 characters, no `aws:` prefix, 50 per
+    resource), configured extra tags kept off the `banlieue-` prefix, `TagSpecification` pairs.
+  - `retry`: throttling back-off with full jitter (1 s base, 20 s cap, 5 attempts), the draw injected; a
+    sustained-throttling tracker for a `Provider` condition.
+  - `instance`: the hardened `RunInstances` (IMDSv2 required, hop limit 1, encrypted volumes deleted on
+    termination, no public IP, never an instance profile; none of it configurable), user data refused over
+    16,384 bytes, and the other EC2 requests. The client token is derived from the machine's UID **and its
+    zone**, so a re-placement in another zone is a new request instead of an `IdempotentParameterMismatch`
+    (ADR-0174 Decision 3 amended to say so).
+  - `types`: EC2 XML responses read into facts (instances, state changes, console text, the EK public key as
+    PEM SPKI, zones with IDs, offerings, instance types with NitroTPM and boot modes); fixtures from the EC2
+    API reference, addresses moved to RFC 5737 ranges.
+  - `console`: the guest's `GuestReady` line (ADR-0175), matched only for the exact instance ID.
+  - `api::Ec2Api` and `fake::FakeEc2`: an in-memory EC2 that refuses what EC2 refused in the roadmap 24 spike
+    and what the shipped IAM policy will refuse (token reuse with new parameters, a type not offered, no
+    capacity, vCPU quota, IMDSv1, hop limit above 1, an unencrypted volume, a public IP, a launch without the
+    ownership tag, an instance profile, oversized user data, eventual consistency on a fresh ID, throttling,
+    lifecycle states), with a preset matching the spike's region.
+- The network layer, as `banlieue-azure` has it: `sts` (`AssumeRoleWithWebIdentity` at STS's 900 s floor,
+  ADR-0174 Decision 6), `auth` (`WebIdentitySource` re-reading the projected token on every exchange and
+  refreshing at ten minutes of fifteen; `StaticSource` as ADR-0159's documented fallback), `client`
+  (`Ec2Client`: signed Query POSTs, throttling retried per `retry`, sustained throttling reported, `NextToken`
+  followed, plain HTTP only to a loopback test server), a test HTTP server, and the live tier
+  `tests/live_ec2.rs` (fails loudly without an account).
+- 294 unit tests.
+- **Live, against a real account (2026-11-27, `ca-central-1`):** a Kubernetes ServiceAccount token exchanged
+  at STS by the Rust client, then signed EC2 reads (zones with IDs); with an operator session, offerings and
+  `DescribeInstanceTypes` (NitroTPM 2.0 and boot modes read as parsed, confirming element names the docs give
+  no sample of), and a hardened instance launched from a sealed AMI, observed `running`, both EK types read,
+  IMDS disabled, found by owner tag and terminated in 13 s. Found: EC2 can answer `InstanceTpmEkPub.NotFound`
+  right at `running`; recorded in ADR-0167 Decision 1 as "not yet".
+
+### Fixed
+- `crates/banlieue-aws/src/auth_tests.rs`: the token-file helper built a predictable path under
+  `std::env::temp_dir()`, which Semgrep's `rust.lang.security.temp-dir.temp-dir` rule flags. It now uses
+  `tempfile` (exclusive create, random name); `tempfile` is a `banlieue-aws` dev-dependency.
+
+### Why
+Roadmap 24 phase A, after ADR-0174 (#257). Same order as the Azure client (#236 then #238), in one branch.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-26 23:49] - OpenBao signs the federation assertion for an Azure cluster that cannot publish its issuer (ADR-0176)
 
 **Author:** Erick Bourgeois

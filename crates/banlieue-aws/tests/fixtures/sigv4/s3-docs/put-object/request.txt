@@ -1,0 +1,6 @@
+PUT /test$file.text HTTP/1.1
+Host:examplebucket.s3.amazonaws.com
+Date:Fri, 24 May 2013 00:00:00 GMT
+x-amz-storage-class:REDUCED_REDUNDANCY
+
+Welcome to Amazon S3.

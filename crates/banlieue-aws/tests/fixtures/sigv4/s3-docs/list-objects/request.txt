@@ -1,0 +1,2 @@
+GET /?max-keys=2&prefix=J HTTP/1.1
+Host:examplebucket.s3.amazonaws.com

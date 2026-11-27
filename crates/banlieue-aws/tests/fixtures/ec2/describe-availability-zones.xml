@@ -1,0 +1,93 @@
+<DescribeAvailabilityZonesResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+    <requestId>e23c5a54-a29c-43ee-8b55-0c13c26e9e01</requestId>
+    <availabilityZoneInfo>
+        <item>
+            <groupName>us-west-2-zg-1</groupName>
+            <optInStatus>opt-in-not-required</optInStatus>
+            <zoneName>us-west-2a</zoneName>
+            <zoneId>usw2-az1</zoneId>
+            <zoneState>available</zoneState>
+            <zoneType>availability-zone</zoneType>
+            <regionName>us-west-2</regionName>
+            <messageSet/>
+            <networkBorderGroup>us-west-2</networkBorderGroup>
+            <groupLongName>US West (Oregon) 1</groupLongName>
+            <geographySet>
+                <item>
+                    <name>United States of America</name>
+                </item>
+            </geographySet>
+            <subGeographySet>
+                <item>
+                    <name>Oregon</name>
+                </item>
+            </subGeographySet>
+        </item>
+        <item>
+            <groupName>us-west-2-zg-1</groupName>
+            <optInStatus>opt-in-not-required</optInStatus>
+            <zoneName>us-west-2b</zoneName>
+            <zoneId>usw2-az2</zoneId>
+            <zoneState>available</zoneState>
+            <zoneType>availability-zone</zoneType>
+            <regionName>us-west-2</regionName>
+            <messageSet/>
+            <networkBorderGroup>us-west-2</networkBorderGroup>
+            <groupLongName>US West (Oregon) 1</groupLongName>
+            <geographySet>
+                <item>
+                    <name>United States of America</name>
+                </item>
+            </geographySet>
+            <subGeographySet>
+                <item>
+                    <name>Oregon</name>
+                </item>
+            </subGeographySet>
+        </item>
+        <item>
+            <groupName>us-west-2-zg-1</groupName>
+            <optInStatus>opt-in-not-required</optInStatus>
+            <zoneName>us-west-2c</zoneName>
+            <zoneId>usw2-az3</zoneId>
+            <zoneState>available</zoneState>
+            <zoneType>availability-zone</zoneType>
+            <regionName>us-west-2</regionName>
+            <messageSet/>
+            <networkBorderGroup>us-west-2</networkBorderGroup>
+            <groupLongName>US West (Oregon) 1</groupLongName>
+            <geographySet>
+                <item>
+                    <name>United States of America</name>
+                </item>
+            </geographySet>
+            <subGeographySet>
+                <item>
+                    <name>Oregon</name>
+                </item>
+            </subGeographySet>
+        </item>
+        <item>
+            <groupName>us-west-2-zg-1</groupName>
+            <optInStatus>opt-in-not-required</optInStatus>
+            <zoneName>us-west-2d</zoneName>
+            <zoneId>usw2-az4</zoneId>
+            <zoneState>available</zoneState>
+            <zoneType>availability-zone</zoneType>
+            <regionName>us-west-2</regionName>
+            <messageSet/>
+            <networkBorderGroup>us-west-2</networkBorderGroup>
+            <groupLongName>US West (Oregon) 1</groupLongName>
+            <geographySet>
+                <item>
+                    <name>United States of America</name>
+                </item>
+            </geographySet>
+            <subGeographySet>
+                <item>
+                    <name>Oregon</name>
+                </item>
+            </subGeographySet>
+        </item>
+    </availabilityZoneInfo>
+</DescribeAvailabilityZonesResponse>

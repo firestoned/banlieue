@@ -139,8 +139,11 @@ only what banlieue calls:
 ### 3. The provider's lifecycle
 
 - **Create.** One `RunInstances` with `ClientToken` derived from the
-  `EC2Machine`'s UID (finding 1); `TagSpecifications` for the instance and
-  its volumes carrying ADR-0158's ownership tags; the `Name` tag set to the
+  `EC2Machine`'s UID **and the zone** (finding 1): a retry in the same zone
+  returns the same instance, and a re-placement in another zone (ADR-0173)
+  is a new request with a new token, since the same token with different
+  parameters is refused; `TagSpecifications` for the instance, its volumes
+  and its network interface carrying ADR-0158's ownership tags; the `Name` tag set to the
   machine's name. Before any create, look up by `banlieue-owner-uid` and
   adopt what exists (ADR-0158 Decision 4).
 - **Hardening on every instance, not configurable down.** IMDSv2 required
