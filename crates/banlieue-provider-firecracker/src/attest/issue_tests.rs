@@ -71,6 +71,41 @@ mod tests {
     }
 
     #[test]
+    fn a_leaf_under_the_path_length_zero_ca_verifies_and_cannot_sign() {
+        let (_tmp, ca) = test_ca();
+        let (key, csr) = guest_csr();
+        let pem = issue_for(
+            &key,
+            &csr,
+            &ca,
+            Serial::random().expect("serial"),
+            SystemTime::now(),
+        );
+
+        let ca_der = cert_der(ca.cert_pem());
+        let (_, ca_cert) = X509Certificate::from_der(&ca_der).expect("ca parses");
+        let der = cert_der(&pem);
+        let (_, leaf) = X509Certificate::from_der(&der).expect("leaf parses");
+
+        // The issuer allows no CA below it.
+        let ca_bc = ca_cert.basic_constraints().expect("bc").expect("present");
+        assert!(ca_bc.value.ca);
+        assert_eq!(ca_bc.value.path_len_constraint, Some(0));
+
+        // A leaf is the one thing such a CA may sign, and it does verify.
+        leaf.verify_signature(Some(ca_cert.public_key()))
+            .expect("chains to the path length zero CA");
+        assert_eq!(leaf.issuer(), ca_cert.subject());
+
+        // The leaf is not a CA, so the chain is exactly one certificate deep.
+        let bc = leaf.basic_constraints().expect("bc").expect("present");
+        assert!(!bc.value.ca);
+        assert_eq!(bc.value.path_len_constraint, None);
+        let ku = leaf.key_usage().expect("ku").expect("present");
+        assert!(!ku.value.key_cert_sign());
+    }
+
+    #[test]
     fn the_guest_cannot_choose_the_subject_or_extensions() {
         let (_tmp, ca) = test_ca();
         let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("key");

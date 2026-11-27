@@ -1,5 +1,42 @@
 # Changelog
 
+## [2026-11-27 14:00] - Firecracker attestation CA: path length 0, keyCertSign only (ADR-0143 Decision 1 amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-provider-firecracker/src/attest/ca.rs`: `Ca::create` makes the CA `CA:TRUE` with a path
+  length of zero (`CA_PATH_LEN`) and `keyCertSign` alone; it was unconstrained with `cRLSign`. The CA signs
+  guests' leaves only (`issue.rs` forces `CA:FALSE`) and issues no revocation list. `Ca::load` is unchanged
+  in what it accepts: a CA without the constraint still loads and signs, and the new
+  `Ca::signs_leaves_only` reports `false` for it so a caller can warn. Nothing is rotated automatically.
+- `ca_tests.rs`, `issue_tests.rs`, `test_support.rs`: three tests for the profile, the accessor and a leaf
+  under the constrained CA; one test and a fixture (`legacy_unconstrained_ca`) for a CA made the old way.
+- `docs/adr/0143-firecracker-host-attestation-ca-and-guest-signer.md`: Decision 1 amended.
+- `docs/architecture/calm/architecture.json`: the Firecracker attestation CA asset names the profile.
+- `docs/src/security/threat-model.md`: the `banlieue-provider-firecracker` row in section 2 names the profile.
+
+### Why
+mediatore's SPIRE `x509pop` wiring refuses a CA that is not `CA:TRUE, pathlen:0`, so that a guest holding a
+leaf can never be handed something that chains further. The shared `banlieue-attestation-ca` (ADR-0146) has
+had this profile from its first commit; this module was the one place that was wider.
+
+### Existing CAs
+None to migrate: no binary or installer verb links `banlieue-provider-firecracker`, so no host holds a CA
+this module made, and the Cloud Hypervisor hosts' CAs come from the shared crate. A CA made before the
+constraint would be replaced by ADR-0143 Decision 1's rotation (a new CA under a new name).
+
+### Threat model
+Pass for this amendment: no new component, asset, actor, identity, grant or boundary, and no accepted risk
+changes (A-24, TB-21 and the section 8 rows describe the shared crate's CA, already path length 0). One row
+changed (section 2). The stamp already reads 2026-11-27 and its ADR range is unchanged.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 10:45] - A running VM stays Ready through an image republish; Azure OS-disk tag merge removed (ADR-0172, ADR-0173 amended)
 
 **Author:** Erick Bourgeois

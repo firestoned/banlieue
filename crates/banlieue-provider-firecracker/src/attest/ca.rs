@@ -34,6 +34,8 @@ pub const CA_CERT_MODE: u32 = 0o644;
 pub const CA_KEY_FILE: &str = "ca.key";
 /// Certificate file name.
 pub const CA_CERT_FILE: &str = "ca.crt";
+/// Path length of the CA certificate: it signs leaves, and no CA below it.
+pub const CA_PATH_LEN: u8 = 0;
 /// Lifetime of the CA certificate, in seconds (ten years).
 pub const CA_VALIDITY_SECS: u64 = 10 * 365 * 24 * 3600;
 
@@ -163,8 +165,18 @@ fn write_new(path: &Path, bytes: &[u8], mode: u32) -> Result<(), CaError> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode)).map_err(io_at(path))
 }
 
-/// The common name and the SPKI DER of a PEM certificate.
-fn describe_cert(cert_pem: &str) -> Result<(String, Vec<u8>), CaError> {
+/// What loading reads out of the CA certificate.
+struct CertFacts {
+    /// The subject's common name.
+    name: String,
+    /// The SubjectPublicKeyInfo, DER.
+    spki_der: Vec<u8>,
+    /// Whether it is `CA:TRUE` with a path length of zero.
+    leaves_only: bool,
+}
+
+/// The common name, the SPKI DER and the path length rule of a PEM certificate.
+fn describe_cert(cert_pem: &str) -> Result<CertFacts, CaError> {
     let (_, pem) = parse_x509_pem(cert_pem.as_bytes()).map_err(crypto)?;
     let cert = pem.parse_x509().map_err(crypto)?;
     let name = cert
@@ -175,7 +187,14 @@ fn describe_cert(cert_pem: &str) -> Result<(String, Vec<u8>), CaError> {
         .ok_or(CaError::NoCommonName)?
         .to_owned();
     validate_name(&name)?;
-    Ok((name, cert.public_key().raw.to_vec()))
+    let leaves_only = cert.basic_constraints().map_err(crypto)?.is_some_and(|bc| {
+        bc.value.ca && bc.value.path_len_constraint == Some(u32::from(CA_PATH_LEN))
+    });
+    Ok(CertFacts {
+        name,
+        spki_der: cert.public_key().raw.to_vec(),
+        leaves_only,
+    })
 }
 
 /// The loaded CA.
@@ -183,6 +202,7 @@ pub struct Ca {
     pub(super) issuer: rcgen::Issuer<'static, rcgen::KeyPair>,
     name: String,
     cert_pem: String,
+    leaves_only: bool,
 }
 
 impl std::fmt::Debug for Ca {
@@ -195,7 +215,8 @@ impl std::fmt::Debug for Ca {
 }
 
 impl Ca {
-    /// Creates a new CA in `dir`.
+    /// Creates a new CA in `dir`: self-signed, `CA:TRUE` with a path length of
+    /// zero and `keyCertSign` alone, both critical.
     ///
     /// # Errors
     /// [`CaError`]; never overwrites.
@@ -214,8 +235,13 @@ impl Ca {
         let mut params = CertificateParams::default();
         params.distinguished_name = DistinguishedName::new();
         params.distinguished_name.push(DnType::CommonName, name);
-        params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-        params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+        // It signs guests' leaves and nothing that signs: a verifier that
+        // requires `CA:TRUE, pathlen:0` (mediatore's x509pop bundle) refuses
+        // anything wider.
+        params.is_ca = IsCa::Ca(BasicConstraints::Constrained(CA_PATH_LEN));
+        // No `cRLSign`: no revocation list is issued (removal from the bundle
+        // is the revocation, ADR-0143 Decision 2).
+        params.key_usages = vec![KeyUsagePurpose::KeyCertSign];
         params.serial_number = Some(SerialNumber::from_slice(
             Serial::random()
                 .map_err(|e| CaError::Crypto(e.to_string()))?
@@ -236,6 +262,9 @@ impl Ca {
 
     /// Loads the CA in `dir`, refusing wrong modes.
     ///
+    /// A certificate without the path length constraint is not refused and is
+    /// never replaced here; [`Ca::signs_leaves_only`] reports it.
+    ///
     /// # Errors
     /// [`CaError`].
     pub fn load(dir: &Path) -> Result<Self, CaError> {
@@ -246,15 +275,16 @@ impl Ca {
         let cert_pem = read_checked(&cert_path, None)?;
 
         let key = KeyPair::from_pem(&key_pem).map_err(crypto)?;
-        let (name, cert_key) = describe_cert(&cert_pem)?;
-        if cert_key != key.subject_public_key_info() {
+        let facts = describe_cert(&cert_pem)?;
+        if facts.spki_der != key.subject_public_key_info() {
             return Err(CaError::KeyMismatch);
         }
         let issuer = Issuer::from_ca_cert_pem(&cert_pem, key).map_err(crypto)?;
         Ok(Self {
             issuer,
-            name,
+            name: facts.name,
             cert_pem,
+            leaves_only: facts.leaves_only,
         })
     }
 
@@ -266,6 +296,17 @@ impl Ca {
     /// The CA certificate, PEM.
     pub fn cert_pem(&self) -> &str {
         &self.cert_pem
+    }
+
+    /// Whether the certificate is `CA:TRUE` with a path length of zero, as
+    /// every CA [`Ca::create`] makes is.
+    ///
+    /// `false` for a CA made before the constraint (or brought from elsewhere):
+    /// it still loads and still signs, so the caller should warn that it is
+    /// wider than it needs to be, and that a verifier requiring a path length
+    /// of zero refuses it, until it is rotated.
+    pub fn signs_leaves_only(&self) -> bool {
+        self.leaves_only
     }
 }
 
