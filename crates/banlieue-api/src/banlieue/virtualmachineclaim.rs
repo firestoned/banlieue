@@ -255,6 +255,14 @@ pub struct VirtualMachineClaimStatus {
     /// for a member with no vTPM.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
+    /// The TPM endorsement key public keys (PEM `SubjectPublicKeyInfo`) of
+    /// the bound member, mirrored from its `VirtualMachine.status` (ADR-0167
+    /// Decision 1). Set where the backend publishes a public key and no
+    /// certificate: an EC2 member with NitroTPM, whose keys the provider read
+    /// host-side from the EC2 API. banlieue publishes them and vouches for
+    /// nothing. Empty for every other member.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tpm_endorsement_public_keys: Vec<String>,
     /// The certificate subject CN of the bound member's node-attestation
     /// identity, mirrored from the infra CR (ADR-0143 Decision 3), beside
     /// [`tpm_endorsement_certificates`](Self::tpm_endorsement_certificates).

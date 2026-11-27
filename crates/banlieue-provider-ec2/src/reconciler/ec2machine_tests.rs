@@ -494,6 +494,12 @@ mod tests {
         ) -> banlieue_aws::Result<Vec<InstanceTypeInfo>> {
             self.inner.instance_types(t).await
         }
+        async fn describe_image(
+            &self,
+            i: &str,
+        ) -> banlieue_aws::Result<Option<banlieue_aws::types::ImageInfo>> {
+            self.inner.describe_image(i).await
+        }
     }
 
     #[tokio::test]

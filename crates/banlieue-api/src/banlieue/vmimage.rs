@@ -865,6 +865,59 @@ pub struct ImagePerProviderStatus {
     /// provider can read a published image only by its name.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superseded_refs: Vec<String>,
+    /// `ec2` `Provider`s only: what EC2's `DescribeImages` reports of the AMI
+    /// in `resolvedRef`, read by the provider so the controller and the
+    /// scheduler can decide without calling EC2 (roadmap 24 phase E). Unset
+    /// on every other backend, and until the provider has read the AMI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ec2: Option<Ec2ImageAttributes>,
+}
+
+/// Longest root device name recorded (`/dev/` and a short device name).
+pub const MAX_EC2_ROOT_DEVICE_NAME_LEN: u32 = 64;
+/// Longest `bootMode` or `tpmSupport` value recorded.
+pub const MAX_EC2_IMAGE_ATTRIBUTE_LEN: u32 = 32;
+/// `tpmSupport` of an AMI registered for NitroTPM 2.0 (ADR-0167 Decision 5).
+pub const EC2_TPM_SUPPORT_V2: &str = "v2.0";
+/// `bootMode` NitroTPM requires (ADR-0167 finding 5).
+pub const EC2_BOOT_MODE_UEFI: &str = "uefi";
+
+/// An AMI's attributes, as `DescribeImages` reported them to an `ec2`
+/// provider (ADR-0167 Decision 5, ADR-0174). The owner account is not
+/// recorded.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Ec2ImageAttributes {
+    /// The AMI's architecture: EC2's `x86_64` is `amd64`, `arm64` is
+    /// `arm64`. An AMI of any other architecture is not made ready.
+    pub architecture: Architecture,
+    /// The AMI's root device name (`/dev/xvda`, `/dev/sda1`): the device the
+    /// `EC2Machine`'s root volume mapping must name, or EC2 adds the volume
+    /// beside the AMI's own instead of resizing it.
+    #[schemars(length(min = 1, max = MAX_EC2_ROOT_DEVICE_NAME_LEN), pattern(r"^/dev/[a-z0-9]+$"))]
+    pub root_device_name: String,
+    /// `bootMode` (`uefi`, `legacy-bios`, `uefi-preferred`); unset when the
+    /// AMI leaves it to the instance type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_EC2_IMAGE_ATTRIBUTE_LEN))]
+    pub boot_mode: Option<String>,
+    /// `tpmSupport`: `v2.0` for an AMI registered for NitroTPM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(length(max = MAX_EC2_IMAGE_ATTRIBUTE_LEN))]
+    pub tpm_support: Option<String>,
+    /// `enaSupport`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ena_support: bool,
+}
+
+impl Ec2ImageAttributes {
+    /// Whether the AMI can boot with NitroTPM: registered with
+    /// `TpmSupport=v2.0` and `BootMode=uefi` (ADR-0167 Decision 5).
+    #[must_use]
+    pub fn supports_nitro_tpm(&self) -> bool {
+        self.tpm_support.as_deref() == Some(EC2_TPM_SUPPORT_V2)
+            && self.boot_mode.as_deref() == Some(EC2_BOOT_MODE_UEFI)
+    }
 }
 
 /// Readiness of a `VMImage` in one failure domain (zone) of a Provider. For

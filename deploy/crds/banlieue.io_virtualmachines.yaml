@@ -712,6 +712,17 @@ spec:
                 items:
                   type: string
                 type: array
+              tpmEndorsementPublicKeys:
+                description: |-
+                  Mirrored from the infra CR's `status.tpmEndorsementPublicKeys`
+                  (ADR-0167 Decision 1): the TPM's endorsement key public keys, PEM
+                  `SubjectPublicKeyInfo`, where the backend publishes a public key and no
+                  certificate (an `EC2Machine` with NitroTPM, read host-side from the
+                  EC2 API). `tpmEndorsementCertificates` stays empty on such a machine.
+                  Mirrored onward onto a bound `VirtualMachineClaim`.
+                items:
+                  type: string
+                type: array
             type: object
         required:
         - spec

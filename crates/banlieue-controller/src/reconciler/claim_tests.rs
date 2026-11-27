@@ -59,6 +59,22 @@ mod tests {
         assert_eq!(body["tpmEndorsementCertificates"], serde_json::json!([]));
     }
 
+    /// ADR-0167 Decision 1: an EC2 member's EK public keys reach the claim,
+    /// as a list, so a member that withdrew them leaves none behind.
+    #[test]
+    fn a_hold_writes_the_members_ek_public_keys() {
+        let pem = "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----\n";
+        let state = MirroredMemberState {
+            tpm_endorsement_public_keys: vec![pem.into()],
+            ..MirroredMemberState::default()
+        };
+        let body = mirrored_status_fields(&state);
+        assert_eq!(body["tpmEndorsementPublicKeys"], serde_json::json!([pem]));
+
+        let body = mirrored_status_fields(&MirroredMemberState::default());
+        assert_eq!(body["tpmEndorsementPublicKeys"], serde_json::json!([]));
+    }
+
     #[test]
     fn a_hold_clears_a_withdrawn_attestation_subject() {
         let body = mirrored_status_fields(&MirroredMemberState::default());

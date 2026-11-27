@@ -858,6 +858,7 @@ pub async fn compute_template_status(
         source_digest: None,
         min_os_disk_size_gib: None,
         superseded_refs: Vec::new(),
+        ec2: None,
     }
 }
 
@@ -985,6 +986,7 @@ async fn reconcile_url_source(
         source_digest: None,
         min_os_disk_size_gib: None,
         superseded_refs: Vec::new(),
+        ec2: None,
     }
 }
 

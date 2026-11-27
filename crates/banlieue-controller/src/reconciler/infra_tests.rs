@@ -157,6 +157,7 @@ mod tests {
                     source_digest: None,
                     min_os_disk_size_gib: None,
                     superseded_refs: Vec::new(),
+                    ec2: None,
                 }],
                 build_artifact: None,
                 conditions: vec![],
@@ -774,6 +775,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         }];
         let m = build_vsphere_machine(
             &parent_vm(),
@@ -811,6 +813,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         }];
         image
     }
@@ -940,6 +943,7 @@ mod tests {
                 source_digest: None,
                 min_os_disk_size_gib: None,
                 superseded_refs: Vec::new(),
+                ec2: None,
             }];
         }
         img
@@ -1344,6 +1348,7 @@ mod tests {
                 source_digest: None,
                 min_os_disk_size_gib: None,
                 superseded_refs: Vec::new(),
+                ec2: None,
             }];
         }
         img
@@ -1603,6 +1608,7 @@ mod tests {
                 source_digest: None,
                 min_os_disk_size_gib: None,
                 superseded_refs: Vec::new(),
+                ec2: None,
             }];
         }
         img
@@ -2177,6 +2183,7 @@ mod tests {
                 source_digest: None,
                 min_os_disk_size_gib: None,
                 superseded_refs: Vec::new(),
+                ec2: None,
             }];
         }
         img
@@ -2703,6 +2710,734 @@ mod tests {
                 .spec
                 .names
                 .kind
+        );
+    }
+
+    // ======================================================================
+    // build_ec2_machine (ADR-0174, roadmap 24 phase E)
+    // ======================================================================
+
+    const EC2_AMI: &str = "ami-0123456789abcdef0";
+    const EC2_AMI_PUBLISHED: &str = "ami-89abcdef";
+    const EC2_SUBNET_DEFAULT: &str = "subnet-0123456789abcdef0";
+    const EC2_SUBNET_ZONE_B: &str = "subnet-89abcdef";
+    const EC2_SG_A: &str = "sg-0123456789abcdef0";
+    const EC2_SG_B: &str = "sg-89abcdef";
+    const EC2_ZONE_A: &str = "ca-central-1a";
+    const EC2_ZONE_B: &str = "ca-central-1b";
+    const EC2_ZONE_D: &str = "ca-central-1d";
+    const EC2_KMS_ALIAS: &str = "alias/banlieue-ebs";
+
+    fn ec2_scoped(zone: &str, pairs: &[(&str, &str)]) -> banlieue_api::banlieue::ScopedTarget {
+        banlieue_api::banlieue::ScopedTarget {
+            zone: Some(zone.into()),
+            target: pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// An `ec2` Provider mapping `db-prod-large` to an instance type with a
+    /// zone-b override, `gold` to gp3 with IOPS and throughput (zone d: io2),
+    /// and `prod` to a subnet and two security groups (zone b: its own
+    /// subnet), with a KMS key.
+    fn ec2_provider() -> Provider {
+        use banlieue_api::banlieue::{
+            Ec2Connection, InstanceSizeMapping, NetworkClassMapping, StorageClassMapping,
+            ZonedInstanceSize,
+        };
+        let mut p = parent_provider();
+        p.metadata.name = Some("aws1".into());
+        p.spec.provider_class_ref = LocalObjectReference { name: "ec2".into() };
+        p.spec.connection.credentials_ref = None;
+        p.spec.connection.endpoint = "https://ec2.ca-central-1.amazonaws.com".into();
+        p.spec.connection.ec2 = Some(Ec2Connection {
+            region: "ca-central-1".into(),
+            role_arn: "arn:aws:iam::111122223333:role/banlieue-provider".into(),
+            kms_key_id: Some(EC2_KMS_ALIAS.into()),
+            ..Ec2Connection::default()
+        });
+        p.spec.capabilities = ProviderCapabilities {
+            instance_sizes: vec![InstanceSizeMapping {
+                vm_class: "db-prod-large".into(),
+                size: "m7i.2xlarge".into(),
+                per_zone: vec![ZonedInstanceSize {
+                    zone: EC2_ZONE_B.into(),
+                    size: "m6i.2xlarge".into(),
+                }],
+            }],
+            storage_classes: vec![StorageClassMapping {
+                name: "gold".into(),
+                target: Some(BTreeMap::from([
+                    ("volumeType".into(), "gp3".into()),
+                    ("iops".into(), "4000".into()),
+                    ("throughput".into(), "250".into()),
+                ])),
+                per_zone: vec![ec2_scoped(
+                    EC2_ZONE_D,
+                    &[("volumeType", "io2"), ("iops", "8000")],
+                )],
+            }],
+            network_classes: vec![NetworkClassMapping {
+                name: "prod".into(),
+                target: Some(BTreeMap::from([
+                    ("subnetId".into(), EC2_SUBNET_DEFAULT.into()),
+                    ("securityGroupIds".into(), format!("{EC2_SG_A}, {EC2_SG_B}")),
+                ])),
+                per_zone: vec![ec2_scoped(
+                    EC2_ZONE_B,
+                    &[
+                        ("subnetId", EC2_SUBNET_ZONE_B),
+                        ("securityGroupIds", EC2_SG_A),
+                    ],
+                )],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        p
+    }
+
+    /// A decision for zone `zone`, carrying it the way the EC2 provider
+    /// publishes it: `attributes.raw.zone` and `labels.zone`.
+    fn ec2_decision(zone: &str) -> Decision {
+        Decision {
+            provider_name: "aws1".into(),
+            provider_namespace: "banlieue-system".into(),
+            provider_class: "ec2".into(),
+            failure_domain_name: format!("aws1-{zone}"),
+            resolved_storage: vec![ResolvedResource {
+                class_name: "gold".into(),
+                backend_id: "gp3".into(),
+            }],
+            resolved_networks: vec![ResolvedResource {
+                class_name: "prod".into(),
+                backend_id: EC2_SUBNET_DEFAULT.into(),
+            }],
+            failure_domain_raw: BTreeMap::from([("zone".to_string(), zone.to_string())]),
+            failure_domain_labels: BTreeMap::from([("zone".to_string(), zone.to_string())]),
+        }
+    }
+
+    /// An image whose `ec2` source is a hand-published AMI (`Template`), with
+    /// the row the EC2 provider writes for it.
+    fn ec2_image(reference: &str) -> VMImage {
+        let mut img = parent_image();
+        img.spec.sources = vec![ImageSource {
+            provider_class: "ec2".into(),
+            kind: ImageSourceKind::Template,
+            reference: reference.into(),
+            import_from: None,
+            checksum: None,
+        }];
+        if let Some(status) = img.status.as_mut() {
+            status.per_provider = vec![ImagePerProviderStatus {
+                provider_name: "aws1".into(),
+                provider_namespace: "banlieue-system".into(),
+                ready: true,
+                resolved_ref: Some(reference.into()),
+                reason: None,
+                message: None,
+                zones: vec![],
+                source_digest: None,
+                min_os_disk_size_gib: None,
+                superseded_refs: Vec::new(),
+                ec2: None,
+            }];
+        }
+        img
+    }
+
+    fn build_ec2(
+        vm: &VirtualMachine,
+        class: &VMClass,
+        image: &VMImage,
+        decision: &Decision,
+        provider: &Provider,
+        user_data: Option<&str>,
+    ) -> Result<banlieue_api::infrastructure::EC2Machine, InfraBuildError> {
+        build_ec2_machine(vm, class, image, decision, provider, user_data)
+    }
+
+    fn build_ec2_default(
+        decision: &Decision,
+    ) -> Result<banlieue_api::infrastructure::EC2Machine, InfraBuildError> {
+        build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            decision,
+            &ec2_provider(),
+            None,
+        )
+    }
+
+    #[test]
+    fn ec2_happy_path_resolves_every_field_for_the_zone() {
+        use banlieue_api::infrastructure::Ec2VolumeType;
+        let mut class = parent_class();
+        class.spec.tpm_enabled = true;
+        let mut vm = parent_vm();
+        vm.spec.desired_power_state = PowerState::PoweredOff;
+        let m = build_ec2(
+            &vm,
+            &class,
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_B),
+            &ec2_provider(),
+            Some("#cloud-config\n"),
+        )
+        .expect("ok");
+
+        assert_eq!(m.metadata.name.as_deref(), Some("db-01"));
+        assert_eq!(m.metadata.namespace.as_deref(), Some("banlieue-system"));
+        let o = &m.metadata.owner_references.as_ref().expect("owner")[0];
+        assert_eq!(o.kind, "VirtualMachine");
+        assert_eq!(o.controller, Some(true));
+        assert_eq!(m.spec.provider_ref.name, "aws1");
+        assert_eq!(m.spec.provider_ref.namespace, None);
+        assert_eq!(m.spec.failure_domain.as_deref(), Some("aws1-ca-central-1b"));
+        assert_eq!(m.spec.zone, EC2_ZONE_B);
+        assert_eq!(
+            m.spec.instance_type, "m6i.2xlarge",
+            "the zone-b override wins"
+        );
+        assert_eq!(m.spec.image_id, EC2_AMI);
+        assert_eq!(
+            m.spec.root_device_name,
+            banlieue_api::infrastructure::DEFAULT_ROOT_DEVICE_NAME
+        );
+        assert_eq!(m.spec.root_volume_gi_b, 100);
+        assert_eq!(m.spec.volume_type, Ec2VolumeType::Gp3);
+        assert_eq!(m.spec.iops, Some(4000));
+        assert_eq!(m.spec.throughput, Some(250));
+        assert_eq!(m.spec.kms_key_id.as_deref(), Some(EC2_KMS_ALIAS));
+        assert_eq!(m.spec.subnet_id, EC2_SUBNET_ZONE_B);
+        assert_eq!(m.spec.security_group_ids, vec![EC2_SG_A.to_string()]);
+        assert!(m.spec.tpm_enabled);
+        assert_eq!(m.spec.user_data.as_deref(), Some("#cloud-config\n"));
+        assert_eq!(m.spec.desired_power_state, PowerState::PoweredOff);
+        assert_eq!(m.spec.provider_id, None);
+        m.spec.validate().expect("validates");
+    }
+
+    #[test]
+    fn ec2_default_targets_apply_in_a_zone_with_no_override() {
+        use banlieue_api::infrastructure::Ec2VolumeType;
+        let m = build_ec2_default(&ec2_decision(EC2_ZONE_A)).expect("ok");
+        assert_eq!(m.spec.instance_type, "m7i.2xlarge");
+        assert_eq!(m.spec.subnet_id, EC2_SUBNET_DEFAULT);
+        assert_eq!(
+            m.spec.security_group_ids,
+            vec![EC2_SG_A.to_string(), EC2_SG_B.to_string()],
+            "comma-separated, whitespace trimmed, order kept"
+        );
+        assert!(!m.spec.tpm_enabled);
+        assert_eq!(m.spec.user_data, None);
+
+        let m = build_ec2_default(&ec2_decision(EC2_ZONE_D)).expect("ok");
+        assert_eq!(m.spec.volume_type, Ec2VolumeType::Io2, "zone-d override");
+        assert_eq!(m.spec.iops, Some(8000));
+        assert_eq!(
+            m.spec.throughput, None,
+            "the zone target replaces the default"
+        );
+    }
+
+    #[test]
+    fn ec2_storage_target_with_only_a_volume_type_sets_no_iops_or_throughput() {
+        let mut p = ec2_provider();
+        p.spec.capabilities.storage_classes[0].target =
+            Some(BTreeMap::from([("volumeType".into(), "gp2".into())]));
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &p,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.iops, None);
+        assert_eq!(m.spec.throughput, None);
+    }
+
+    #[test]
+    fn ec2_provider_without_a_kms_key_leaves_it_unset() {
+        let mut p = ec2_provider();
+        if let Some(ec2) = p.spec.connection.ec2.as_mut() {
+            ec2.kms_key_id = None;
+        }
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &p,
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.kms_key_id, None);
+    }
+
+    #[test]
+    fn ec2_zone_falls_back_to_the_failure_domain_label() {
+        let mut d = ec2_decision(EC2_ZONE_A);
+        d.failure_domain_raw.clear();
+        let m = build_ec2_default(&d).expect("ok");
+        assert_eq!(m.spec.zone, EC2_ZONE_A);
+    }
+
+    #[test]
+    fn ec2_failure_domain_without_a_zone_is_an_error() {
+        let mut d = ec2_decision(EC2_ZONE_A);
+        d.failure_domain_raw.clear();
+        d.failure_domain_labels.clear();
+        let e = build_ec2_default(&d).unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingZone(_)), "{e}");
+    }
+
+    #[test]
+    fn ec2_unmapped_class_is_an_error_naming_the_class() {
+        let mut class = parent_class();
+        class.metadata.name = Some("tiny".into());
+        let e = build_ec2(
+            &parent_vm(),
+            &class,
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::UnmappedInstanceSize { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("tiny"), "{e}");
+    }
+
+    /// A `Url` image published into this Provider (phase D writes the row):
+    /// the ready row's `resolvedRef` for the current build.
+    fn ec2_url_image(digest: &str) -> VMImage {
+        let mut img = ec2_image(EC2_AMI_PUBLISHED);
+        img.spec.sources[0].kind = ImageSourceKind::Url;
+        img.spec.sources[0].reference = "https://example.com/kairos.raw".into();
+        let status = img.status.as_mut().expect("status");
+        status.per_provider[0].source_digest = Some(digest.into());
+        status.build_artifact = Some(BuildArtifactStatus {
+            kind: BuildArtifactKind::CloudImage,
+            phase: BuildArtifactPhase::Ready,
+            os_artifact_ref: "kairos".into(),
+            os_artifact_uid: None,
+            pvc_ref: None,
+            file: Some("kairos.raw".into()),
+            reason: None,
+            message: None,
+            checksum: Some(digest.into()),
+            oci_artifact: None,
+            first_boot_sealing_layer: false,
+            prelaid_disk_size_gi_b: None,
+        });
+        img
+    }
+
+    #[test]
+    fn ec2_url_image_boots_the_ami_published_into_the_chosen_provider() {
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_url_image(AZ_DIGEST),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.image_id, EC2_AMI_PUBLISHED);
+
+        let mut stale = ec2_url_image(AZ_DIGEST);
+        stale.status.as_mut().expect("status").per_provider[0].source_digest =
+            Some("sha256:00".into());
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &stale,
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingResolvedImageRef { .. }),
+            "an AMI of an earlier build is not booted: {e}"
+        );
+    }
+
+    #[test]
+    fn ec2_image_without_an_ec2_template_or_url_source_is_an_error() {
+        let mut img = ec2_image(EC2_AMI);
+        img.spec.sources[0].provider_class = "azure".into();
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &img,
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingImageSource { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("ec2"), "{e}");
+    }
+
+    #[test]
+    fn ec2_image_reference_that_is_not_an_ami_id_is_an_error() {
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image("kairos-1.0.0"),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::InvalidImageReference { .. }),
+            "{e}"
+        );
+        assert!(e.to_string().contains("kairos-1.0.0"), "{e}");
+    }
+
+    #[test]
+    fn ec2_template_reference_is_trimmed() {
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(&format!(" {EC2_AMI} ")),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.image_id, EC2_AMI);
+    }
+
+    #[test]
+    fn ec2_storage_class_without_a_volume_type_is_an_error() {
+        let mut p = ec2_provider();
+        p.spec.capabilities.storage_classes[0].target =
+            Some(BTreeMap::from([("sku".into(), "x".into())]));
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::MissingTarget { .. }), "{e}");
+        assert!(e.to_string().contains("volumeType"), "{e}");
+    }
+
+    #[test]
+    fn ec2_storage_target_values_that_do_not_parse_are_errors() {
+        let cases: [(&str, &str, &str); 3] = [
+            ("volumeType", "st1", "volumeType"),
+            ("iops", "lots", "iops"),
+            ("throughput", "-1", "throughput"),
+        ];
+        for (key, value, named) in cases {
+            let mut p = ec2_provider();
+            if let Some(t) = p.spec.capabilities.storage_classes[0].target.as_mut() {
+                t.insert(key.into(), value.into());
+            }
+            let e = build_ec2(
+                &parent_vm(),
+                &parent_class(),
+                &ec2_image(EC2_AMI),
+                &ec2_decision(EC2_ZONE_A),
+                &p,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(e, InfraBuildError::InvalidTarget { .. }),
+                "{key}: {e}"
+            );
+            assert!(e.to_string().contains(named), "{key}: {e}");
+            assert!(e.to_string().contains(value), "{key}: {e}");
+        }
+    }
+
+    #[test]
+    fn ec2_network_class_without_a_subnet_or_security_groups_is_an_error() {
+        for key in ["subnetId", "securityGroupIds"] {
+            let mut p = ec2_provider();
+            p.spec.capabilities.network_classes[0].per_zone.clear();
+            if let Some(t) = p.spec.capabilities.network_classes[0].target.as_mut() {
+                t.remove(key);
+            }
+            let e = build_ec2(
+                &parent_vm(),
+                &parent_class(),
+                &ec2_image(EC2_AMI),
+                &ec2_decision(EC2_ZONE_A),
+                &p,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(e, InfraBuildError::MissingTarget { .. }),
+                "{key}: {e}"
+            );
+            assert!(e.to_string().contains(key), "{key}: {e}");
+        }
+
+        let mut p = ec2_provider();
+        if let Some(t) = p.spec.capabilities.network_classes[0].target.as_mut() {
+            t.insert("securityGroupIds".into(), " , ".into());
+        }
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(e, InfraBuildError::MissingTarget { .. }),
+            "an empty list names no security group: {e}"
+        );
+    }
+
+    #[test]
+    fn ec2_invalid_identifiers_fail_the_specs_own_validation() {
+        let mut p = ec2_provider();
+        if let Some(t) = p.spec.capabilities.network_classes[0].target.as_mut() {
+            t.insert("subnetId".into(), "not-a-subnet".into());
+        }
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &p,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::InvalidSpec(_)), "{e}");
+    }
+
+    #[test]
+    fn ec2_user_data_over_the_ec2_limit_is_an_error() {
+        let limit = banlieue_api::infrastructure::EC2_MAX_USER_DATA_BYTES;
+        let at_limit = "a".repeat(limit);
+        build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            Some(&at_limit),
+        )
+        .expect("exactly the limit is accepted");
+
+        let over = "a".repeat(limit + 1);
+        let e = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            Some(&over),
+        )
+        .unwrap_err();
+        assert!(matches!(e, InfraBuildError::InvalidSpec(_)), "{e}");
+        assert!(e.to_string().contains("16384"), "{e}");
+    }
+
+    #[test]
+    fn ec2_refuses_what_the_backend_cannot_do() {
+        type Mutate = fn(&mut VirtualMachine, &mut VMClass, &mut VMImage);
+        let cases: [(&str, Mutate); 8] = [
+            ("deferred install", |_, _, img| {
+                img.spec.template = Some(banlieue_api::banlieue::VMImageTemplate {
+                    install_mode: banlieue_api::banlieue::InstallMode::Deferred,
+                    ..Default::default()
+                });
+            }),
+            ("trustedBoot", |_, _, img| {
+                img.spec.trusted_boot = Some(banlieue_api::banlieue::TrustedBootSource {
+                    secret_ref: LocalObjectReference { name: "uki".into() },
+                });
+            }),
+            ("efi-secure firmware", |_, class, _| {
+                class.spec.firmware = Firmware::EfiSecure;
+            }),
+            ("a cpus override", |vm, _, _| {
+                vm.spec.hardware_override = Some(HardwareOverride {
+                    cpus: Some(2),
+                    ..Default::default()
+                });
+            }),
+            ("a memory override", |vm, _, _| {
+                vm.spec.hardware_override = Some(HardwareOverride {
+                    memory_mi_b: Some(4096),
+                    ..Default::default()
+                });
+            }),
+            ("a static address", |vm, _, _| {
+                vm.spec.network_overrides = vec![static_override("eth0", "10.0.0.5")];
+            }),
+            ("a data disk", |_, class, _| {
+                let mut extra = class.spec.hardware.disks[0].clone();
+                extra.name = "data".into();
+                class.spec.hardware.disks.push(extra);
+            }),
+            ("a second NIC", |_, class, _| {
+                let mut extra = class.spec.network.interfaces[0].clone();
+                extra.name = "eth1".into();
+                class.spec.network.interfaces.push(extra);
+            }),
+        ];
+        for (case, mutate) in cases {
+            let mut vm = parent_vm();
+            let mut class = parent_class();
+            let mut img = ec2_image(EC2_AMI);
+            mutate(&mut vm, &mut class, &mut img);
+            let e = build_ec2(
+                &vm,
+                &class,
+                &img,
+                &ec2_decision(EC2_ZONE_A),
+                &ec2_provider(),
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                matches!(e, InfraBuildError::Unsupported { backend: "ec2", .. }),
+                "{case}: {e}"
+            );
+        }
+    }
+
+    #[test]
+    fn ec2_disk_size_override_sets_the_root_volume() {
+        let mut vm = parent_vm();
+        vm.spec.hardware_override = Some(HardwareOverride {
+            disk_overrides: vec![DiskOverride {
+                name: "os".into(),
+                size_gi_b: 250,
+            }],
+            ..Default::default()
+        });
+        let m = build_ec2(
+            &vm,
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.root_volume_gi_b, 250);
+    }
+
+    #[test]
+    fn ec2_machine_for_a_shared_provider_names_its_namespace() {
+        let m = build_ec2(
+            &in_tenant_namespace(),
+            &parent_class(),
+            &ec2_image(EC2_AMI),
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.metadata.namespace.as_deref(), Some("team-a"));
+        assert_eq!(
+            m.spec.provider_ref.namespace.as_deref(),
+            Some("banlieue-system")
+        );
+    }
+
+    #[test]
+    fn infra_kind_maps_the_ec2_class() {
+        assert_eq!(InfraKind::from_provider_class("ec2"), Some(InfraKind::Ec2));
+        assert_eq!(PROVIDER_CLASS_EC2, "ec2");
+        assert!(CLOUD_PROVIDER_CLASSES.contains(&PROVIDER_CLASS_EC2));
+    }
+
+    #[test]
+    fn ec2_kind_name_matches_the_crd() {
+        use kube::CustomResourceExt;
+        assert_eq!(
+            InfraKind::Ec2.kind_name(),
+            banlieue_api::infrastructure::EC2Machine::crd()
+                .spec
+                .names
+                .kind
+        );
+    }
+
+    /// The AMI's own root device, as `DescribeImages` recorded it, is the
+    /// one the root volume mapping names.
+    #[test]
+    fn ec2_root_device_comes_from_the_recorded_ami() {
+        let mut img = ec2_image(EC2_AMI);
+        img.status.as_mut().expect("status").per_provider[0].ec2 =
+            Some(banlieue_api::banlieue::Ec2ImageAttributes {
+                architecture: Architecture::Amd64,
+                root_device_name: "/dev/sda1".into(),
+                boot_mode: None,
+                tpm_support: None,
+                ena_support: true,
+            });
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &img,
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(m.spec.root_device_name, "/dev/sda1");
+
+        // Another Provider's record is not this one's.
+        img.status.as_mut().expect("status").per_provider[0].provider_name = "aws2".into();
+        let mut ok_row = ec2_image(EC2_AMI)
+            .status
+            .expect("status")
+            .per_provider
+            .remove(0);
+        ok_row.ec2 = None;
+        img.status
+            .as_mut()
+            .expect("status")
+            .per_provider
+            .push(ok_row);
+        let m = build_ec2(
+            &parent_vm(),
+            &parent_class(),
+            &img,
+            &ec2_decision(EC2_ZONE_A),
+            &ec2_provider(),
+            None,
+        )
+        .expect("ok");
+        assert_eq!(
+            m.spec.root_device_name,
+            banlieue_api::infrastructure::DEFAULT_ROOT_DEVICE_NAME,
+            "no record for aws1: the default"
         );
     }
 }

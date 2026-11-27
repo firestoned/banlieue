@@ -9,8 +9,14 @@ mod tests {
     /// Every backend with a shipped `deploy/provider-<backend>/rbac/` manifest.
     /// Add a backend here when its ClusterRole lands, so the RBAC-coverage
     /// guards below start policing it too.
-    const BACKENDS_WITH_ROLES: [&str; 5] =
-        ["vsphere", "libvirt", "proxmox", "cloud-hypervisor", "azure"];
+    const BACKENDS_WITH_ROLES: [&str; 6] = [
+        "vsphere",
+        "libvirt",
+        "proxmox",
+        "cloud-hypervisor",
+        "azure",
+        "ec2",
+    ];
 
     fn opts() -> InstallOptions {
         InstallOptions {
@@ -599,7 +605,8 @@ mod tests {
                 "libvirt".to_string(),
                 "proxmox".to_string(),
                 "cloud-hypervisor".to_string(),
-                "azure".to_string()
+                "azure".to_string(),
+                "ec2".to_string()
             ]
         );
 
@@ -1034,7 +1041,14 @@ mod tests {
     /// a pod run as the operator's ServiceAccount there.
     #[test]
     fn no_backend_gets_a_job_grant_in_its_per_instance_role() {
-        for backend in ["vsphere", "libvirt", "proxmox", "azure", "cloud-hypervisor"] {
+        for backend in [
+            "vsphere",
+            "libvirt",
+            "proxmox",
+            "azure",
+            "ec2",
+            "cloud-hypervisor",
+        ] {
             let t = triples(&backend_additional_rules(backend));
             assert!(
                 !t.iter()
@@ -1055,7 +1069,14 @@ mod tests {
     /// ServiceAccount there.
     #[test]
     fn no_provider_cluster_role_grants_jobs_or_pods() {
-        for backend in ["vsphere", "libvirt", "proxmox", "azure", "cloud-hypervisor"] {
+        for backend in [
+            "vsphere",
+            "libvirt",
+            "proxmox",
+            "azure",
+            "ec2",
+            "cloud-hypervisor",
+        ] {
             let granted = granted_triples(&InstallRole::Provider(backend.to_string()));
             assert!(
                 !granted
@@ -2621,5 +2642,56 @@ mod tests {
                 .collect();
             assert_eq!(names, ["POD_NAME", "POD_NAMESPACE"], "{}", role.name());
         }
+    }
+
+    /// A statically installed EC2 provider gets the same projected STS
+    /// token the operator mounts (ADR-0174 Decision 6), and no Job Role:
+    /// nothing it runs is a Job until the publisher lands (roadmap 24
+    /// phase D).
+    #[test]
+    fn a_static_ec2_provider_mounts_the_sts_token_and_gets_no_job_role() {
+        let role = InstallRole::Provider("ec2".to_string());
+        assert_eq!(role.name(), "banlieue-provider-ec2");
+        let d = build_deployment(&role, &opts());
+        let pod = d.spec.template.spec.as_ref().unwrap();
+        let volume = &pod.volumes.as_ref().expect("token volume")[0];
+        assert_eq!(volume.name, crate::workload::EC2_TOKEN_VOLUME);
+        let projection = volume.projected.as_ref().unwrap().sources.as_ref().unwrap()[0]
+            .service_account_token
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            projection.audience.as_deref(),
+            Some(crate::workload::EC2_TOKEN_AUDIENCE)
+        );
+        assert_eq!(
+            projection.expiration_seconds,
+            Some(crate::workload::EC2_TOKEN_EXPIRATION_SECS)
+        );
+        let c = &pod.containers[0];
+        assert_eq!(
+            c.volume_mounts.as_ref().expect("mount")[0].mount_path,
+            crate::workload::EC2_TOKEN_MOUNT_PATH
+        );
+        let env = c
+            .env
+            .as_ref()
+            .unwrap()
+            .iter()
+            .find(|e| e.name == crate::workload::AWS_WEB_IDENTITY_TOKEN_FILE_ENV)
+            .expect("token file env");
+        assert_eq!(
+            env.value.as_deref(),
+            Some(crate::workload::ec2_web_identity_token_file().as_str())
+        );
+
+        let manifests = build_role_install(&role, &opts()).unwrap();
+        assert!(
+            manifests
+                .roles
+                .iter()
+                .all(|r| r.metadata.name.as_deref() != Some("banlieue-provider-ec2-jobs"))
+        );
+        assert!(crate::workload::job_rules("ec2").is_none());
     }
 }

@@ -8,7 +8,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 authors.workspace = true
 
 # Library only: the unified `banlieue` binary (crates/banlieue) drives this via
@@ -43,5 +42,8 @@ clap.workspace = true
 # ones the Azure client reads (ADR-0176 Decision 8); the operator itself stays
 # backend-agnostic and does not depend on it.
 banlieue-azure = { path = "../banlieue-azure" }
+# Only for the test that holds the token file the operator mounts to the one
+# `banlieue provider ec2` reads by default (ADR-0174 Decision 6).
+banlieue-provider-ec2 = { path = "../banlieue-provider-ec2" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

@@ -159,13 +159,13 @@ mod tests {
         }
     }
 
-    /// Not a bootstrap backend yet: `banlieue bootstrap` would install a
-    /// ClusterRole and the operator would render a workload, and neither
-    /// knows `ec2` until roadmap 24 phase E.
+    /// A bootstrap backend since roadmap 24 phase E: `banlieue bootstrap`
+    /// installs its ClusterRole and seeds its ProviderClass, and the operator
+    /// renders its workload.
     #[test]
     #[cfg(feature = "ec2")]
-    fn ec2_is_not_a_bootstrap_backend_yet() {
-        assert!(!COMPILED_BACKENDS.contains(&"ec2"));
+    fn ec2_is_a_bootstrap_backend() {
+        assert!(COMPILED_BACKENDS.contains(&"ec2"));
     }
 
     #[test]

@@ -24,18 +24,18 @@ use crate::api::Ec2Api;
 use crate::auth::CredentialSource;
 use crate::error::{Error, Result};
 use crate::instance::{
-    Ec2Request, EkKeyType, RunInstancesRequest, describe_availability_zones, describe_instance,
-    describe_instance_type_offerings, describe_instance_types, describe_instances_by_tag,
-    disable_instance_metadata, get_console_output, get_instance_tpm_ek_pub, start_instances,
-    stop_instances, terminate_instances,
+    Ec2Request, EkKeyType, RunInstancesRequest, describe_availability_zones, describe_image,
+    describe_instance, describe_instance_type_offerings, describe_instance_types,
+    describe_instances_by_tag, disable_instance_metadata, get_console_output,
+    get_instance_tpm_ek_pub, start_instances, stop_instances, terminate_instances,
 };
 use crate::query::{FORM_CONTENT_TYPE, QueryParams};
 use crate::retry::{Draw, RetryPolicy, Throttling, system_draw};
 use crate::sigv4::{Payload, SigningOptions, SigningRequest, sign};
 use crate::types::{
-    AvailabilityZone, Instance, InstanceState, InstanceStateChange, InstanceTypeInfo,
+    AvailabilityZone, ImageInfo, Instance, InstanceState, InstanceStateChange, InstanceTypeInfo,
     InstanceTypeOffering, TpmEkPub, parse_availability_zones, parse_console_output,
-    parse_describe_instances, parse_error, parse_instance_state_changes,
+    parse_describe_images, parse_describe_instances, parse_error, parse_instance_state_changes,
     parse_instance_type_offerings, parse_instance_types, parse_next_token, parse_run_instances,
     parse_tpm_ek_pub,
 };
@@ -471,6 +471,17 @@ impl Ec2Api for Ec2Client {
     async fn instance_types(&self, instance_types: &[String]) -> Result<Vec<InstanceTypeInfo>> {
         let body = self.send(&describe_instance_types(instance_types)?).await?;
         parse_instance_types(&body)
+    }
+
+    async fn describe_image(&self, image_id: &str) -> Result<Option<ImageInfo>> {
+        let body = match self.send(&describe_image(image_id)?).await {
+            Ok(body) => body,
+            Err(e) if e.is_not_found() => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        Ok(parse_describe_images(&body)?
+            .into_iter()
+            .find(|i| i.image_id == image_id))
     }
 }
 

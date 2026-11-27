@@ -4,11 +4,11 @@
 # A complete, minimal VirtualMachine on Amazon EC2 (ADR-0158 to ADR-0162,
 # ADR-0167, ADR-0174).
 #
-# NOT YET END TO END: the EC2Machine CRD, the `ec2` Provider class and the
-# EC2 provider (`banlieue provider ec2`, roadmap 24 phase C) exist, but the
-# controller's dispatch to it and the operator's workload for it are roadmap
-# 24 phase E. Applying this today stores the objects; nothing launches an
-# instance yet.
+# Wired end to end in the tree (roadmap 24 phases B, C and E), not yet run
+# live against an account: the operator renders the provider's workload, the
+# provider records the Template AMI below for each ec2 Provider, and
+# banlieue-controller schedules the VirtualMachine onto a zone and creates its
+# EC2Machine. Publishing a `Url` source into an AMI is phase D.
 #
 # Every identifier below is a placeholder: 111122223333 stands for your
 # account, and the subnet, security group and AMI IDs for your own.
@@ -40,9 +40,13 @@
 #   1. The operator starts a provider pod for `ec2-cc` with the projected token.
 #   2. The provider checks the instance type, volume type, subnets and security
 #      groups declared here and publishes one failure domain per zone.
-#   3. It verifies the AMI and marks the VMImage ready.
-#   4. banlieue-controller schedules the VirtualMachine onto a zone and creates
-#      an EC2Machine beside it.
+#   3. It records the Template AMI for this Provider and marks the VMImage
+#      ready (no EC2 call: a wrong AMI ID surfaces at launch).
+#   4. banlieue-controller schedules the VirtualMachine onto a zone that
+#      offers the class's instance type (and, for a tpmEnabled class, a
+#      NitroTPM type), and creates an EC2Machine beside it with the zone,
+#      instance type, AMI, volume type, subnet and security groups resolved
+#      from the mappings below.
 #   5. The provider launches the instance (IMDSv2 only, encrypted root volume,
 #      no public IP, userData as instance user data), tagged as banlieue's,
 #      reports its private address, and turns IMDS off once the guest is ready.
@@ -101,6 +105,7 @@ spec:
           - zone: ca-central-1a
             target:
               subnetId: subnet-0123456789abcdef0
+              # Comma-separated when there are several.
               securityGroupIds: sg-0123456789abcdef0
           - zone: ca-central-1b
             target:
@@ -112,8 +117,14 @@ spec:
       - vmClass: ec2-small
         size: m7i.large
 ---
-# `Template`: ref is the ID of an AMI you registered, UEFI, with
-# TpmSupport=v2.0 if the class asks for a TPM (ADR-0167 Decision 5).
+# `Template`: ref is the ID of an AMI you registered (EBS-backed, x86_64 or
+# arm64), UEFI with TpmSupport=v2.0 if the class asks for a TPM (ADR-0167
+# Decision 5). The provider reads it with DescribeImages and records its
+# architecture, root device, boot mode and TPM support on the image's row;
+# the scheduler and the EC2Machine use those, so a TPM class on an AMI
+# without NitroTPM is refused (AmiTpmUnsupported) and the root volume maps
+# the AMI's own root device. trustedBoot is refused with an ec2 source
+# (deploy/admission/vmimage-cloud-install-mode.yaml).
 apiVersion: banlieue.io/v1alpha1
 kind: VMImage
 metadata:

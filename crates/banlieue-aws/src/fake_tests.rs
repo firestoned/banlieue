@@ -990,4 +990,55 @@ mod tests {
             .expect_err("no zones");
         assert_eq!(code(&err), (400, "InvalidParameterValue"));
     }
+
+    // ----- DescribeImages ------------------------------------------------
+
+    fn image(id: &str) -> ImageInfo {
+        ImageInfo {
+            image_id: id.to_string(),
+            state: "available".to_string(),
+            architecture: "x86_64".to_string(),
+            root_device_name: "/dev/xvda".to_string(),
+            root_device_type: "ebs".to_string(),
+            boot_mode: Some("uefi".to_string()),
+            tpm_support: Some("v2.0".to_string()),
+            ena_support: true,
+            root_volume_size_gib: Some(10),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_registered_image_is_described() {
+        let fake = FakeEc2::new();
+        fake.add_image(image("ami-0123456789abcdef0"));
+        let found = fake.describe_image("ami-0123456789abcdef0").await.unwrap();
+        assert_eq!(found, Some(image("ami-0123456789abcdef0")));
+    }
+
+    #[tokio::test]
+    async fn an_unknown_image_is_none_as_ec2s_not_found_is() {
+        let fake = FakeEc2::new();
+        assert_eq!(fake.describe_image("ami-0123abcd").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_image_id_is_refused() {
+        let fake = FakeEc2::new();
+        let err = fake.describe_image("ami-nothex!").await.unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn describe_image_is_throttled_like_any_call() {
+        let fake = FakeEc2::new();
+        fake.add_image(image("ami-0123abcd"));
+        fake.throttle_next(1);
+        assert!(
+            fake.describe_image("ami-0123abcd")
+                .await
+                .unwrap_err()
+                .is_throttled()
+        );
+        assert!(fake.describe_image("ami-0123abcd").await.unwrap().is_some());
+    }
 }

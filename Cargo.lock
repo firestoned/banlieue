@@ -476,6 +476,7 @@ dependencies = [
  "banlieue-api",
  "banlieue-azure",
  "banlieue-oci",
+ "banlieue-provider-ec2",
  "banlieue-provider-sdk",
  "clap",
  "k8s-openapi",

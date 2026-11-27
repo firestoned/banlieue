@@ -185,6 +185,8 @@ rules:
       - proxmoxmachinetemplates
       - azurevirtualmachines
       - azurevirtualmachinetemplates
+      - ec2machines
+      - ec2machinetemplates
     verbs: ["get", "list", "watch", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
@@ -194,6 +196,7 @@ rules:
       - cloudhypervisormachines/status
       - proxmoxmachines/status
       - azurevirtualmachines/status
+      - ec2machines/status
     verbs: ["get", "update", "patch"]
   - apiGroups: ["infrastructure.banlieue.io"]
     resources:
@@ -202,6 +205,7 @@ rules:
       - cloudhypervisormachines/finalizers
       - proxmoxmachines/finalizers
       - azurevirtualmachines/finalizers
+      - ec2machines/finalizers
     verbs: ["update"]
   # CAPI IPAM contract, used by Pool-based IpamSpec.
   - apiGroups: ["ipam.cluster.x-k8s.io"]

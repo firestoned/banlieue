@@ -1,5 +1,122 @@
 # Changelog
 
+## [2026-11-27 12:45] - EC2: read a hand-published AMI with DescribeImages (roadmap 24 phase E)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-aws`: `Ec2Api::describe_image` over `DescribeImages` (`ImageId.1`), with `ImageInfo` (ID, state,
+  architecture, root device name and type, boot mode, TPM support, ENA, the root mapping's volume size; the owner
+  account is not read), `instance::describe_image` (refuses an ID that is not `ami-<hex>` before sending) and
+  `parse_describe_images`. `InvalidAMIID.NotFound` and an empty set are `Ok(None)`; `InvalidAMIID.Malformed` is an
+  invalid request. `FakeEc2::add_image`, with not found for any other ID; a fixture built from the documented
+  element names; `live_ec2.rs::describe_image_reads_a_real_ami` (`BANLIEUE_LIVE_AMI_ID`, ignored, fails without it,
+  prints no account).
+- `crates/banlieue-api`: `Ec2ImageAttributes` on `ImagePerProviderStatus.ec2` (architecture, root device name
+  under a `^/dev/[a-z0-9]+$` pattern and 64 characters, boot mode and TPM support up to 32, ENA) and
+  `supports_nitro_tpm()`; CRDs and `docs/src/reference/api.md` regenerated.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: `AmiTpmUnsupported` (a `tpmEnabled` class on an AMI
+  recorded without `TpmSupport=v2.0` and `BootMode=uefi`).
+
+### Changed
+- `crates/banlieue-provider-ec2/src/reconciler/image.rs`: a `Template` AMI is described and its row records the
+  attributes and `minOsDiskSizeGiB`; refused rows name `AmiNotFound`, `AmiNotAvailable`, `AmiNotEbsBacked`,
+  `AmiArchitectureUnsupported`, `AmiRootDeviceInvalid` or `AmiDescribeFailed`. Throttling, EC2 server errors and
+  transport failures keep the row as it was (a ready image stays ready), `AmiUnverified` when there is none, and
+  requeue sooner. The runtime role already holds `ec2:DescribeImages`.
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `EC2Machine.spec.rootDeviceName` is the AMI's recorded
+  root device, `/dev/xvda` only when none is recorded. `scheduler.rs`: `ArchitectureMismatch` compares the AMI's
+  recorded architecture, else the `VMImage`'s.
+- Every literal of `ImagePerProviderStatus` across the workspace gains `ec2: None`.
+- `examples/33-virtualmachine-ec2.yaml`, `deploy/provider-ec2/README.md`, the CALM ec2 provider node, roadmap 24
+  (phases B, D, E) and `ROADMAPS.md`.
+
+### Why
+Closes phase E's open item: the scheduler and the `EC2Machine` relied on what the `VMImage` declared about an AMI
+nobody had read. Unit tested on the build host; not yet run against an account.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (the `VMImage` CRD)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-27 12:30] - EC2 dispatch, scheduling and the operator's ec2 workload (roadmap 24 phase E)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-controller/src/reconciler/infra.rs`: `InfraKind::Ec2`, `PROVIDER_CLASS_EC2` (now in
+  `CLOUD_PROVIDER_CLASSES`) and `build_ec2_machine`: zone from the failure domain, instance type from
+  `instanceSizes`, AMI from the image's `ec2` `Template` `ref` (or a `Url` source's ready row for the current
+  build's digest), root volume from the class's OS disk, `volumeType`/`iops`/`throughput` from the storage class
+  target, `subnetId` and comma-separated `securityGroupIds` from the network class target, `kmsKeyId` from the
+  connection, `tpmEnabled` from the class, user data as rendered (over 16,384 bytes fails
+  `EC2MachineSpec::validate`). Refused: deferred install, `trustedBoot`, `efi-secure`, data disks, a second NIC,
+  per-VM CPU, memory or address overrides. New `InfraBuildError::InvalidTarget`; `published_azure_version` is now
+  the backend-neutral `published_image_ref`.
+- `crates/banlieue-controller/src/reconciler/scheduler.rs`: step 3d for `ec2` Providers, new placements only,
+  each a named reason when it is the only cause: `TrustedBootUnsupported`, `InstanceTypeNotOffered`
+  (`vmClasses`), `ArchitectureMismatch` (`amd64VmClasses`/`arm64VmClasses`) and `NitroTpmUnsupported`
+  (`tpmVmClasses`, which replaces the `vtpm` feature on ec2). An unpublished list filters nothing, except that a
+  TPM is never assumed.
+- `crates/banlieue-api`: `tpmEndorsementPublicKeys` on `VirtualMachine.status` and
+  `VirtualMachineClaim.status` (ADR-0167 Decision 1); CRDs and `docs/src/reference/api.md` regenerated.
+- `crates/banlieue-provider-ec2/src/reconciler/image.rs`: a `VMImage` reconciler (roadmap 24 phase D's
+  `Template` piece): a ready, regional row per `ec2` Provider for a `Template` whose `ref` is an AMI ID, no EC2
+  call; `InvalidRef` otherwise; `Url` and other kinds `UnsupportedSourceKind` (publishing is phase D). Failure
+  domains also publish `amd64VmClasses` and `arm64VmClasses` from `DescribeInstanceTypes`.
+- `crates/banlieue-operator`: an `ec2` workload with a projected ServiceAccount token (audience
+  `sts.amazonaws.com`, 600 s) at `/var/run/secrets/aws/tokens/aws-identity-token` and
+  `AWS_WEB_IDENTITY_TOKEN_FILE`; no Secret, no Jobs Role; the same for `banlieue bootstrap provider ec2`. The
+  Azure token code is now a per-cloud `CloudToken`, Azure's output unchanged. `banlieue-provider-ec2` is a
+  dev-dependency only, for the test pinning the token path to the provider's default.
+- `deploy/admission/vmimage-cloud-install-mode.yaml`: refuses `trustedBoot` on a `VMImage` with an `ec2` source
+  (ADR-0167 Decision 5); offline tests in `crates/banlieue-operator/tests/admission_policies.rs`.
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/{virtualmachine,app,status_mirror,claim,claim_plan}.rs`: the
+  controller watches, applies, mirrors and finalizes `EC2Machine`s; the mirror carries the EK public keys onto
+  the VM and a bound claim; `ZoneUnavailable` re-places through ADR-0173's existing path.
+- `crates/banlieue/src/cli.rs`: `ec2` in `COMPILED_BACKENDS`; `crates/banlieue-provider-sdk/src/scope.rs`: `ec2`
+  in `SHARED_PROVIDER_BACKENDS`; `Makefile` `E2E_BACKENDS` is `vsphere,libvirt,azure,ec2` (a subset check, no
+  provider pod runs).
+- RBAC: `deploy/controller/rbac/clusterrole.yaml` and `deploy/operator/rbac/clusterrole.yaml` gain the
+  `ec2machines` kinds; `deploy/provider-ec2/rbac/clusterrole.yaml` gains `vmimages` read and `vmimages/status`
+  write.
+- `examples/33-virtualmachine-ec2.yaml`, `deploy/admission/README.md`, `deploy/provider-ec2/README.md`, the
+  CALM controller-to-`EC2Machine` relationship, roadmap 24 (phases B, C, D, E) and `ROADMAPS.md`.
+
+### Why
+Roadmap 24 phase E: until now nothing scheduled onto an `ec2` Provider. Open: a hand-published AMI's root
+device name (assumed `/dev/xvda`), architecture and TPM support are not read (`DescribeImages` is not in
+`banlieue-aws`); nothing has run against an account. No threat-model pass (phase G).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (CRDs, ClusterRoles, admission policy)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-27 12:15] - Drop `homepage`: rustc 1.100 warns it is redundant with `repository`
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml` (`[workspace.package]`) and every `crates/*/Cargo.toml`: `homepage` removed. It was the same URL as
+  `repository`, and cargo 1.100 (CI's stable toolchain) reports `redundant_homepage` once per crate per build:
+  650 warnings in one E2E run. Nothing reads `CARGO_PKG_HOMEPAGE`.
+
+### Why
+Noise that hides real warnings. Verified on the build host with 1.100.0: `cargo check --workspace --all-targets` 0
+warnings, `cargo clippy --workspace --all-targets --all-features -- -D warnings` and `cargo fmt --check` clean.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 12:00] - ADRs accepted as not implemented; roadmaps audited against the tree
 
 **Author:** Erick Bourgeois
@@ -157,7 +274,7 @@ removing it drops an unused write grant.
 
 ### Why
 No unit test runs the API server's CEL cost estimator. ADR-0176's uncapped OpenBao strings got
-`providers.banlieue.io` refused, and every e2e job found out only after a 15-minute build. Verified on slate:
+`providers.banlieue.io` refused, and every e2e job found out only after a 15-minute build. Verified on the build host:
 main's CRDs fail this check on 1.31 and 1.36 with CI's error; this branch passes on both (the
 `MutatingAdmissionPolicy` file skipped on 1.31, applied on 1.36). actionlint clean.
 

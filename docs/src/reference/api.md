@@ -1079,6 +1079,7 @@ it owns, mirrored provisioning / address / power state, and conditions.
 | `placementFailures` | object[] |  | Failure domains whose backend refused to create this VM, most recent last (ADR-0173). Written by the controller when the infra CR of the recorded placement reports `VMCreated=False` with reason `ZoneUnavailable`; each entry excludes its failure domain from this VM's placement for an exponentially growing, bounded time. Cleared once the infrastructure reports provisioned. |
 | `scheduled` | object |  | Current scheduling decision. Absent until first successful schedule. |
 | `tpmEndorsementCertificates` | string[] |  | Mirrored from the infra CR's `status.tpmEndorsementCertificates` (ADR-0045). The anchor a verifier checks an attestation quote against; mirrored onward onto a bound `VirtualMachineClaim` so a consumer needs one GET. |
+| `tpmEndorsementPublicKeys` | string[] |  | Mirrored from the infra CR's `status.tpmEndorsementPublicKeys` (ADR-0167 Decision 1): the TPM's endorsement key public keys, PEM `SubjectPublicKeyInfo`, where the backend publishes a public key and no certificate (an `EC2Machine` with NitroTPM, read host-side from the EC2 API). `tpmEndorsementCertificates` stays empty on such a machine. Mirrored onward onto a bound `VirtualMachineClaim`. |
 
 #### `.status.addresses[]`
 
@@ -1644,6 +1645,7 @@ the member as annotations, and never interpreted.
 | `phase` | string |  | Where a claim is in its one-way lifecycle. Allowed: `Pending`, `Bound`, `Releasing`, `Failed`. |
 | `poolRef` | object |  | The pool the bound member came from. Set at bind time from the member's `banlieue.io/pool` label; the only place a claim made with `spec.poolSelector` says which pool supplied its VM (ADR-0132). |
 | `tpmEndorsementCertificates` | string[] |  | PEM vTPM endorsement key certificate(s) of the bound member, mirrored from the infra CR (ADR-0045). Lets a verifier check that an attestation comes from the VM banlieue itself created for this claim. Populated since ADR-0045, from the bound member's `VirtualMachine.status`, which mirrors its infrastructure CR. Empty for a member with no vTPM. |
+| `tpmEndorsementPublicKeys` | string[] |  | The TPM endorsement key public keys (PEM `SubjectPublicKeyInfo`) of the bound member, mirrored from its `VirtualMachine.status` (ADR-0167 Decision 1). Set where the backend publishes a public key and no certificate: an EC2 member with NitroTPM, whose keys the provider read host-side from the EC2 API. banlieue publishes them and vouches for nothing. Empty for every other member. |
 | `virtualMachineRef` | object |  | The bound member. Set once, at bind time, and never rewritten. |
 
 #### `.status.addresses[]`
@@ -2285,6 +2287,7 @@ row. That was a real, reproduced bug, not a theoretical one.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `ec2` | object |  | `ec2` `Provider`s only: what EC2's `DescribeImages` reports of the AMI in `resolvedRef`, read by the provider so the controller and the scheduler can decide without calling EC2 (roadmap 24 phase E). Unset on every other backend, and until the provider has read the AMI. |
 | `message` | string |  | Long human-readable detail. |
 | `minOsDiskSizeGiB` | integer |  | Cloud `Provider`s only (ADR-0162 Decision 4, ADR-0160 Decision 4): the smallest OS disk, in GiB, a VM booting the published image may have. Unset until the publish reports it. |
 | `providerName` | string | Yes | Name of the Provider. |
@@ -2295,6 +2298,21 @@ row. That was a real, reproduced bug, not a theoretical one.
 | `sourceDigest` | string |  | Cloud `Provider`s only (ADR-0162 Decision 4): the digest (`sha256:<hex>`) of the build the published image in `resolvedRef` was made from. Unset for a `Template` source, which banlieue did not publish. |
 | `supersededRefs` | string[] |  | Cloud `Provider`s only (ADR-0162 Decision 8): images this `VMImage` published into this `Provider` for an earlier digest, still waiting to be deleted because a machine references them or the delete has not finished. Emptied as each is deleted; recorded here because the provider can read a published image only by its name. |
 | `zones` | object[] |  | Per-zone (per-`Provider.status.failureDomains[]`) readiness. Populated by the vSphere provider for both `Url` sources (import progress) and `Template` sources (whether the adopted template exists in each zone's folder, ADR-0104). For `Url`, `ready` means every zone is ready; for `Template` it means at least one zone is, and the scheduler places VMs only in ready zones. Empty for backends without zones (libvirt, Proxmox). |
+
+##### `.status.perProvider[].ec2`
+
+`ec2` `Provider`s only: what EC2's `DescribeImages` reports of the AMI
+in `resolvedRef`, read by the provider so the controller and the
+scheduler can decide without calling EC2 (roadmap 24 phase E). Unset
+on every other backend, and until the provider has read the AMI.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `architecture` | string | Yes | The AMI's architecture: EC2's `x86_64` is `amd64`, `arm64` is `arm64`. An AMI of any other architecture is not made ready. Allowed: `amd64`, `arm64`. |
+| `bootMode` | string |  | `bootMode` (`uefi`, `legacy-bios`, `uefi-preferred`); unset when the AMI leaves it to the instance type. |
+| `enaSupport` | boolean |  | `enaSupport`. |
+| `rootDeviceName` | string | Yes | The AMI's root device name (`/dev/xvda`, `/dev/sda1`): the device the `EC2Machine`'s root volume mapping must name, or EC2 adds the volume beside the AMI's own instead of resizing it. |
+| `tpmSupport` | string |  | `tpmSupport`: `v2.0` for an AMI registered for NitroTPM. |
 
 ##### `.status.perProvider[].zones[]`
 

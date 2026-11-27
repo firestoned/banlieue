@@ -123,6 +123,11 @@ pub const COMPILED_BACKENDS: &[&str] = &[
     "cloud-hypervisor",
     #[cfg(feature = "azure")]
     "azure",
+    // Cloud, like Azure: bootstrap installs the ClusterRole and the
+    // ProviderClass, and the operator renders a workload with a projected
+    // STS token, no Secret (ADR-0174 Decision 6).
+    #[cfg(feature = "ec2")]
+    "ec2",
 ];
 
 /// `banlieue provider <backend>` — selects which backend provider to run.

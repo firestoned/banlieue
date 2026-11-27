@@ -509,4 +509,34 @@ mod tests {
         let full = vec!["t3.micro"; MAX_DESCRIBE_INSTANCE_TYPES];
         assert!(describe_instance_types(&full).is_ok());
     }
+
+    // ----- DescribeImages ------------------------------------------------
+
+    #[test]
+    fn describe_image_names_one_image() {
+        let r = describe_image("ami-0123456789abcdef0").expect("builds");
+        assert_eq!(r.action, ACTION_DESCRIBE_IMAGES);
+        assert_eq!(
+            r.params,
+            vec![("ImageId.1".to_string(), "ami-0123456789abcdef0".to_string())]
+        );
+    }
+
+    #[test]
+    fn describe_image_refuses_what_is_not_an_ami_id() {
+        for bad in [
+            "",
+            "ami-",
+            "ami-xyz12345",
+            "ami-0123456",
+            "i-0123456789abcdef0",
+            " ami-0123abcd",
+        ] {
+            assert!(
+                matches!(describe_image(bad), Err(Error::Invalid(_))),
+                "{bad:?}"
+            );
+        }
+        describe_image("ami-0123abcd").expect("8 hex digits");
+    }
 }

@@ -536,4 +536,75 @@ mod tests {
         let shown = format!("{client:?}");
         assert!(!shown.contains(SECRET) && !shown.contains(SESSION_TOKEN));
     }
+
+    // ----- DescribeImages ------------------------------------------------
+
+    const IMAGES: &str = include_str!("../tests/fixtures/ec2/describe-images.xml");
+    const AMI: &str = "ami-0123456789abcdef0";
+
+    #[tokio::test]
+    async fn describe_image_returns_the_image_asked_for() {
+        let (endpoint, server) = serve(vec![ok(IMAGES)]).await;
+        let found = client(&endpoint).describe_image(AMI).await.unwrap();
+        assert_eq!(found.map(|i| i.image_id), Some(AMI.to_string()));
+        let seen = server.await.unwrap();
+        assert_eq!(
+            form_value(&seen[0].body_str(), "Action").as_deref(),
+            Some("DescribeImages")
+        );
+        assert_eq!(
+            form_value(&seen[0].body_str(), "ImageId.1").as_deref(),
+            Some(AMI)
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_of_an_unknown_image_is_none() {
+        let (endpoint, _server) =
+            serve(vec![respond(400, &[], &ec2_error("InvalidAMIID.NotFound"))]).await;
+        assert!(
+            client(&endpoint)
+                .describe_image(AMI)
+                .await
+                .expect("not found is not an error")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn describe_image_with_an_empty_set_is_none() {
+        let body = "<DescribeImagesResponse><imagesSet/></DescribeImagesResponse>";
+        let (endpoint, _server) = serve(vec![ok(body)]).await;
+        assert!(
+            client(&endpoint)
+                .describe_image(AMI)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_malformed_image_id_is_an_invalid_request() {
+        let (endpoint, _server) = serve(vec![respond(
+            400,
+            &[],
+            &ec2_error("InvalidAMIID.Malformed"),
+        )])
+        .await;
+        let err = client(&endpoint).describe_image(AMI).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidRequest(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn describe_image_refuses_a_bad_id_before_sending() {
+        install_provider();
+        let c = Ec2Client::new(
+            REGION,
+            Arc::new(StaticSource::new(credentials(Some(SESSION_TOKEN)))),
+        )
+        .expect("client");
+        let err = c.describe_image("not-an-ami").await.unwrap_err();
+        assert!(matches!(err, Error::Invalid(_)), "{err}");
+    }
 }

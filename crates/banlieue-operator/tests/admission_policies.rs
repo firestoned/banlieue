@@ -591,7 +591,7 @@ fn a_cloud_vmimage_refuses_deferred_install_only() {
     );
 
     let rules = validations(&policy);
-    assert_eq!(rules.len(), 1, "{rules:#?}");
+    assert_eq!(rules.len(), 2, "{rules:#?}");
     let (expression, message) = &rules[0];
     assert_eq!(
         expression,
@@ -599,6 +599,30 @@ fn a_cloud_vmimage_refuses_deferred_install_only() {
     );
     assert!(!expression.contains("immediate"), "{expression}");
     assert!(message.contains("deferred"), "{message}");
+}
+
+/// `trustedBoot` on an image with an `ec2` source is refused (ADR-0167
+/// Decision 5), and only there: an azure-only image is not touched by it.
+#[test]
+fn an_ec2_vmimage_refuses_trusted_boot() {
+    let expression = rule_with(
+        &only_policy(VMIMAGE_CLOUD_INSTALL_MODE),
+        &[
+            "!has(object.spec.trustedBoot)",
+            "!object.spec.sources.exists(s, s.providerClass == 'ec2')",
+        ],
+        "trustedBoot",
+    );
+    assert!(!expression.contains("azure"), "{expression}");
+}
+
+/// The field the rule reads is the CRD's own spelling.
+#[test]
+fn the_trusted_boot_field_the_policy_names_is_in_the_crd() {
+    assert!(
+        squash(VMIMAGE_CRD).contains("trustedBoot:"),
+        "the trustedBoot field changed; re-check vmimage-cloud-install-mode.yaml"
+    );
 }
 
 /// The policy compares against the CRD's own spelling of the mode: a value

@@ -297,6 +297,7 @@ mod tests {
                 name: "sandbox-pool-9dmtx".into(),
             }),
             tpm_endorsement_certificates: vec!["-----BEGIN CERTIFICATE-----".into()],
+            tpm_endorsement_public_keys: vec!["-----BEGIN PUBLIC KEY-----".into()],
             nonce: Some("0123456789abcdef0123456789abcdef".into()),
             ..Default::default()
         };
@@ -304,6 +305,7 @@ mod tests {
         assert_eq!(json["phase"], "Bound");
         assert_eq!(json["virtualMachineRef"]["name"], "sandbox-pool-9dmtx");
         assert!(json["tpmEndorsementCertificates"].is_array());
+        assert!(json["tpmEndorsementPublicKeys"].is_array());
         assert!(json.get("virtual_machine_ref").is_none());
     }
 

@@ -179,6 +179,7 @@ mod tests {
                         source_digest: None,
                         min_os_disk_size_gib: None,
                         superseded_refs: Vec::new(),
+                        ec2: None,
                     })
                     .collect(),
                 build_artifact: None,
@@ -2977,5 +2978,518 @@ mod tests {
 
         let d = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
         assert_eq!(d.provider_name, "az1");
+    }
+
+    // --- Filter: ec2 (roadmap 24 phase E; ADR-0167, ADR-0174) ----------------
+
+    /// An `ec2` Provider with one failure domain per zone, published the way
+    /// the EC2 provider does: `raw.zone`, and `vmClasses`, `tpmVmClasses`,
+    /// `amd64VmClasses` and `arm64VmClasses` as given (each `Some` sets the
+    /// key, `None` leaves it out).
+    fn ec2_provider(
+        name: &str,
+        zones: &[&str],
+        sizes: Vec<banlieue_api::banlieue::InstanceSizeMapping>,
+        raw: &[(&str, Option<&str>)],
+    ) -> Provider {
+        let fds = zones
+            .iter()
+            .map(|z| {
+                let mut f = fd(
+                    &format!("{name}-{z}"),
+                    lbls([("zone", z)]),
+                    &["gold"],
+                    &["prod"],
+                    &[],
+                );
+                f.attributes.raw = lbls([("zone", z)]);
+                for (key, value) in raw {
+                    if let Some(value) = value {
+                        f.attributes.raw.insert((*key).into(), (*value).into());
+                    }
+                }
+                f
+            })
+            .collect();
+        let mut caps = caps_with(
+            &[("gold", "volumeType", "gp3")],
+            &[("prod", "subnetId", "subnet-0123456789abcdef0")],
+        );
+        caps.instance_sizes = sizes;
+        let mut p = provider(name, BTreeMap::new(), fds, caps);
+        p.spec.provider_class_ref.name = "ec2".into();
+        p
+    }
+
+    /// What the EC2 provider publishes for class `c` on an amd64 type that is
+    /// offered and NitroTPM-capable.
+    const EC2_RAW_ALL: [(&str, Option<&str>); 4] = [
+        ("vmClasses", Some("c")),
+        ("tpmVmClasses", Some("c")),
+        ("amd64VmClasses", Some("c")),
+        ("arm64VmClasses", Some("")),
+    ];
+
+    fn ec2_default(zones: &[&str]) -> Provider {
+        ec2_provider("aws1", zones, vec![size_of("c", "m7i.large")], &EC2_RAW_ALL)
+    }
+
+    fn tpm_class() -> VMClass {
+        let mut cls = gold_prod_class();
+        cls.spec.tpm_enabled = true;
+        cls
+    }
+
+    #[test]
+    fn ec2_provider_with_a_published_class_is_accepted() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let d = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .expect("scheduled");
+        assert_eq!(d.provider_class, "ec2");
+        assert_eq!(d.failure_domain_name, "aws1-ca-central-1a");
+        assert_eq!(
+            d.failure_domain_raw.get("zone").map(String::as_str),
+            Some("ca-central-1a")
+        );
+    }
+
+    #[test]
+    fn ec2_is_a_cloud_class_so_no_instance_sizes_means_nothing_runs() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let p = ec2_provider("aws1", &["ca-central-1a"], vec![], &EC2_RAW_ALL);
+        let err = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceSizeUnmapped("c".into()));
+    }
+
+    #[test]
+    fn ec2_zone_whose_type_is_not_offered_is_skipped() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let mut p = ec2_default(&["ca-central-1a", "ca-central-1b"]);
+        p.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .raw
+            .insert("vmClasses".into(), "other".into());
+        let d = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
+        assert_eq!(d.failure_domain_name, "aws1-ca-central-1b");
+    }
+
+    #[test]
+    fn ec2_class_offered_in_no_zone_is_instance_type_not_offered() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a", "ca-central-1b"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("other,more"))],
+        );
+        let err = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceTypeNotOffered("c".into()));
+        assert_eq!(err.reason(), reasons::INSTANCE_TYPE_NOT_OFFERED);
+        assert!(
+            err.to_string().contains("m7i") || err.to_string().contains("offered"),
+            "{err}"
+        );
+    }
+
+    /// The list is comma-separated: a class whose name is a prefix of
+    /// another's is not matched by it.
+    #[test]
+    fn ec2_published_class_lists_match_whole_names() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("cc, c2"))],
+        );
+        let err = schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).unwrap_err();
+        assert_eq!(err, ScheduleError::InstanceTypeNotOffered("c".into()));
+
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("cc, c"))],
+        );
+        schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("whitespace trimmed");
+    }
+
+    /// A key the provider did not publish is unknown, not empty: nothing is
+    /// filtered on it.
+    #[test]
+    fn ec2_without_published_class_lists_is_not_filtered_on_them() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[],
+        );
+        schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
+    }
+
+    /// NitroTPM is judged from what the provider read from
+    /// `DescribeInstanceTypes`, not from a hand-set `vtpm` feature.
+    #[test]
+    fn ec2_tpm_class_on_a_nitro_tpm_type_needs_no_vtpm_feature() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let d = schedule(
+            &v,
+            &tpm_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .expect("scheduled");
+        assert_eq!(d.provider_name, "aws1");
+    }
+
+    #[test]
+    fn ec2_tpm_class_on_a_type_without_nitro_tpm_is_refused() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        for tpm_classes in [Some(""), Some("other"), None] {
+            let p = ec2_provider(
+                "aws1",
+                &["ca-central-1a"],
+                vec![size_of("c", "m7i.large")],
+                &[("vmClasses", Some("c")), ("tpmVmClasses", tpm_classes)],
+            );
+            let err = schedule(&v, &tpm_class(), &img, &[p], &[], &[]).unwrap_err();
+            assert_eq!(
+                err,
+                ScheduleError::NitroTpmUnsupported("c".into()),
+                "tpmVmClasses {tpm_classes:?}"
+            );
+            assert_eq!(err.reason(), reasons::NITRO_TPM_UNSUPPORTED);
+        }
+    }
+
+    /// The zone whose type supports NitroTPM is chosen over one whose does
+    /// not.
+    #[test]
+    fn ec2_tpm_class_lands_in_the_zone_whose_type_supports_it() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1"]);
+        let mut p = ec2_default(&["ca-central-1a", "ca-central-1b"]);
+        p.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .raw
+            .insert("tpmVmClasses".into(), String::new());
+        let d = schedule(&v, &tpm_class(), &img, &[p], &[], &[]).expect("scheduled");
+        assert_eq!(d.failure_domain_name, "aws1-ca-central-1b");
+    }
+
+    #[test]
+    fn ec2_refuses_a_trusted_boot_image() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_ready_on(&["aws1"]);
+        img.spec.trusted_boot = Some(banlieue_api::banlieue::TrustedBootSource {
+            secret_ref: LocalObjectReference { name: "uki".into() },
+        });
+        let err = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(err, ScheduleError::TrustedBootUnsupported);
+        assert_eq!(err.reason(), reasons::TRUSTED_BOOT_UNSUPPORTED);
+        assert!(err.to_string().contains("ADR-0167"), "{err}");
+    }
+
+    /// Another backend still takes the trusted-boot image.
+    #[test]
+    fn a_trusted_boot_image_goes_to_a_backend_that_takes_it() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_ready_on(&["aws1", "vc1"]);
+        img.spec.trusted_boot = Some(banlieue_api::banlieue::TrustedBootSource {
+            secret_ref: LocalObjectReference { name: "uki".into() },
+        });
+        let d = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"]), gold_prod_provider("vc1")],
+            &[],
+            &[],
+        )
+        .expect("scheduled");
+        assert_eq!(d.provider_name, "vc1");
+    }
+
+    #[test]
+    fn ec2_refuses_a_class_whose_type_does_not_run_the_images_architecture() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_ready_on(&["aws1"]);
+        img.spec.architecture = Architecture::Arm64;
+        let err = schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            ScheduleError::ArchitectureMismatch {
+                vm_class: "c".into(),
+                architecture: "arm64".into(),
+            }
+        );
+        assert_eq!(err.reason(), reasons::ARCHITECTURE_MISMATCH);
+
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m8g.large")],
+            &[
+                ("vmClasses", Some("c")),
+                ("arm64VmClasses", Some("c")),
+                ("amd64VmClasses", Some("")),
+            ],
+        );
+        schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("an arm64 type runs it");
+    }
+
+    #[test]
+    fn ec2_without_architecture_lists_is_not_filtered_on_architecture() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_ready_on(&["aws1"]);
+        img.spec.architecture = Architecture::Arm64;
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("c"))],
+        );
+        schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("unknown is not filtered");
+    }
+
+    /// The ec2 checks apply to ec2 Providers only: a vSphere failure domain
+    /// that happens to carry the same raw keys is not judged by them.
+    #[test]
+    fn the_ec2_checks_do_not_apply_to_another_class() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["vc1"]);
+        let mut p = gold_prod_provider("vc1");
+        p.status.as_mut().unwrap().failure_domains[0].attributes.raw =
+            lbls([("vmClasses", "other")]);
+        schedule(&v, &gold_prod_class(), &img, &[p], &[], &[]).expect("scheduled");
+    }
+
+    /// A placed VM keeps its ec2 placement when its type stops being
+    /// published there (ADR-0125): the instance already runs.
+    #[test]
+    fn a_placed_vm_keeps_its_ec2_placement_when_its_class_is_no_longer_published() {
+        let mut v = vm("db-01", "ns", BTreeMap::new());
+        v.status = Some(VirtualMachineStatus {
+            scheduled: Some(ScheduledPlacement {
+                provider_name: "aws1".into(),
+                provider_class: "ec2".into(),
+                failure_domain: "aws1-ca-central-1a".into(),
+                resolved_storage: vec![],
+                resolved_networks: vec![],
+                scheduled_at: None,
+            }),
+            ..Default::default()
+        });
+        let img = image_ready_on(&["aws1"]);
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("")), ("tpmVmClasses", Some(""))],
+        );
+        let d = schedule(&v, &tpm_class(), &img, &[p], &[], &[]).expect("kept");
+        assert_eq!(d.failure_domain_name, "aws1-ca-central-1a");
+    }
+
+    /// When an ec2 reason is one of several, the compound message names it.
+    #[test]
+    fn mixed_rejections_name_the_ec2_reason_in_the_compound_message() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_ready_on(&["aws1", "vc1"]);
+        let p = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m7i.large")],
+            &[("vmClasses", Some("other"))],
+        );
+        let mut vc = gold_prod_provider("vc1");
+        vc.status.as_mut().unwrap().failure_domains[0]
+            .attributes
+            .available_storage_classes
+            .clear();
+        let err = schedule(&v, &gold_prod_class(), &img, &[p, vc], &[], &[]).unwrap_err();
+        let ScheduleError::NoFailureDomainMatched(msg) = &err else {
+            panic!("expected NoFailureDomainMatched, got {err:?}");
+        };
+        assert!(msg.contains("aws1/aws1-ca-central-1a"), "{msg}");
+        assert!(msg.contains("not offered"), "{msg}");
+    }
+
+    // --- Filter: what DescribeImages recorded of the AMI --------------------
+
+    /// `image_ready_on(&["aws1"])` with the AMI's attributes recorded on the
+    /// `aws1` row, as the EC2 provider writes them.
+    fn image_with_ami(
+        architecture: Architecture,
+        tpm_support: Option<&str>,
+        boot_mode: Option<&str>,
+    ) -> VMImage {
+        let mut img = image_ready_on(&["aws1"]);
+        img.status.as_mut().unwrap().per_provider[0].ec2 =
+            Some(banlieue_api::banlieue::Ec2ImageAttributes {
+                architecture,
+                root_device_name: "/dev/xvda".into(),
+                boot_mode: boot_mode.map(Into::into),
+                tpm_support: tpm_support.map(Into::into),
+                ena_support: true,
+            });
+        img
+    }
+
+    /// The architecture EC2 recorded for the AMI decides, not the one the
+    /// `VMImage` declares.
+    #[test]
+    fn ec2_judges_the_amis_recorded_architecture() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let arm_zone = ec2_provider(
+            "aws1",
+            &["ca-central-1a"],
+            vec![size_of("c", "m8g.large")],
+            &[
+                ("vmClasses", Some("c")),
+                ("arm64VmClasses", Some("c")),
+                ("amd64VmClasses", Some("")),
+            ],
+        );
+        // Declared amd64, but the AMI is arm64: it runs on the arm64 type.
+        let img = image_with_ami(Architecture::Arm64, None, None);
+        assert_eq!(img.spec.architecture, Architecture::Amd64);
+        schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            std::slice::from_ref(&arm_zone),
+            &[],
+            &[],
+        )
+        .expect("the AMI's arm64 runs on the arm64 type");
+
+        // Declared arm64, but the AMI is amd64: refused, naming amd64.
+        let mut img = image_with_ami(Architecture::Amd64, None, None);
+        img.spec.architecture = Architecture::Arm64;
+        let err = schedule(&v, &gold_prod_class(), &img, &[arm_zone], &[], &[]).unwrap_err();
+        assert_eq!(
+            err,
+            ScheduleError::ArchitectureMismatch {
+                vm_class: "c".into(),
+                architecture: "amd64".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn ec2_refuses_a_tpm_class_on_an_ami_without_nitro_tpm() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        for (tpm, boot) in [
+            (None, Some("uefi")),
+            (Some("v2.0"), Some("legacy-bios")),
+            (Some("v2.0"), None),
+        ] {
+            let img = image_with_ami(Architecture::Amd64, tpm, boot);
+            let err = schedule(
+                &v,
+                &tpm_class(),
+                &img,
+                &[ec2_default(&["ca-central-1a"])],
+                &[],
+                &[],
+            )
+            .unwrap_err();
+            assert_eq!(
+                err,
+                ScheduleError::AmiTpmUnsupported("i".into()),
+                "{tpm:?} {boot:?}"
+            );
+            assert_eq!(err.reason(), reasons::AMI_TPM_UNSUPPORTED);
+        }
+    }
+
+    #[test]
+    fn ec2_takes_a_tpm_class_on_an_ami_with_nitro_tpm() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_with_ami(Architecture::Amd64, Some("v2.0"), Some("uefi"));
+        schedule(
+            &v,
+            &tpm_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .expect("scheduled");
+    }
+
+    /// An AMI without TPM support still takes a class that asks for none.
+    #[test]
+    fn an_ami_without_nitro_tpm_takes_a_class_without_tpm() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let img = image_with_ami(Architecture::Amd64, None, None);
+        schedule(
+            &v,
+            &gold_prod_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .expect("scheduled");
+    }
+
+    /// The attributes are per Provider: another Provider's row is not read.
+    #[test]
+    fn another_providers_ami_record_is_not_read() {
+        let v = vm("db-01", "ns", BTreeMap::new());
+        let mut img = image_with_ami(Architecture::Amd64, None, None);
+        img.status.as_mut().unwrap().per_provider[0].provider_name = "aws2".into();
+        img.status.as_mut().unwrap().per_provider.push(
+            image_ready_on(&["aws1"])
+                .status
+                .unwrap()
+                .per_provider
+                .remove(0),
+        );
+        schedule(
+            &v,
+            &tpm_class(),
+            &img,
+            &[ec2_default(&["ca-central-1a"])],
+            &[],
+            &[],
+        )
+        .expect("aws1's row records nothing, so TPM support is not judged");
     }
 }

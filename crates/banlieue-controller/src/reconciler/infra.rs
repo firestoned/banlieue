@@ -2,16 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Build provider-specific infrastructure CRs from a scheduler [`Decision`].
 //!
-//! Five backends: `vsphere` ([`build_vsphere_machine`]), `libvirt`
+//! Six backends: `vsphere` ([`build_vsphere_machine`]), `libvirt`
 //! ([`build_libvirt_machine`], ADR-0050), `cloud-hypervisor`
 //! ([`build_cloud_hypervisor_machine`], ADR-0062), `proxmox`
-//! ([`build_proxmox_machine`], ADR-0075) and `azure`
-//! ([`build_azure_virtual_machine`], ADR-0164). Dispatch by
+//! ([`build_proxmox_machine`], ADR-0075), `azure`
+//! ([`build_azure_virtual_machine`], ADR-0164) and `ec2`
+//! ([`build_ec2_machine`], ADR-0174). Dispatch by
 //! `Provider.spec.providerClassRef.name` lives in [`super::virtualmachine`],
 //! not here — these builders are pure and know only their own backend.
 
 use std::collections::BTreeMap;
 
+use banlieue_api::aws;
 use banlieue_api::banlieue::InstallMode;
 use banlieue_api::banlieue::{
     ANNOTATION_CREATED_BY, DiskSpec, HardwareOverride, ImagePerProviderStatus, ImageSourceKind,
@@ -21,7 +23,8 @@ use banlieue_api::banlieue::{
 use banlieue_api::common::{FirstBootSealing, IpamShape, IpamSpec, StaticIpamConfig};
 use banlieue_api::infrastructure::{
     AzureVirtualMachine, AzureVirtualMachineSpec, ChBootSource, ChBootSourceKind, ChCpuSpec,
-    ChMemorySpec, ChNicSpec, CloudHypervisorMachine, CloudHypervisorMachineSpec, LibvirtBootSource,
+    ChMemorySpec, ChNicSpec, CloudHypervisorMachine, CloudHypervisorMachineSpec,
+    DEFAULT_ROOT_DEVICE_NAME, EC2Machine, EC2MachineSpec, Ec2VolumeType, LibvirtBootSource,
     LibvirtBootSourceKind, LibvirtDiskBus, LibvirtDiskSpec, LibvirtMachine, LibvirtMachineSpec,
     LibvirtNicSource, LibvirtNicSourceKind, LibvirtNicSpec, ProxmoxDataDisk, ProxmoxMachine,
     ProxmoxMachineSpec, ProxmoxNicModel, ProxmoxNicSpec, VSphereDiskSpec, VSphereMachine,
@@ -46,12 +49,15 @@ pub const PROVIDER_CLASS_PROXMOX: &str = "proxmox";
 /// `Provider.spec.providerClassRef.name` for the Azure backend (ADR-0158,
 /// ADR-0164).
 pub const PROVIDER_CLASS_AZURE: &str = "azure";
+/// `Provider.spec.providerClassRef.name` for the Amazon EC2 backend
+/// (ADR-0174).
+pub const PROVIDER_CLASS_EC2: &str = "ec2";
 
 /// Provider classes that are clouds: their failure domains are availability
 /// zones and every `VMClass` reaches them through an explicit instance-size
 /// mapping (ADR-0158 Decision 3, ADR-0160 Decision 1). The scheduler treats
 /// an empty `instanceSizes` on one of these as "nothing is schedulable".
-pub const CLOUD_PROVIDER_CLASSES: &[&str] = &[PROVIDER_CLASS_AZURE];
+pub const CLOUD_PROVIDER_CLASSES: &[&str] = &[PROVIDER_CLASS_AZURE, PROVIDER_CLASS_EC2];
 
 /// Failure-domain key (in `attributes.raw`, else `labels`) carrying the
 /// cloud availability zone a domain stands for (ADR-0158 Decision 3).
@@ -75,6 +81,8 @@ pub enum InfraKind {
     Proxmox,
     /// `infrastructure.banlieue.io/AzureVirtualMachine` (ADR-0164).
     Azure,
+    /// `infrastructure.banlieue.io/EC2Machine` (ADR-0174).
+    Ec2,
 }
 
 impl InfraKind {
@@ -82,7 +90,7 @@ impl InfraKind {
     ///
     /// `None` for a provider class this controller has no builder for. That
     /// is a real state, not an impossible one: a `ProviderClass` can name any
-    /// class, while the set of builders is closed to these five (see
+    /// class, while the set of builders is closed to these six (see
     /// `docs/src/concepts/providers.md`, "Adding a provider"). It must
     /// surface as a condition rather than a panic or a silent no-op.
     #[must_use]
@@ -93,6 +101,7 @@ impl InfraKind {
             PROVIDER_CLASS_CLOUD_HYPERVISOR => Some(Self::CloudHypervisor),
             PROVIDER_CLASS_PROXMOX => Some(Self::Proxmox),
             PROVIDER_CLASS_AZURE => Some(Self::Azure),
+            PROVIDER_CLASS_EC2 => Some(Self::Ec2),
             _ => None,
         }
     }
@@ -106,6 +115,7 @@ impl InfraKind {
             Self::CloudHypervisor => "CloudHypervisorMachine",
             Self::Proxmox => "ProxmoxMachine",
             Self::Azure => "AzureVirtualMachine",
+            Self::Ec2 => "EC2Machine",
         }
     }
 }
@@ -188,6 +198,19 @@ pub enum InfraBuildError {
     InvalidImageReference {
         image: String,
         reference: String,
+        expected: &'static str,
+    },
+
+    /// A storage or network class target names a value the backend cannot
+    /// take (an EBS volume type it does not create, IOPS that are not a
+    /// number).
+    #[error("{what} class {class} has {key} {value:?} in zone {zone}, which is not {expected}")]
+    InvalidTarget {
+        what: &'static str,
+        class: String,
+        key: &'static str,
+        value: String,
+        zone: String,
         expected: &'static str,
     },
 
@@ -1197,7 +1220,7 @@ fn azure_image_version_id(image: &VMImage, decision: &Decision) -> Result<String
             kind: "Template or Url",
         })?;
     let reference = match source.kind {
-        ImageSourceKind::Url => published_azure_version(image, decision)?,
+        ImageSourceKind::Url => published_image_ref(image, decision)?,
         _ => source.reference.clone(),
     };
     if !reference.starts_with(ARM_RESOURCE_ID_PREFIX) {
@@ -1210,12 +1233,10 @@ fn azure_image_version_id(image: &VMImage, decision: &Decision) -> Result<String
     Ok(reference)
 }
 
-/// The version banlieue published for `image` into the decision's
-/// `Provider`: its ready row's `resolvedRef`, for the current build.
-fn published_azure_version(
-    image: &VMImage,
-    decision: &Decision,
-) -> Result<String, InfraBuildError> {
+/// What banlieue published for `image` into the decision's `Provider` (a
+/// Compute Gallery image version, an AMI): its ready row's `resolvedRef`,
+/// for the current build.
+fn published_image_ref(image: &VMImage, decision: &Decision) -> Result<String, InfraBuildError> {
     let missing = || InfraBuildError::MissingResolvedImageRef {
         image: image.name_any(),
         provider: decision.provider_name.clone(),
@@ -1244,6 +1265,343 @@ fn published_azure_version(
         return Err(missing());
     }
     row.resolved_ref.clone().ok_or_else(missing)
+}
+
+/// Target key naming an EBS volume type (ADR-0160 Decision 4).
+const TARGET_KEY_EC2_VOLUME_TYPE: &str = "volumeType";
+/// Target key naming provisioned IOPS for the root volume.
+const TARGET_KEY_EC2_IOPS: &str = "iops";
+/// Target key naming gp3 throughput, MiB/s, for the root volume.
+const TARGET_KEY_EC2_THROUGHPUT: &str = "throughput";
+/// Target key naming the subnet ID of the primary network interface.
+const TARGET_KEY_EC2_SUBNET_ID: &str = "subnetId";
+/// Target key naming the comma-separated security group IDs.
+const TARGET_KEY_EC2_SECURITY_GROUP_IDS: &str = "securityGroupIds";
+/// Separator of a list-valued target.
+const TARGET_LIST_SEPARATOR: char = ',';
+/// NICs an EC2 instance takes in v1 (ADR-0174).
+const EC2_MAX_NICS: usize = 1;
+/// Every EBS volume type an `EC2Machine` creates.
+const EC2_VOLUME_TYPES: [Ec2VolumeType; 4] = [
+    Ec2VolumeType::Gp3,
+    Ec2VolumeType::Gp2,
+    Ec2VolumeType::Io1,
+    Ec2VolumeType::Io2,
+];
+
+/// Build an [`EC2Machine`] from the scheduler [`Decision`], the original VM,
+/// its class, image, and the chosen [`Provider`] (ADR-0174).
+///
+/// Owner-reference is set to `vm`, as for the other backends. Every field is
+/// resolved here so the provider interprets nothing.
+///
+/// # Where each resolved field comes from
+///
+/// - **`zone`**: the failure domain's raw `zone` attribute, else its `zone`
+///   label (ADR-0158 Decision 3): the account's zone **name**.
+/// - **`instanceType`**: `Provider.spec.capabilities.instanceSizes` for the
+///   `VMClass` in that zone, a per-zone entry winning (ADR-0160 Decision 1).
+/// - **`imageId`**: the `ref` of the `VMImage`'s `ec2` `Template` source (a
+///   hand-published AMI), or for a `Url` source the AMI banlieue published
+///   into this `Provider` for the current build (its ready row's
+///   `resolvedRef`, ADR-0162 Decision 9).
+/// - **`rootDeviceName`**: the AMI's own, as the EC2 provider recorded it
+///   from `DescribeImages` on the image's row for this `Provider`; else
+///   `/dev/xvda`, the name banlieue registers AMIs with.
+/// - **`rootVolumeGiB`**: the class's OS disk, after the VM's disk override.
+/// - **`volumeType` / `iops` / `throughput`**: the OS disk's storage class
+///   target in the zone (`volumeType` required, the other two optional).
+/// - **`kmsKeyId`**: the `Provider`'s `spec.connection.ec2.kmsKeyId`.
+/// - **`subnetId` / `securityGroupIds`**: the single NIC's network class
+///   target in the zone (`securityGroupIds` comma-separated).
+/// - **`tpmEnabled`**: the class's `tpmEnabled` (NitroTPM, ADR-0167).
+///
+/// # Errors
+/// [`InfraBuildError::Unsupported`] for an install-media image (ADR-0162
+/// Decision 7), a `trustedBoot` image or `efi-secure` firmware (ADR-0167
+/// Decision 5), data disks, more than one NIC, a per-VM vCPU, memory or
+/// static address override; [`InfraBuildError::UnresolvedClass`] for a class
+/// with no disk or no NIC; [`InfraBuildError::MissingZone`];
+/// [`InfraBuildError::UnmappedInstanceSize`];
+/// [`InfraBuildError::MissingImageSource`] /
+/// [`InfraBuildError::InvalidImageReference`] for the image, and
+/// [`InfraBuildError::MissingResolvedImageRef`] for a `Url` image not yet
+/// published into this `Provider` for its current build;
+/// [`InfraBuildError::MissingTarget`] / [`InfraBuildError::InvalidTarget`]
+/// for a storage or network target; and [`InfraBuildError::InvalidSpec`]
+/// when the result fails [`EC2MachineSpec::validate`] (an identifier of the
+/// wrong shape, user data over EC2's 16,384 bytes).
+pub fn build_ec2_machine(
+    vm: &VirtualMachine,
+    class: &VMClass,
+    image: &VMImage,
+    decision: &Decision,
+    provider: &Provider,
+    rendered_user_data: Option<&str>,
+) -> Result<EC2Machine, InfraBuildError> {
+    let unsupported = |what: String| InfraBuildError::Unsupported {
+        backend: PROVIDER_CLASS_EC2,
+        what,
+    };
+
+    // ADR-0162 Decision 7: a cloud boots a published image.
+    let mode = install_mode(image);
+    if mode != InstallMode::Immediate {
+        return Err(unsupported(format!(
+            "installMode {mode:?} (no install-media path on a cloud, ADR-0162 Decision 7)"
+        )));
+    }
+    // ADR-0167 Decision 5: UEFI Secure Boot needs the AMI's own UEFI variable
+    // store, which no banlieue publisher writes.
+    if image.spec.trusted_boot.is_some() {
+        return Err(unsupported(
+            "trustedBoot (UEFI Secure Boot needs the AMI's UEFI variable store, ADR-0167 Decision 5)"
+                .into(),
+        ));
+    }
+    if class.spec.firmware == banlieue_api::common::Firmware::EfiSecure {
+        return Err(unsupported(
+            "firmware efi-secure (UEFI Secure Boot needs the AMI's UEFI variable store, ADR-0167 Decision 5)"
+                .into(),
+        ));
+    }
+
+    let hardware_override = vm.spec.hardware_override.as_ref();
+    if hardware_override.is_some_and(|h| h.cpus.is_some() || h.memory_mi_b.is_some()) {
+        return Err(unsupported(
+            "hardwareOverride cpus or memoryMiB (the instance type fixes them, ADR-0160)".into(),
+        ));
+    }
+    if !vm.spec.network_overrides.is_empty() {
+        return Err(unsupported(
+            "static address overrides (the primary private address is assigned by EC2)".into(),
+        ));
+    }
+
+    let disks = &class.spec.hardware.disks;
+    let os_disk = disks
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no disks)".into()))?;
+    if disks.len() > 1 {
+        return Err(unsupported(format!(
+            "data disks (class {} declares {})",
+            class.name_any(),
+            disks.len()
+        )));
+    }
+    let interfaces = &class.spec.network.interfaces;
+    let nic = interfaces
+        .first()
+        .ok_or_else(|| InfraBuildError::UnresolvedClass("(no network interfaces)".into()))?;
+    if interfaces.len() > EC2_MAX_NICS {
+        return Err(unsupported(format!(
+            "more than {EC2_MAX_NICS} network interface (class {} declares {})",
+            class.name_any(),
+            interfaces.len()
+        )));
+    }
+
+    let zone = decision
+        .failure_domain_raw
+        .get(FD_ZONE_KEY)
+        .or_else(|| decision.failure_domain_labels.get(FD_ZONE_KEY))
+        .cloned()
+        .ok_or_else(|| InfraBuildError::MissingZone(decision.failure_domain_name.clone()))?;
+
+    let capabilities = &provider.spec.capabilities;
+    let instance_type = capabilities
+        .instance_size_for(&class.name_any(), &zone)
+        .ok_or_else(|| InfraBuildError::UnmappedInstanceSize {
+            vm_class: class.name_any(),
+            provider: decision.provider_name.clone(),
+            zone: zone.clone(),
+        })?
+        .to_string();
+
+    let image_id = ec2_image_id(image, decision)?;
+
+    let storage_target = capabilities
+        .storage_classes
+        .iter()
+        .find(|c| c.name == os_disk.storage_class)
+        .and_then(|c| c.target_for_zone(&zone));
+    let volume = ec2_volume(storage_target, &os_disk.storage_class, &zone)?;
+
+    let network_target = capabilities
+        .network_classes
+        .iter()
+        .find(|c| c.name == nic.network_class)
+        .and_then(|c| c.target_for_zone(&zone));
+    let missing_network = |key: &'static str| InfraBuildError::MissingTarget {
+        what: "network",
+        class: nic.network_class.clone(),
+        key,
+        zone: zone.clone(),
+    };
+    let subnet_id = network_target
+        .and_then(|t| t.get(TARGET_KEY_EC2_SUBNET_ID))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| missing_network(TARGET_KEY_EC2_SUBNET_ID))?;
+    let security_group_ids: Vec<String> = network_target
+        .and_then(|t| t.get(TARGET_KEY_EC2_SECURITY_GROUP_IDS))
+        .map(|v| split_list(v))
+        .unwrap_or_default();
+    if security_group_ids.is_empty() {
+        return Err(missing_network(TARGET_KEY_EC2_SECURITY_GROUP_IDS));
+    }
+
+    let kms_key_id = provider
+        .spec
+        .connection
+        .ec2
+        .as_ref()
+        .and_then(|c| c.kms_key_id.clone());
+
+    let spec = EC2MachineSpec {
+        provider_id: None,
+        failure_domain: Some(decision.failure_domain_name.clone()),
+        provider_ref: provider_reference(vm, provider, &decision.provider_name),
+        zone,
+        instance_type,
+        image_id,
+        root_device_name: ec2_root_device_name(image, decision),
+        root_volume_gi_b: merge_disk_size_override(os_disk, hardware_override),
+        volume_type: volume.volume_type,
+        iops: volume.iops,
+        throughput: volume.throughput,
+        kms_key_id,
+        subnet_id,
+        security_group_ids,
+        tpm_enabled: class.spec.tpm_enabled,
+        user_data: rendered_user_data.map(str::to_string),
+        desired_power_state: vm.spec.desired_power_state.clone(),
+    };
+    spec.validate().map_err(InfraBuildError::InvalidSpec)?;
+
+    Ok(EC2Machine {
+        metadata: infra_meta(vm),
+        spec,
+        status: None,
+    })
+}
+
+/// The root device name of the image's AMI on the decision's `Provider`, as
+/// recorded by `DescribeImages`, else [`DEFAULT_ROOT_DEVICE_NAME`].
+fn ec2_root_device_name(image: &VMImage, decision: &Decision) -> String {
+    image
+        .status
+        .as_ref()
+        .and_then(|s| {
+            s.per_provider.iter().find(|r| {
+                r.provider_name == decision.provider_name
+                    && r.provider_namespace == decision.provider_namespace
+            })
+        })
+        .and_then(|r| r.ec2.as_ref())
+        .map_or_else(
+            || DEFAULT_ROOT_DEVICE_NAME.to_string(),
+            |a| a.root_device_name.clone(),
+        )
+}
+
+/// The root volume settings a storage class target resolves to.
+struct Ec2Volume {
+    volume_type: Ec2VolumeType,
+    iops: Option<u32>,
+    throughput: Option<u32>,
+}
+
+/// The EBS settings of `class`'s `target` in `zone`: `volumeType` required,
+/// `iops` and `throughput` optional, each parsed.
+fn ec2_volume(
+    target: Option<&BTreeMap<String, String>>,
+    class: &str,
+    zone: &str,
+) -> Result<Ec2Volume, InfraBuildError> {
+    let raw_type = target
+        .and_then(|t| t.get(TARGET_KEY_EC2_VOLUME_TYPE))
+        .map(|v| v.trim())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| InfraBuildError::MissingTarget {
+            what: "storage",
+            class: class.to_string(),
+            key: TARGET_KEY_EC2_VOLUME_TYPE,
+            zone: zone.to_string(),
+        })?;
+    let invalid =
+        |key: &'static str, value: &str, expected: &'static str| InfraBuildError::InvalidTarget {
+            what: "storage",
+            class: class.to_string(),
+            key,
+            value: value.to_string(),
+            zone: zone.to_string(),
+            expected,
+        };
+    let volume_type = EC2_VOLUME_TYPES
+        .into_iter()
+        .find(|t| t.as_str() == raw_type)
+        .ok_or_else(|| invalid(TARGET_KEY_EC2_VOLUME_TYPE, raw_type, "gp3, gp2, io1 or io2"))?;
+    let number = |key: &'static str| -> Result<Option<u32>, InfraBuildError> {
+        let Some(value) = target.and_then(|t| t.get(key)) else {
+            return Ok(None);
+        };
+        value
+            .trim()
+            .parse::<u32>()
+            .map(Some)
+            .map_err(|_| invalid(key, value, "a whole number"))
+    };
+    Ok(Ec2Volume {
+        volume_type,
+        iops: number(TARGET_KEY_EC2_IOPS)?,
+        throughput: number(TARGET_KEY_EC2_THROUGHPUT)?,
+    })
+}
+
+/// The non-empty, trimmed entries of a comma-separated target value.
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(TARGET_LIST_SEPARATOR)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// The AMI an `ec2` VM boots:
+///
+/// - a `Template` source: its `ref`, an AMI an admin published by hand;
+/// - a `Url` source: the AMI banlieue published into the chosen `Provider`
+///   for the current build (roadmap 24 phase D writes that row).
+///
+/// Either way the result must be an AMI ID.
+fn ec2_image_id(image: &VMImage, decision: &Decision) -> Result<String, InfraBuildError> {
+    let source = image
+        .spec
+        .sources
+        .iter()
+        .find(|s| {
+            s.provider_class == PROVIDER_CLASS_EC2
+                && matches!(s.kind, ImageSourceKind::Template | ImageSourceKind::Url)
+        })
+        .ok_or_else(|| InfraBuildError::MissingImageSource {
+            image: image.name_any(),
+            provider_class: PROVIDER_CLASS_EC2,
+            kind: "Template or Url",
+        })?;
+    let reference = match source.kind {
+        ImageSourceKind::Url => published_image_ref(image, decision)?,
+        _ => source.reference.trim().to_string(),
+    };
+    if !aws::is_ami_id(&reference) {
+        return Err(InfraBuildError::InvalidImageReference {
+            image: image.name_any(),
+            reference,
+            expected: "an AMI ID (ami- and 8 or 17 hex digits)",
+        });
+    }
+    Ok(reference)
 }
 
 /// The storage id the NoCloud seed ISO is uploaded to: the `storage` key of

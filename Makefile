@@ -1795,9 +1795,12 @@ KIND_KUBECONFIG = $(CURDIR)/.kind-kubeconfig-$(KIND_CLUSTER_NAME)
 # as a side effect of running the local e2e.
 KIND_KUBECTL = kubectl --kubeconfig $(KIND_KUBECONFIG) --context kind-$(KIND_CLUSTER_NAME)
 
-# Backends the e2e expects `bootstrap operator` to have seeded. Must match the
-# features the binary was built with (crates/banlieue COMPILED_BACKENDS).
-E2E_BACKENDS ?= vsphere,libvirt
+# Backends the e2e expects `bootstrap operator` to have seeded: each must be
+# in the features the binary was built with (crates/banlieue COMPILED_BACKENDS,
+# the default features here). A subset check: the suite asserts each listed
+# backend got its ClusterRole and ProviderClass, and runs no provider pod, so
+# the cloud backends need no account to be listed.
+E2E_BACKENDS ?= vsphere,libvirt,azure,ec2
 
 # Backend used to exercise the `bootstrap provider <backend>` escape hatch.
 E2E_ESCAPE_BACKEND ?= vsphere

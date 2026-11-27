@@ -289,6 +289,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         let obj = json.as_object().unwrap();
@@ -313,6 +314,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         let back: ImagePerProviderStatus = serde_json::from_value(json).unwrap();
@@ -442,6 +444,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         };
         let json = serde_json::to_value(&p).unwrap();
         assert_eq!(json["zones"].as_array().unwrap().len(), 2);
@@ -1152,5 +1155,66 @@ mod tests {
             spec["firstBootSealing"]["properties"]["partitions"]["minItems"],
             1
         );
+    }
+
+    // ---- Ec2ImageAttributes (roadmap 24 phase E) --------------------------
+
+    fn ec2_attributes() -> Ec2ImageAttributes {
+        Ec2ImageAttributes {
+            architecture: Architecture::Amd64,
+            root_device_name: "/dev/xvda".into(),
+            boot_mode: Some("uefi".into()),
+            tpm_support: Some("v2.0".into()),
+            ena_support: true,
+        }
+    }
+
+    #[test]
+    fn ec2_attributes_round_trip_in_camel_case() {
+        let a = ec2_attributes();
+        let json = serde_json::to_value(&a).unwrap();
+        assert_eq!(json["rootDeviceName"], "/dev/xvda");
+        assert_eq!(json["tpmSupport"], "v2.0");
+        assert_eq!(json["bootMode"], "uefi");
+        assert_eq!(json["architecture"], "amd64");
+        assert_eq!(json["enaSupport"], true);
+        let back: Ec2ImageAttributes = serde_json::from_value(json).unwrap();
+        assert_eq!(back, a);
+    }
+
+    #[test]
+    fn nitro_tpm_needs_tpm_support_v2_and_uefi() {
+        assert!(ec2_attributes().supports_nitro_tpm());
+        let mut a = ec2_attributes();
+        a.tpm_support = None;
+        assert!(!a.supports_nitro_tpm());
+        let mut a = ec2_attributes();
+        a.boot_mode = Some("legacy-bios".into());
+        assert!(!a.supports_nitro_tpm());
+        let mut a = ec2_attributes();
+        a.boot_mode = None;
+        assert!(
+            !a.supports_nitro_tpm(),
+            "unset leaves it to the type: not assumed"
+        );
+    }
+
+    #[test]
+    fn a_row_without_ec2_attributes_omits_them() {
+        let row = ImagePerProviderStatus {
+            provider_name: "p".into(),
+            provider_namespace: "ns".into(),
+            ready: true,
+            resolved_ref: None,
+            reason: None,
+            message: None,
+            zones: vec![],
+            source_digest: None,
+            min_os_disk_size_gib: None,
+            superseded_refs: vec![],
+            ec2: None,
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert!(json.get("ec2").is_none(), "{json}");
     }
 }

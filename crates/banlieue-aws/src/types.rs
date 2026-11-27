@@ -19,6 +19,9 @@
 //!   (ADR-0167).
 //! - [`parse_availability_zones`], [`parse_instance_type_offerings`],
 //!   [`parse_instance_types`]: what the `Provider` publishes.
+//! - [`parse_describe_images`]: an AMI's state, architecture, root device,
+//!   boot mode and TPM support (roadmap 24 phase E). The owner account is
+//!   not read.
 //! - [`parse_next_token`]: a paginated response's `nextToken`.
 //! - [`parse_error`]: EC2's, STS's or S3's error body, classified.
 //!
@@ -589,6 +592,147 @@ pub fn parse_instance_types(body: &str) -> Result<Vec<InstanceTypeInfo>> {
             nitro_tpm_supported: t.nitro_tpm_support == NITRO_TPM_SUPPORTED,
             nitro_tpm_versions: t.nitro_tpm_info.supported_versions.item,
             boot_modes: t.supported_boot_modes.item,
+        })
+        .collect())
+}
+
+// ----- images ------------------------------------------------------------
+
+/// `imageState` of an image that can be launched.
+const IMAGE_STATE_AVAILABLE: &str = "available";
+/// `rootDeviceType` of an EBS-backed image.
+const ROOT_DEVICE_TYPE_EBS: &str = "ebs";
+/// `tpmSupport` of an image registered for NitroTPM 2.0 (ADR-0167
+/// Decision 5).
+const TPM_SUPPORT_V2: &str = "v2.0";
+
+/// What banlieue reads of an AMI, from `DescribeImages`. The owner account
+/// is deliberately not kept.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageInfo {
+    /// The AMI ID.
+    pub image_id: String,
+    /// `imageState`: `available`, `pending`, `failed`, `deregistered`, ...
+    pub state: String,
+    /// `architecture`: `x86_64`, `arm64`, `i386`, ...
+    pub architecture: String,
+    /// `rootDeviceName`, such as `/dev/xvda` or `/dev/sda1`.
+    pub root_device_name: String,
+    /// `rootDeviceType`: `ebs` or `instance-store`.
+    pub root_device_type: String,
+    /// `bootMode` (`uefi`, `legacy-bios`, `uefi-preferred`); `None` when
+    /// the image does not set one and the instance type's default applies.
+    pub boot_mode: Option<String>,
+    /// `tpmSupport`: `v2.0` for an image registered for NitroTPM.
+    pub tpm_support: Option<String>,
+    /// `enaSupport`.
+    pub ena_support: bool,
+    /// The root device's EBS volume size, GiB, from its block device
+    /// mapping.
+    pub root_volume_size_gib: Option<u32>,
+}
+
+impl ImageInfo {
+    /// `imageState` is `available`.
+    #[must_use]
+    pub fn is_available(&self) -> bool {
+        self.state == IMAGE_STATE_AVAILABLE
+    }
+
+    /// `rootDeviceType` is `ebs`, the only kind banlieue launches.
+    #[must_use]
+    pub fn is_ebs_backed(&self) -> bool {
+        self.root_device_type == ROOT_DEVICE_TYPE_EBS
+    }
+
+    /// `bootMode` is `uefi`, which NitroTPM requires (ADR-0167 finding 5).
+    #[must_use]
+    pub fn is_uefi(&self) -> bool {
+        self.boot_mode.as_deref() == Some(BOOT_MODE_UEFI)
+    }
+
+    /// `tpmSupport` is `v2.0` (ADR-0167 Decision 5).
+    #[must_use]
+    pub fn has_tpm_v2(&self) -> bool {
+        self.tpm_support.as_deref() == Some(TPM_SUPPORT_V2)
+    }
+}
+
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct RawEbs {
+    #[serde(default)]
+    volume_size: Option<u32>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawBlockDeviceMapping {
+    #[serde(default)]
+    device_name: String,
+    #[serde(default)]
+    ebs: Option<RawEbs>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawImage {
+    #[serde(default)]
+    image_id: String,
+    #[serde(default)]
+    image_state: String,
+    #[serde(default)]
+    architecture: String,
+    #[serde(default)]
+    root_device_name: String,
+    #[serde(default)]
+    root_device_type: String,
+    #[serde(default)]
+    boot_mode: Option<String>,
+    #[serde(default)]
+    tpm_support: Option<String>,
+    #[serde(default)]
+    ena_support: Option<bool>,
+    #[serde(default)]
+    block_device_mapping: Items<RawBlockDeviceMapping>,
+}
+
+#[derive(Deserialize)]
+struct RawImages {
+    #[serde(rename = "imagesSet", default)]
+    images_set: Items<RawImage>,
+}
+
+/// The images of a `DescribeImages` response. The owner account and every
+/// element banlieue does not decide on are ignored.
+///
+/// # Errors
+/// [`Error::Decode`] for malformed XML.
+pub fn parse_describe_images(body: &str) -> Result<Vec<ImageInfo>> {
+    let raw: RawImages = decode("DescribeImages", body)?;
+    Ok(raw
+        .images_set
+        .item
+        .into_iter()
+        .map(|i| {
+            let root_volume_size_gib = i
+                .block_device_mapping
+                .item
+                .iter()
+                .find(|m| m.device_name == i.root_device_name)
+                .and_then(|m| m.ebs.as_ref())
+                .and_then(|e| e.volume_size);
+            ImageInfo {
+                image_id: i.image_id.trim().to_string(),
+                state: i.image_state.trim().to_string(),
+                architecture: i.architecture.trim().to_string(),
+                root_device_name: i.root_device_name.trim().to_string(),
+                root_device_type: i.root_device_type.trim().to_string(),
+                boot_mode: non_empty(i.boot_mode),
+                tpm_support: non_empty(i.tpm_support),
+                ena_support: i.ena_support.unwrap_or(false),
+                root_volume_size_gib,
+            }
         })
         .collect())
 }

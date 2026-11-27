@@ -667,6 +667,27 @@ mod tests {
         assert_eq!(got.tpm_endorsement_certificates, vec![PEM.to_string()]);
     }
 
+    /// ADR-0167 Decision 1: an EC2 member publishes its NitroTPM's EK as
+    /// public keys, not a certificate, and the claim carries them the same
+    /// way.
+    #[test]
+    fn a_bound_claim_mirrors_its_members_ek_public_keys() {
+        const KEY: &str = "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----";
+        let mut vm = member_vm();
+        vm.status = Some(banlieue_api::banlieue::VirtualMachineStatus {
+            tpm_endorsement_public_keys: vec![KEY.to_string()],
+            ..Default::default()
+        });
+        let got = mirrored_member_state(&vm);
+        assert_eq!(got.tpm_endorsement_public_keys, vec![KEY.to_string()]);
+        assert!(got.tpm_endorsement_certificates.is_empty());
+        assert!(
+            mirrored_member_state(&member_vm())
+                .tpm_endorsement_public_keys
+                .is_empty()
+        );
+    }
+
     /// ADR-0143 Decision 3: a member with no vTPM publishes the subject of
     /// its attestation certificate instead, and the claim carries it so
     /// mediatore can compute the node entry's parent from one GET.

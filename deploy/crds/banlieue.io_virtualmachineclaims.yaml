@@ -319,6 +319,17 @@ spec:
                 items:
                   type: string
                 type: array
+              tpmEndorsementPublicKeys:
+                description: |-
+                  The TPM endorsement key public keys (PEM `SubjectPublicKeyInfo`) of
+                  the bound member, mirrored from its `VirtualMachine.status` (ADR-0167
+                  Decision 1). Set where the backend publishes a public key and no
+                  certificate: an EC2 member with NitroTPM, whose keys the provider read
+                  host-side from the EC2 API. banlieue publishes them and vouches for
+                  nothing. Empty for every other member.
+                items:
+                  type: string
+                type: array
               virtualMachineRef:
                 description: The bound member. Set once, at bind time, and never rewritten.
                 nullable: true

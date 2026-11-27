@@ -60,6 +60,14 @@ pub const ACTION_DESCRIBE_AVAILABILITY_ZONES: &str = "DescribeAvailabilityZones"
 pub const ACTION_DESCRIBE_INSTANCE_TYPE_OFFERINGS: &str = "DescribeInstanceTypeOfferings";
 /// `DescribeInstanceTypes`.
 pub const ACTION_DESCRIBE_INSTANCE_TYPES: &str = "DescribeInstanceTypes";
+/// `DescribeImages`.
+pub const ACTION_DESCRIBE_IMAGES: &str = "DescribeImages";
+/// An AMI ID's prefix.
+const AMI_ID_PREFIX: &str = "ami-";
+/// The hex digits of a short and a long EC2 resource ID.
+const RESOURCE_ID_HEX_LENS: [usize; 2] = [8, 17];
+/// `DescribeImages` names one image.
+const P_IMAGE_ID_1: &str = "ImageId.1";
 
 const CLIENT_TOKEN_PREFIX: &str = "banlieue-";
 /// Separates UID and zone in the hashed token input; neither may contain it.
@@ -457,6 +465,33 @@ pub fn start_instances(instance_id: &str) -> Result<Ec2Request> {
 /// [`Error::Invalid`] when `instance_id` is empty.
 pub fn describe_instance(instance_id: &str) -> Result<Ec2Request> {
     one_instance(ACTION_DESCRIBE_INSTANCES, instance_id)
+}
+
+/// Whether `image_id` is `ami-` and 8 or 17 lowercase hex digits, the shape
+/// EC2 issues (the same rule as `banlieue_api::aws::is_ami_id`).
+#[must_use]
+pub fn is_ami_id(image_id: &str) -> bool {
+    image_id.strip_prefix(AMI_ID_PREFIX).is_some_and(|hex| {
+        RESOURCE_ID_HEX_LENS.contains(&hex.len())
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
+/// `DescribeImages` for one AMI (`ImageId.1`): what the provider records of
+/// a hand-published `Template` image (roadmap 24 phase E).
+///
+/// # Errors
+/// [`Error::Invalid`] when `image_id` is not an AMI ID, before anything is
+/// sent.
+pub fn describe_image(image_id: &str) -> Result<Ec2Request> {
+    if !is_ami_id(image_id) {
+        return Err(Error::Invalid(format!(
+            "{image_id:?} is not an AMI ID (ami- and 8 or 17 hex digits)"
+        )));
+    }
+    Ok(Ec2Request::new(ACTION_DESCRIBE_IMAGES).with(P_IMAGE_ID_1, image_id))
 }
 
 /// `DescribeInstances` for the instances carrying tag `key` with `value`

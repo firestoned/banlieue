@@ -388,6 +388,15 @@ pub struct VirtualMachineStatus {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tpm_endorsement_certificates: Vec<String>,
 
+    /// Mirrored from the infra CR's `status.tpmEndorsementPublicKeys`
+    /// (ADR-0167 Decision 1): the TPM's endorsement key public keys, PEM
+    /// `SubjectPublicKeyInfo`, where the backend publishes a public key and no
+    /// certificate (an `EC2Machine` with NitroTPM, read host-side from the
+    /// EC2 API). `tpmEndorsementCertificates` stays empty on such a machine.
+    /// Mirrored onward onto a bound `VirtualMachineClaim`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tpm_endorsement_public_keys: Vec<String>,
+
     /// Mirrored from the infra CR's `status.attestationSubject` (ADR-0143
     /// Decision 3): the exact certificate subject CN the host's signer sets
     /// for a guest that attests with `x509pop` (the `firecracker` class, and

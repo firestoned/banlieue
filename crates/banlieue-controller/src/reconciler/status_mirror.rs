@@ -3,12 +3,14 @@
 //! `VirtualMachine` status mirror.
 //!
 //! Pulls status fields from the provider's infrastructure CR ([`VSphereMachine`],
-//! [`LibvirtMachine`], [`CloudHypervisorMachine`], [`ProxmoxMachine`] or
-//! [`AzureVirtualMachine`]) and
+//! [`LibvirtMachine`], [`CloudHypervisorMachine`], [`ProxmoxMachine`],
+//! [`AzureVirtualMachine`] or [`EC2Machine`]) and
 //! projects them onto the parent [`VirtualMachine`]:
 //!
 //! - `status.initialization` ← infra.status.initialization
 //! - `status.addresses` ← infra.status.addresses
+//! - `status.tpmEndorsementCertificates` / `tpmEndorsementPublicKeys` ← the
+//!   infra CR's (ADR-0045; ADR-0167 Decision 1 for EC2's public keys)
 //! - `Ready` condition on the infra CR → `InfrastructureReady` on the VM
 //! - Aggregate `Ready` = `Scheduled` && `PlacementValid` && `InfrastructureReady`
 //!
@@ -21,7 +23,7 @@ use banlieue_api::banlieue::{VirtualMachine, VirtualMachineStatus};
 use banlieue_api::common::condition_types;
 use banlieue_api::common::{InitializationStatus, MachineAddress, PowerState};
 use banlieue_api::infrastructure::{
-    AzureVirtualMachine, CloudHypervisorMachine, FirecrackerMachine, LibvirtMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, EC2Machine, FirecrackerMachine, LibvirtMachine,
     ProxmoxMachine, VSphereMachine,
 };
 use banlieue_provider_sdk::status::{
@@ -52,6 +54,13 @@ pub trait InfraMachineRead {
     /// (ADR-0045). Empty for a machine with no vTPM, and until its guest
     /// has produced one.
     fn tpm_endorsement_certificates(&self) -> &[String];
+    /// PEM `SubjectPublicKeyInfo` endorsement key public keys this machine
+    /// published where its backend offers no EK certificate (an
+    /// `EC2Machine` with NitroTPM, ADR-0167 Decision 1). Empty for every
+    /// other kind.
+    fn tpm_endorsement_public_keys(&self) -> &[String] {
+        &[]
+    }
     /// The certificate subject CN the host's signer sets for a guest with no
     /// vTPM (ADR-0143 Decision 3). `None` for every kind that attests with a
     /// vTPM, which publishes the EK certificate instead.
@@ -73,7 +82,7 @@ pub trait InfraMachineRead {
 /// the CAPI v1beta2 status shape, so the accessors are identical; only the
 /// `tpm_endorsement_certificates` body differs and is supplied by the caller.
 macro_rules! impl_infra_machine_read {
-    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject = |$subj_this:ident| $subj:expr) => {
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject = |$subj_this:ident| $subj:expr, public_keys = |$pk_this:ident| $pk:expr) => {
         impl InfraMachineRead for $kind {
             fn initialization(&self) -> &InitializationStatus {
                 self.status
@@ -123,6 +132,11 @@ macro_rules! impl_infra_machine_read {
                 $subj
             }
 
+            fn tpm_endorsement_public_keys(&self) -> &[String] {
+                let $pk_this = self;
+                $pk
+            }
+
             fn desired_power_state(&self) -> &PowerState {
                 &self.spec.desired_power_state
             }
@@ -131,6 +145,14 @@ macro_rules! impl_infra_machine_read {
                 Some(self.spec.provider_ref.name.as_str())
             }
         }
+    };
+    ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr, subject = |$subj_this:ident| $subj:expr) => {
+        impl_infra_machine_read!(
+            $kind,
+            $(#[$tpm_doc])* |$this| $tpm,
+            subject = |$subj_this| $subj,
+            public_keys = |_p| &[]
+        );
     };
     ($kind:ty, $(#[$tpm_doc:meta])* |$this:ident| $tpm:expr) => {
         impl_infra_machine_read!($kind, $(#[$tpm_doc])* |$this| $tpm, subject = |_s| None);
@@ -183,6 +205,18 @@ impl_infra_machine_read!(
     /// with its attestation key only (ADR-0165, AK-only).
     |_this| &[]
 );
+impl_infra_machine_read!(
+    EC2Machine,
+    /// EC2 offers no EK certificate: NitroTPM's EK is published as public
+    /// keys read host-side from the EC2 API (ADR-0167 Decision 1).
+    |_this| &[],
+    subject = |_s| None,
+    public_keys = |this| this
+        .status
+        .as_ref()
+        .map(|s| s.tpm_endorsement_public_keys.as_slice())
+        .unwrap_or(&[])
+);
 
 // Stable empty status fallbacks so accessors can return references even when
 // the infra CR has not produced a `status` yet (initial reconciles).
@@ -211,6 +245,10 @@ pub fn mirror_status_from_infra(
     // verifier gets the nonce and the anchor its quote must chain to from
     // one GET.
     next.tpm_endorsement_certificates = infra.tpm_endorsement_certificates().to_vec();
+    // ADR-0167 Decision 1: where the backend publishes the EK as public keys
+    // (EC2's NitroTPM), they ride beside the certificates, which stay empty.
+    // Replaced, not merged, like the certificates.
+    next.tpm_endorsement_public_keys = infra.tpm_endorsement_public_keys().to_vec();
     // ADR-0143 Decision 3: the counterpart for a guest with no vTPM. Replaced,
     // not merged, so a subject the machine withdrew does not linger.
     next.attestation_subject = infra.attestation_subject().map(str::to_string);

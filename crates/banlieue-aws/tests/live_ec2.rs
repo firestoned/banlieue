@@ -27,6 +27,10 @@
 //! # three variables above and fails without them.
 //! ```
 //!
+//! `describe_image_reads_a_real_ami` needs `BANLIEUE_LIVE_AMI_ID`, the ID of
+//! an AMI the role may see (the spike's NitroTPM image, say); it prints the
+//! fields banlieue records and never the owner account.
+//!
 //! `reads_zones_offerings_and_instance_types` takes `AWS_INSTANCE_TYPE`
 //! (default `t3.small`). `run_observe_terminate` launches one instance and
 //! always terminates it; it also needs `AWS_IMAGE_ID` (a UEFI AMI with
@@ -157,6 +161,49 @@ fn credential_source() -> Arc<dyn CredentialSource> {
 
 fn client() -> Ec2Client {
     Ec2Client::new(&env(ENV_REGION), credential_source()).expect("client")
+}
+
+const ENV_LIVE_AMI_ID: &str = "BANLIEUE_LIVE_AMI_ID";
+
+/// `DescribeImages` against a real AMI: every field banlieue records is
+/// read, and an unknown well-formed ID is `Ok(None)`.
+#[tokio::test]
+#[ignore = "talks to EC2; see module docs"]
+async fn describe_image_reads_a_real_ami() {
+    let image_id = env(ENV_LIVE_AMI_ID);
+    let client = client();
+    let image = client
+        .describe_image(&image_id)
+        .await
+        .expect("DescribeImages")
+        .unwrap_or_else(|| panic!("{ENV_LIVE_AMI_ID} is not visible to this identity"));
+    assert_eq!(image.image_id, image_id);
+    assert!(!image.state.is_empty(), "{image:?}");
+    assert!(!image.architecture.is_empty(), "{image:?}");
+    assert!(!image.root_device_name.is_empty(), "{image:?}");
+    assert!(!image.root_device_type.is_empty(), "{image:?}");
+    println!(
+        "image: state {}, {}, root {} ({}, {:?} GiB), boot mode {:?}, TPM {:?}, ENA {}",
+        image.state,
+        image.architecture,
+        image.root_device_name,
+        image.root_device_type,
+        image.root_volume_size_gib,
+        image.boot_mode,
+        image.tpm_support,
+        image.ena_support
+    );
+
+    // An ID EC2 parses but no account holds: InvalidAMIID.NotFound. EC2's
+    // idea of well-formed is stricter than the syntax (seen live: the
+    // all-zero ID and `ami-0123456789abcdef0` are `Malformed`), so take a
+    // real ID's neighbour: the same ID with its last hex digit changed.
+    let missing_id = neighbour_id(&image_id);
+    let missing = client
+        .describe_image(&missing_id)
+        .await
+        .expect("not found is not an error");
+    assert!(missing.is_none(), "{missing:?}");
 }
 
 #[tokio::test]
@@ -392,4 +439,12 @@ async fn run_observe_terminate() {
 
     outcome.expect("observe");
     terminated.expect("terminate");
+}
+
+/// `id` with its last hex digit changed: an ID EC2 accepts as well formed
+/// that is all but certain to name no image.
+fn neighbour_id(id: &str) -> String {
+    let (head, last) = id.split_at(id.len() - 1);
+    let next = if last == "0" { "1" } else { "0" };
+    format!("{head}{next}")
 }

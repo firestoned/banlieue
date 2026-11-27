@@ -39,7 +39,6 @@ edition = "2024"
 rust-version = "1.95"
 license = "Apache-2.0"
 repository = "https://github.com/firestoned/banlieue"
-homepage = "https://github.com/firestoned/banlieue"
 authors = ["Erick Bourgeois <erick@jeb.ca>"]
 
 [workspace.dependencies]

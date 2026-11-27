@@ -63,6 +63,13 @@
 //!   (400) for one asked of `DescribeInstanceTypes`, `MissingParameter`
 //!   (400) without `ImageId`, `InstanceType`, `MinCount` or `MaxCount`.
 //!
+//! - **Images**: `DescribeImages` knows only the AMIs registered with
+//!   [`FakeEc2::add_image`]; any other well-formed ID is
+//!   `InvalidAMIID.NotFound` (400), which [`Ec2Api::describe_image`] reads
+//!   as `Ok(None)`, as EC2 answers for an image that does not exist or
+//!   that the caller may not see. An ID that is not `ami-<hex>` is refused
+//!   before the call, as [`crate::Ec2Client`] refuses it.
+//!
 //! What EC2 allows, the fake allows: terminating an instance that is
 //! already terminating, terminated or gone (`Ok(None)` once it has
 //! vanished); stopping a `stopping` or `stopped` instance; disabling the
@@ -97,7 +104,8 @@ use crate::error::{AwsFault, Error, Result, classify};
 use crate::instance::{self, EkKeyType, MAX_USER_DATA_BYTES, RunInstancesRequest};
 use crate::tags::{TAG_OWNER_UID, TagResourceType};
 use crate::types::{
-    AvailabilityZone, Instance, InstanceState, InstanceTypeInfo, InstanceTypeOffering, TpmEkPub,
+    AvailabilityZone, ImageInfo, Instance, InstanceState, InstanceTypeInfo, InstanceTypeOffering,
+    TpmEkPub,
 };
 
 /// Describes that answer `InvalidInstanceID.NotFound` for a fresh instance
@@ -125,6 +133,7 @@ const CODE_INCORRECT_STATE: &str = "IncorrectInstanceState";
 const CODE_UNSUPPORTED_OPERATION: &str = "UnsupportedOperation";
 const CODE_INVALID_INSTANCE_TYPE: &str = "InvalidInstanceType";
 const CODE_EK_NOT_FOUND: &str = "InstanceTpmEkPub.NotFound";
+const CODE_IMAGE_NOT_FOUND: &str = "InvalidAMIID.NotFound";
 
 const P_IMAGE_ID: &str = "ImageId";
 const P_INSTANCE_TYPE: &str = "InstanceType";
@@ -271,6 +280,8 @@ struct State {
     console_ready_after: Option<u32>,
     ek_not_found_reads: u32,
     instances: BTreeMap<String, FakeInstance>,
+    /// AMIs `DescribeImages` knows, by ID.
+    images: BTreeMap<String, ImageInfo>,
     tokens: BTreeMap<String, TokenUse>,
     next_instance: u64,
     next_host: u32,
@@ -696,6 +707,11 @@ impl FakeEc2 {
         self.lock().types.insert(info.instance_type.clone(), info);
     }
 
+    /// Registers (or replaces) an AMI for [`Ec2Api::describe_image`].
+    pub fn add_image(&self, info: ImageInfo) {
+        self.lock().images.insert(info.image_id.clone(), info);
+    }
+
     /// Offers `instance_type` in zone `zone_name`, or withdraws it.
     pub fn set_offered(&self, zone_name: &str, instance_type: &str, offered: bool) {
         let mut s = self.lock();
@@ -1037,6 +1053,22 @@ impl Ec2Api for FakeEc2 {
             .iter()
             .filter_map(|t| s.types.get(t).cloned())
             .collect())
+    }
+
+    async fn describe_image(&self, image_id: &str) -> Result<Option<ImageInfo>> {
+        instance::describe_image(image_id)?;
+        let mut s = self.call()?;
+        if let Some(info) = s.images.get(image_id) {
+            return Ok(Some(info.clone()));
+        }
+        let err = s.bad_request(
+            CODE_IMAGE_NOT_FOUND,
+            &format!("The image id '[{image_id}]' does not exist"),
+        );
+        if err.is_not_found() {
+            return Ok(None);
+        }
+        Err(err)
     }
 }
 

@@ -5,9 +5,9 @@
 //! Library form of the EC2 provider, invoked by the unified `banlieue`
 //! binary (ADR-0004). [`run`] owns the full lifecycle: tracing, the rustls
 //! crypto provider, kube client, health and metrics servers (ADR-0093,
-//! ADR-0091), leader election, then the `Provider` and `EC2Machine`
-//! controllers through the SDK's instrumented [`run_controller`]. Both are
-//! watch-driven: nothing here polls.
+//! ADR-0091), leader election, then the `Provider`, `EC2Machine` and
+//! `VMImage` controllers through the SDK's instrumented [`run_controller`].
+//! All are watch-driven: nothing here polls.
 //!
 //! There is no credentials Secret (ADR-0159). The provider exchanges its
 //! projected ServiceAccount token, read from `--web-identity-token-file`
@@ -15,13 +15,14 @@
 //! the role each `Provider` names in `spec.connection.ec2` (ADR-0174
 //! Decision 6).
 //!
-//! `VMImage`s with an `ec2` source are not served yet: publishing AMIs is
-//! roadmap 24 phase D.
+//! A third controller serves `VMImage`s with an `ec2` source: a `Template`
+//! (a hand-published AMI ID) becomes a ready row for this `Provider`.
+//! Publishing a `Url` source into an AMI is roadmap 24 phase D.
 
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
-use banlieue_api::banlieue::Provider;
+use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::EC2Machine;
 use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
@@ -47,7 +48,7 @@ use crate::client::{
 };
 use crate::context::Context;
 use crate::metrics::SweepMetrics;
-use crate::reconciler::{ec2machine, provider};
+use crate::reconciler::{ec2machine, image, provider};
 
 const DEFAULT_LEADER_ELECTION_ID: &str = "banlieue-provider-ec2";
 
@@ -236,6 +237,19 @@ pub async fn run(cli: Cli) -> Result<()> {
         metrics.clone(),
         ec2machine::reconcile,
         requeue_error_policy,
+        ctx.clone(),
+    );
+
+    info!("starting VMImage controller (class=ec2)");
+    // VMImage is cluster-scoped; each reconcile writes only the rows of the
+    // Providers this workload serves.
+    let image_api: Api<VMImage> = Api::all(client.clone());
+    let image_ctrl = run_controller(
+        Controller::new(image_api, Config::default()),
+        "VMImage",
+        metrics.clone(),
+        image::reconcile,
+        requeue_error_policy,
         ctx,
     );
 
@@ -244,6 +258,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     tokio::select! {
         () = provider_ctrl => info!("Provider controller stream ended"),
         () = machine_ctrl => info!("EC2Machine controller stream ended"),
+        () = image_ctrl => info!("VMImage controller stream ended"),
         _ = shutdown_signal() => info!("shutdown signal received; releasing controllers"),
     }
     telemetry.shutdown();

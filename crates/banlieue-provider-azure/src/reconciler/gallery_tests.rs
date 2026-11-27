@@ -66,6 +66,7 @@ mod tests {
             source_digest: digest.map(str::to_string),
             min_os_disk_size_gib: None,
             superseded_refs: superseded.iter().map(|s| (*s).to_string()).collect(),
+            ec2: None,
         }
     }
 

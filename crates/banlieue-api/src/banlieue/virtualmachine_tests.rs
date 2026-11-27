@@ -661,6 +661,10 @@ mod tests {
             tpm_endorsement_certificates: vec![
                 "-----BEGIN CERTIFICATE-----\nstub\n-----END CERTIFICATE-----".to_string(),
             ],
+            // ADR-0167 Decision 1: an EC2 member's EK as public keys.
+            tpm_endorsement_public_keys: vec![
+                "-----BEGIN PUBLIC KEY-----\nstub\n-----END PUBLIC KEY-----".to_string(),
+            ],
             attestation_subject: None,
             conditions: Vec::new(),
             observed_generation: Some(5),
@@ -668,6 +672,18 @@ mod tests {
         let json = serde_json::to_value(&s).unwrap();
         let back: VirtualMachineStatus = serde_json::from_value(json).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn tpm_endorsement_public_keys_serialize_camel_case_and_are_omitted_when_empty() {
+        let json = serde_json::to_value(VirtualMachineStatus::default()).unwrap();
+        assert!(json.get("tpmEndorsementPublicKeys").is_none(), "{json}");
+        let s = VirtualMachineStatus {
+            tpm_endorsement_public_keys: vec!["k".to_string()],
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["tpmEndorsementPublicKeys"], serde_json::json!(["k"]));
     }
 
     // ----------------------------------------------------------------------
