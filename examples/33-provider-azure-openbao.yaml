@@ -1,0 +1,67 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# An Azure Provider whose federation assertion is signed by OpenBao instead of
+# being the provider's own ServiceAccount token (ADR-0176).
+#
+# Use this ONLY when the cluster's ServiceAccount issuer cannot be published
+# (ADR-0159 Decision 2). Where it can, leave `openbao` out: the default has no
+# extra dependency.
+#
+# Every identifier below is a placeholder: the zero GUIDs stand for your tenant,
+# client and subscription, and openbao.example.com for your OpenBao.
+#
+# Prepare first (docs/src/providers/azure.md, section 2a; the OpenBao side is
+# in deploy/provider-azure/openbao/README.md):
+#
+#   1. In OpenBao: a key, an OIDC role whose client_id is
+#      api://AzureADTokenExchange, a JWT auth role bound to the ServiceAccount
+#      below with bound_audiences = the `audience` here, and a policy reading
+#      exactly identity/oidc/token/<tokenRole>.
+#   2. Set identity/oidc/config issuer to a public https host, and serve copies
+#      of OpenBao's discovery document and keys at the paths ADR-0176
+#      Decision 3 names. Republish both after every key rotation.
+#   3. Give the managed identity a federated credential naming that issuer, the
+#      OpenBao entity ID as subject, and audience api://AzureADTokenExchange.
+#
+# WHAT THE OPERATOR DOES WITH THE `openbao` BLOCK
+#
+#   * mounts a SECOND projected ServiceAccount token, audience `audience`
+#     (default `openbao`), beside the cloud one, which is unchanged;
+#   * sets BANLIEUE_ASSERTION_SOURCE=openbao and the BANLIEUE_OPENBAO_*
+#     settings from this block, and only from it.
+#
+# The login token is the provider pod's, so the OpenBao identity belongs to the
+# workload: system:serviceaccount:banlieue-system:banlieue-provider-azure-az-cc.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: az-cc
+  namespace: banlieue-system
+  labels:
+    env: cloud
+spec:
+  providerClassRef:
+    name: azure
+  connection:
+    endpoint: https://management.azure.com
+    azure:
+      tenantId: 00000000-0000-0000-0000-000000000000
+      clientId: 00000000-0000-0000-0000-000000000000
+      subscriptionId: 00000000-0000-0000-0000-000000000000
+      location: canadacentral
+      resourceGroup: banlieue-vms
+      openbao:
+        # https only, no path: the login token is a bearer credential.
+        address: https://openbao.example.com
+        # Optional: the namespace the auth mount and identity engine live in.
+        namespace: banlieue
+        # The JWT auth mount that trusts this cluster's ServiceAccount tokens.
+        authMount: k8s-jwt
+        # One role and one policy per workload: it cannot read another's token.
+        loginRole: azure-az-cc
+        tokenRole: azure-az-cc
+        # Audience of the login token; the auth role's bound_audiences names it.
+        # Never the cloud audience.
+        audience: openbao

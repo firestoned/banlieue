@@ -144,6 +144,28 @@ mod tests {
         assert!(!Arc::ptr_eq(&a, &c));
     }
 
+    /// ADR-0176: a factory given an assertion source builds, and reuses, its
+    /// clients exactly like the file-backed one, and never reads the token file.
+    #[tokio::test]
+    async fn a_factory_with_an_assertion_source_builds_and_reuses_clients() {
+        use banlieue_azure::AssertionSource;
+
+        struct Fixed;
+        #[async_trait]
+        impl AssertionSource for Fixed {
+            async fn assertion(&self) -> banlieue_azure::Result<String> {
+                Ok("eyJ.assertion.sig".to_string())
+            }
+        }
+        install_default_crypto_provider();
+        let factory = HttpClientFactory::new("/nonexistent/token".into())
+            .with_assertion_source(Arc::new(Fixed));
+        let conn = test_support::connection(Some(test_support::azure()));
+        let a = factory.build(&conn).await.expect("client");
+        let b = factory.build(&conn).await.expect("client");
+        assert!(Arc::ptr_eq(&a, &b));
+    }
+
     /// A plain-HTTP endpoint would send the bearer token in clear.
     #[tokio::test]
     async fn the_http_factory_refuses_a_cleartext_endpoint() {

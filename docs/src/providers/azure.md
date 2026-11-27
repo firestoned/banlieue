@@ -129,6 +129,118 @@ with public read, a web server):
 **Republish `jwks.json` whenever the cluster's ServiceAccount signing key
 rotates**, or federation stops for every workload that uses it.
 
+## 2a. Alternative: OpenBao signs the assertion
+
+!!! warning "New and alpha"
+    [ADR-0176](https://github.com/firestoned/banlieue/blob/main/docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md)
+    is accepted and its spike has passed against a real Entra tenant. The
+    client, the `Provider` field and the operator's rendering are implemented
+    and tested; a whole run on a cluster with a real ServiceAccount token as
+    the OpenBao login, and a republish after a real key rotation, are not yet
+    verified live.
+
+Use this instead of section 2 only when the cluster's own ServiceAccount
+issuer **cannot** be published. Entra ID never calls the issuer; it fetches a
+discovery document and public keys once. So the signer stays on your internal
+network, and only two static documents are public.
+
+1. **OpenBao signs.** In an OpenBao namespace for banlieue, create an RS256
+   key on a long rotation period, an OIDC role whose `client_id` is the cloud
+   audience, a JWT auth role bound to the provider's ServiceAccount, and a
+   policy that reads exactly that one token path:
+
+    ```sh
+    bao write identity/oidc/key/azure algorithm=RS256 rotation_period=2160h \
+      verification_ttl=2400h allowed_client_ids='api://AzureADTokenExchange'
+    bao write identity/oidc/role/azure-az-prod key=azure \
+      client_id='api://AzureADTokenExchange' ttl=1h
+    bao policy write azure-az-prod - <<'EOF'
+    path "identity/oidc/token/azure-az-prod" { capabilities = ["read"] }
+    EOF
+    bao write auth/<jwt mount>/role/azure-az-prod role_type=jwt user_claim=sub \
+      bound_audiences=openbao \
+      bound_subject=system:serviceaccount:banlieue-system:banlieue-provider-azure-az-prod \
+      token_policies=azure-az-prod token_ttl=15m token_max_ttl=15m
+    ```
+
+    One role, one policy and one entity **per Provider**: a Provider cannot
+    read another's token, so it cannot assume another's cloud identity.
+
+2. **Set the issuer, and publish two documents.** OpenBao's issuer is **only a
+   scheme, a host and an optional port**; it appends its own path:
+
+    ```sh
+    bao write identity/oidc/config issuer=https://oidc.example.com
+    ```
+
+    The token's `iss` is then `https://oidc.example.com/v1/<namespace>/identity/oidc`
+    (without a namespace, `https://oidc.example.com/v1/identity/oidc`). Serve
+    byte copies of OpenBao's two unauthenticated responses, as
+    `application/json`, at exactly these paths on that host (so the host is
+    dedicated, or a proxy preserves `/v1/...`):
+
+    ```text
+    /v1/<namespace>/identity/oidc/.well-known/openid-configuration
+    /v1/<namespace>/identity/oidc/.well-known/keys
+    ```
+
+    Copy them from `https://<openbao>/v1/identity/oidc/.well-known/...` with the
+    `X-Vault-Namespace` header set. They hold public keys only. **Republish
+    both after every key rotation**, before `verification_ttl` elapses; the
+    key list already carries the next key, so a republish just before the
+    following rotation never leaves the live key missing.
+
+3. **A federated credential on the identity**, as in section 3, but with this
+   issuer and `--subject <entity id>`. In a namespace the subject is
+   `<entity uuid>.<namespace id>`: log in once as the Provider's ServiceAccount
+   and read `entity_id` from the response. Deleting the entity changes the
+   subject and breaks federation until the credential is updated. A new
+   credential can take a short while to propagate, during which Entra ID
+   answers `AADSTS70025`.
+
+4. **Declare it on the `Provider`.** Nothing is inferred: the block below is
+   the one place the settings live, and the operator renders them into the
+   provider's pod (a second projected ServiceAccount token whose audience is
+   `audience`, and the `BANLIEUE_OPENBAO_*` variables). Leave it out and
+   nothing about OpenBao is rendered.
+
+    ```yaml
+    spec:
+      connection:
+        azure:
+          openbao:
+            address: https://openbao.example.com   # https only, no path
+            namespace: banlieue                    # optional
+            authMount: k8s-jwt
+            loginRole: azure-az-prod
+            tokenRole: azure-az-prod
+            audience: openbao                      # default; never the cloud audience
+    ```
+
+    The complete manifest is
+    [`examples/33-provider-azure-openbao.yaml`](https://github.com/firestoned/banlieue/blob/main/examples/33-provider-azure-openbao.yaml);
+    the OpenBao role and policy are in
+    [`deploy/provider-azure/openbao/`](https://github.com/firestoned/banlieue/blob/main/deploy/provider-azure/openbao/README.md).
+    The schema refuses a non-`https` address and any name that could change a
+    request path. The provider logs in, reads the token, revokes its login
+    token and holds the assertion in memory only; redirects are never
+    followed and an error names the step and the HTTP status, never a body or a
+    token.
+
+    **The OpenBao identity belongs to the workload**, not to a tenant
+    `Provider`: the login token is the pod's. For a shared provider the block is
+    read from the `Provider` that owns the workload.
+
+    **Egress.** The provider's pod must reach OpenBao as well as Entra ID and
+    ARM. The shipped NetworkPolicy allows TCP 443 to any address; for another
+    port, add a rule for OpenBao's address
+    ([`deploy/network-policies/provider-azure.yaml`](https://github.com/firestoned/banlieue/blob/main/deploy/network-policies/provider-azure.yaml)).
+
+**The cost:** OpenBao joins the provider's authentication path. If it is
+down, new ARM tokens stop once the cached one expires (about an hour); running
+VMs are unaffected and reconciliation pauses. The default (section 2) has no
+such dependency.
+
 ## 3. An identity, and a federated credential that trusts the provider
 
 The provider acts as a **user-assigned managed identity** (or an app

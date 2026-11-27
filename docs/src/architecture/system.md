@@ -114,6 +114,8 @@ flowchart LR
     network-aws-imds["EC2 Instance Metadata Service (link-local, external)"]
     data-asset-ec2-machine-cr["EC2Machine Custom Resource"]
     system-ec2-guest["EC2 NitroTPM guest"]
+    service-openbao-oidc-signer["OpenBao identity engine as federation assertion signer (internal, operator-run)"]
+    network-openbao-oidc-publication["Published OpenBao OIDC documents (operator-provided)"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -329,6 +331,10 @@ flowchart LR
     system-ec2-guest --> network-aws-ec2
     service-banlieue-controller --> data-asset-ec2-machine-cr
     service-banlieue-controller --> data-asset-provider-cr
+    service-provider-azure -->|HTTPS| service-openbao-oidc-signer
+    network-entra-id -->|HTTPS| network-openbao-oidc-publication
+    actor-platform-operator --> service-openbao-oidc-signer
+    actor-platform-operator --> network-openbao-oidc-publication
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

@@ -42,6 +42,7 @@ mod tests {
             ca_bundle_config_map: None,
             ca_bundle_secret: None,
             watch_namespace_selector: None,
+            azure_openbao: None,
             owner: None,
         }
     }
@@ -1127,6 +1128,209 @@ mod tests {
                 "AZURE_FEDERATED_TOKEN_FILE"
             ]
         );
+    }
+
+    // ---- ADR-0176 Decision 8: the OpenBao assertion source ----
+
+    fn openbao(namespace: Option<&str>) -> banlieue_api::banlieue::AzureOpenBao {
+        banlieue_api::banlieue::AzureOpenBao {
+            address: "https://openbao.example.com".to_string(),
+            namespace: namespace.map(str::to_string),
+            auth_mount: "k8s-jwt".to_string(),
+            login_role: "azure-az-cc".to_string(),
+            token_role: "azure-az-cc".to_string(),
+            audience: "openbao".to_string(),
+        }
+    }
+
+    fn with_openbao<'a>(
+        class: &'a ProviderClassSpec,
+        bao: &'a banlieue_api::banlieue::AzureOpenBao,
+    ) -> WorkloadInputs<'a> {
+        WorkloadInputs {
+            azure_openbao: Some(bao),
+            ..azure_inputs(class)
+        }
+    }
+
+    fn env_value(c: &k8s_openapi::api::core::v1::Container, name: &str) -> Option<String> {
+        c.env
+            .as_ref()?
+            .iter()
+            .find(|e| e.name == name)
+            .and_then(|e| e.value.clone())
+    }
+
+    #[test]
+    fn without_an_openbao_block_nothing_about_openbao_is_rendered() {
+        let class = azure_class();
+        let deployment = build_deployment(&azure_inputs(&class));
+        let c = container(&deployment);
+        assert_eq!(pod_spec(&deployment).volumes.as_ref().unwrap().len(), 1);
+        assert_eq!(c.volume_mounts.as_ref().unwrap().len(), 1);
+        assert!(
+            c.env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|e| !e.name.starts_with("BANLIEUE_OPENBAO")
+                    && e.name != "BANLIEUE_ASSERTION_SOURCE")
+        );
+    }
+
+    #[test]
+    fn an_openbao_block_projects_a_second_token_with_its_own_audience() {
+        let class = azure_class();
+        let mut bao = openbao(None);
+        bao.audience = "bao-login".to_string();
+        let deployment = build_deployment(&with_openbao(&class, &bao));
+        let volumes = pod_spec(&deployment).volumes.clone().expect("volumes");
+        assert_eq!(volumes.len(), 2);
+        assert_eq!(
+            volumes[0].name, "azure-identity-token",
+            "cloud token first, unchanged"
+        );
+        assert_eq!(volumes[1].name, "openbao-identity-token");
+        let token = volumes[1]
+            .projected
+            .as_ref()
+            .unwrap()
+            .sources
+            .as_ref()
+            .unwrap()[0]
+            .service_account_token
+            .as_ref()
+            .expect("a ServiceAccount token projection");
+        assert_eq!(token.audience.as_deref(), Some("bao-login"));
+        assert_eq!(token.expiration_seconds, Some(3600));
+        assert_eq!(token.path, "openbao-identity-token");
+
+        // The two tokens never share an audience: the cloud token stays as it was.
+        let cloud = volumes[0]
+            .projected
+            .as_ref()
+            .unwrap()
+            .sources
+            .as_ref()
+            .unwrap()[0]
+            .service_account_token
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            cloud.audience.as_deref(),
+            Some("api://AzureADTokenExchange")
+        );
+    }
+
+    #[test]
+    fn the_openbao_token_is_mounted_read_only_in_its_own_directory() {
+        let class = azure_class();
+        let bao = openbao(None);
+        let deployment = build_deployment(&with_openbao(&class, &bao));
+        let mounts = container(&deployment)
+            .volume_mounts
+            .clone()
+            .expect("mounts");
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[1].name, "openbao-identity-token");
+        assert_eq!(mounts[1].mount_path, "/var/run/secrets/openbao");
+        assert_eq!(mounts[1].read_only, Some(true));
+        assert_ne!(mounts[0].mount_path, mounts[1].mount_path);
+    }
+
+    #[test]
+    fn the_openbao_settings_are_rendered_from_the_block_and_only_from_it() {
+        let class = azure_class();
+        let bao = openbao(Some("banlieue"));
+        let deployment = build_deployment(&with_openbao(&class, &bao));
+        let c = container(&deployment);
+        let get = |n: &str| env_value(c, n);
+        assert_eq!(get("BANLIEUE_ASSERTION_SOURCE").as_deref(), Some("openbao"));
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_ADDR").as_deref(),
+            Some("https://openbao.example.com")
+        );
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_NAMESPACE").as_deref(),
+            Some("banlieue")
+        );
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_AUTH_MOUNT").as_deref(),
+            Some("k8s-jwt")
+        );
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_LOGIN_ROLE").as_deref(),
+            Some("azure-az-cc")
+        );
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_TOKEN_ROLE").as_deref(),
+            Some("azure-az-cc")
+        );
+        assert_eq!(
+            get("BANLIEUE_OPENBAO_SA_TOKEN_FILE").as_deref(),
+            Some("/var/run/secrets/openbao/openbao-identity-token")
+        );
+        // The cloud token file is still named: the same pod can fall back.
+        assert!(get("AZURE_FEDERATED_TOKEN_FILE").is_some());
+    }
+
+    #[test]
+    fn an_unset_namespace_renders_no_namespace_variable() {
+        let class = azure_class();
+        let bao = openbao(None);
+        let deployment = build_deployment(&with_openbao(&class, &bao));
+        assert_eq!(
+            env_value(container(&deployment), "BANLIEUE_OPENBAO_NAMESPACE"),
+            None
+        );
+    }
+
+    /// OpenBao is an Azure assertion source: another backend ignores the block.
+    #[test]
+    fn a_backend_other_than_azure_renders_nothing_for_openbao() {
+        let class = class_spec();
+        let bao = openbao(None);
+        let deployment = build_deployment(&WorkloadInputs {
+            azure_openbao: Some(&bao),
+            ..inputs(&class)
+        });
+        assert!(pod_spec(&deployment).volumes.is_none());
+        assert!(container(&deployment).volume_mounts.is_none());
+        assert_eq!(
+            env_value(container(&deployment), "BANLIEUE_ASSERTION_SOURCE"),
+            None
+        );
+    }
+
+    /// The login token is a ServiceAccount token, not a Secret: the Role still
+    /// grants no Secret access.
+    #[test]
+    fn an_openbao_block_adds_no_secret_access() {
+        let class = azure_class();
+        let bao = openbao(None);
+        let i = with_openbao(&class, &bao);
+        let set = build_workload(&i, "banlieue-imagebuild");
+        let rules = set.role.rules.unwrap_or_default();
+        assert!(rules.iter().all(|r| {
+            !r.resources
+                .clone()
+                .unwrap_or_default()
+                .iter()
+                .any(|x| x == "secrets")
+        }));
+    }
+
+    /// The operator renders names the provider reads; the two must not drift.
+    #[test]
+    fn the_rendered_variable_names_are_the_ones_the_client_reads() {
+        use banlieue_azure::assertion as client;
+        assert_eq!(ENV_ASSERTION_SOURCE, "BANLIEUE_ASSERTION_SOURCE");
+        assert_eq!(ENV_OPENBAO_ADDR, client::ENV_OPENBAO_ADDR);
+        assert_eq!(ENV_OPENBAO_NAMESPACE, client::ENV_OPENBAO_NAMESPACE);
+        assert_eq!(ENV_OPENBAO_AUTH_MOUNT, client::ENV_OPENBAO_AUTH_MOUNT);
+        assert_eq!(ENV_OPENBAO_LOGIN_ROLE, client::ENV_OPENBAO_LOGIN_ROLE);
+        assert_eq!(ENV_OPENBAO_TOKEN_ROLE, client::ENV_OPENBAO_TOKEN_ROLE);
+        assert_eq!(ENV_OPENBAO_SA_TOKEN_FILE, client::ENV_OPENBAO_SA_TOKEN_FILE);
     }
 
     /// The token is the only credential: the Role grants no Secret at all.

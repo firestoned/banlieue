@@ -567,6 +567,138 @@ mod tests {
         assert!(json.get("encryptionAtHost").is_none());
     }
 
+    /// ADR-0176 Decision 8: the OpenBao block, in camelCase, with the audience
+    /// defaulting to `openbao` and the namespace optional.
+    #[test]
+    fn azure_openbao_round_trips_and_defaults_the_audience() {
+        let json = serde_json::json!({
+            "address": "https://openbao.example.com",
+            "namespace": "banlieue",
+            "authMount": "k8s-jwt",
+            "loginRole": "azure-az-prod",
+            "tokenRole": "azure-az-prod",
+            "audience": "openbao",
+        });
+        let bao: AzureOpenBao = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(bao.address, "https://openbao.example.com");
+        assert_eq!(bao.namespace.as_deref(), Some("banlieue"));
+        assert_eq!(serde_json::to_value(&bao).unwrap(), json);
+
+        let minimal: AzureOpenBao = serde_json::from_value(serde_json::json!({
+            "address": "https://openbao.example.com",
+            "authMount": "k8s-jwt",
+            "loginRole": "r",
+            "tokenRole": "r",
+        }))
+        .unwrap();
+        assert_eq!(minimal.audience, DEFAULT_OPENBAO_AUDIENCE);
+        assert_eq!(minimal.audience, "openbao");
+        assert_eq!(minimal.namespace, None);
+        assert!(
+            serde_json::to_value(&minimal)
+                .unwrap()
+                .get("namespace")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn azure_connection_carries_the_openbao_block_and_omits_it_when_unset() {
+        assert!(
+            serde_json::to_value(AzureConnection::default())
+                .unwrap()
+                .get("openbao")
+                .is_none()
+        );
+        let conn: AzureConnection = serde_json::from_value(serde_json::json!({
+            "tenantId": "t",
+            "clientId": "c",
+            "subscriptionId": "s",
+            "location": "canadacentral",
+            "resourceGroup": "rg",
+            "openbao": {
+                "address": "https://openbao.example.com",
+                "authMount": "k8s-jwt",
+                "loginRole": "r",
+                "tokenRole": "r",
+            },
+        }))
+        .unwrap();
+        assert_eq!(
+            conn.openbao.as_ref().map(|b| b.auth_mount.as_str()),
+            Some("k8s-jwt")
+        );
+    }
+
+    fn openbao_schema() -> serde_json::Value {
+        use kube::CustomResourceExt;
+        let crd = Provider::crd();
+        let schema = crd.spec.versions[0].schema.clone().unwrap();
+        let root = serde_json::to_value(schema.open_api_v3_schema.unwrap()).unwrap();
+        root["properties"]["spec"]["properties"]["connection"]["properties"]["azure"]["properties"]
+            ["openbao"]
+            .clone()
+    }
+
+    /// The schema refuses what the client would refuse (ADR-0176 Decision 8):
+    /// a non-https address and names that could change a request path.
+    #[test]
+    fn the_openbao_schema_requires_https_and_safe_names() {
+        let schema = openbao_schema();
+        assert_ne!(
+            schema,
+            serde_json::Value::Null,
+            "no openbao block in the CRD"
+        );
+        let required: Vec<&str> = schema["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        for name in ["address", "authMount", "loginRole", "tokenRole"] {
+            assert!(
+                required.contains(&name),
+                "{name} not required: {required:?}"
+            );
+        }
+        assert!(!required.contains(&"namespace"));
+        assert!(!required.contains(&"audience"), "audience has a default");
+
+        let props = &schema["properties"];
+        let address = props["address"]["pattern"].as_str().unwrap();
+        assert!(address.starts_with("^https://"), "{address}");
+        for name in ["namespace", "authMount", "loginRole", "tokenRole"] {
+            let pattern = props[name]["pattern"].as_str().unwrap_or_default();
+            assert!(
+                pattern.starts_with("^[A-Za-z0-9._-]+"),
+                "{name} pattern {pattern:?}"
+            );
+            let rules = props[name]["x-kubernetes-validations"]
+                .as_array()
+                .unwrap_or_else(|| panic!("{name} has no traversal rule"));
+            assert!(
+                rules
+                    .iter()
+                    .any(|r| r["rule"].as_str().is_some_and(|r| r.contains("'..'"))),
+                "{name}: {rules:?}"
+            );
+        }
+        assert_eq!(props["audience"]["default"], "openbao");
+
+        // The login token must never be a cloud-audience token (ADR-0176
+        // Decision 8): the schema refuses the cloud audience.
+        let rules = props["audience"]["x-kubernetes-validations"]
+            .as_array()
+            .expect("audience has no rule against the cloud audience");
+        assert!(
+            rules.iter().any(|r| r["rule"]
+                .as_str()
+                .is_some_and(|r| r.contains("api://AzureADTokenExchange"))),
+            "{rules:?}"
+        );
+    }
+
     #[test]
     fn target_for_uses_the_default_when_no_per_zone_entries_exist() {
         let m = sample_network_class("network-01");

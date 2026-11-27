@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Where the ARM access token comes from (ADR-0159).
 //!
-//! [`FederatedToken`] reads the provider's projected ServiceAccount token
-//! (audience `api://AzureADTokenExchange`) from a file, exchanges it at
+//! [`FederatedToken`] takes an assertion from an
+//! [`AssertionSource`] (by default the provider's projected ServiceAccount
+//! token, audience `api://AzureADTokenExchange`, read from a file; see
+//! [`crate::assertion`] for OpenBao as the signer, ADR-0176), exchanges it at
 //! Entra ID for an ARM token, and caches the result until it is within
 //! [`REFRESH_MARGIN`](crate::token::REFRESH_MARGIN) of expiry. The file is
 //! read again on every exchange because the kubelet rotates it. No secret is
@@ -11,11 +13,13 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
+use crate::assertion::{AssertionSource, FileAssertion};
 use crate::error::{Error, Result};
 use crate::operation::is_trusted_base;
 use crate::token::{
@@ -36,7 +40,6 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Entra ID's answers are a few KiB; anything far larger is not one.
 const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
-const CODE_TOKEN_FILE: &str = "ServiceAccountTokenUnreadable";
 const CODE_CONFIG: &str = "InvalidConfiguration";
 
 /// Supplies the bearer token for ARM calls.
@@ -106,6 +109,7 @@ pub struct FederatedToken {
     http: reqwest::Client,
     endpoint: String,
     config: FederatedConfig,
+    assertions: Arc<dyn AssertionSource>,
     cached: Mutex<Option<AccessToken>>,
 }
 
@@ -120,12 +124,27 @@ impl fmt::Debug for FederatedToken {
 }
 
 impl FederatedToken {
-    /// Builds the source. Makes no request.
+    /// Builds the source, reading the assertion from `config.token_file`.
+    /// Makes no request.
     ///
     /// # Errors
     /// [`Error::InvalidRequest`] if the authority is not HTTPS (or loopback
     /// HTTP), or the tenant could change the URL's path.
     pub fn new(config: FederatedConfig) -> Result<Self> {
+        let assertions = Arc::new(FileAssertion::new(config.token_file.clone()));
+        Self::with_source(config, assertions)
+    }
+
+    /// Builds the source with another assertion source, such as
+    /// [`OpenBaoAssertion`](crate::assertion::OpenBaoAssertion) (ADR-0176).
+    /// `config.token_file` is not read. Makes no request.
+    ///
+    /// # Errors
+    /// As [`FederatedToken::new`].
+    pub fn with_source(
+        config: FederatedConfig,
+        assertions: Arc<dyn AssertionSource>,
+    ) -> Result<Self> {
         let authority = config.authority.trim_end_matches('/');
         if !is_trusted_base(authority) {
             return Err(config_error(format!(
@@ -143,18 +162,13 @@ impl FederatedToken {
             http,
             endpoint,
             config,
+            assertions,
             cached: Mutex::new(None),
         })
     }
 
     async fn exchange(&self) -> Result<AccessToken> {
-        let assertion = tokio::fs::read_to_string(&self.config.token_file)
-            .await
-            .map_err(|e| self.token_file_error(&e.kind().to_string()))?;
-        let assertion = assertion.trim();
-        if assertion.is_empty() {
-            return Err(self.token_file_error("empty"));
-        }
+        let assertion = self.assertions.assertion().await?;
         let response = self
             .http
             .post(&self.endpoint)
@@ -164,7 +178,7 @@ impl FederatedToken {
             )
             .body(exchange_form(
                 &self.config.client_id,
-                assertion,
+                &assertion,
                 &self.config.scope,
             ))
             .send()
@@ -176,16 +190,6 @@ impl FederatedToken {
             return Err(parse_token_error(&body));
         }
         parse_token_response(&body, Instant::now())
-    }
-
-    fn token_file_error(&self, why: &str) -> Error {
-        Error::TokenExchange {
-            code: CODE_TOKEN_FILE.to_string(),
-            message: format!(
-                "ServiceAccount token {}: {why}",
-                self.config.token_file.display()
-            ),
-        }
     }
 }
 

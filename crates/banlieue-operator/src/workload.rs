@@ -38,7 +38,9 @@
 
 use std::collections::BTreeMap;
 
-use banlieue_api::banlieue::{ImagePullPolicy, Provider, ProviderClassSpec, ProviderDeployment};
+use banlieue_api::banlieue::{
+    AzureOpenBao, ImagePullPolicy, Provider, ProviderClassSpec, ProviderDeployment,
+};
 use k8s_openapi::api::apps::v1::{Deployment, DeploymentSpec};
 use k8s_openapi::api::core::v1::{
     Container, EnvVar, LocalObjectReference, PodSpec, PodTemplateSpec, ProjectedVolumeSource,
@@ -104,6 +106,33 @@ pub const AZURE_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/azure/tokens";
 /// workload identity credential reads.
 pub const AZURE_FEDERATED_TOKEN_FILE_ENV: &str = "AZURE_FEDERATED_TOKEN_FILE";
 
+/// Name of the OpenBao login token's projected volume, and of the file in it
+/// (ADR-0176 Decision 8).
+pub const OPENBAO_TOKEN_VOLUME: &str = "openbao-identity-token";
+
+/// Directory the OpenBao login token is mounted at, read-only. Its own
+/// directory: the cloud-audience token is never beside it.
+pub const OPENBAO_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/openbao";
+
+/// What the provider reads to choose where its assertion comes from, and the
+/// OpenBao settings. The names are the client's (`banlieue_azure::assertion`);
+/// a test holds the two to each other.
+pub const ENV_ASSERTION_SOURCE: &str = "BANLIEUE_ASSERTION_SOURCE";
+/// OpenBao's address.
+pub const ENV_OPENBAO_ADDR: &str = "BANLIEUE_OPENBAO_ADDR";
+/// OpenBao namespace path; rendered only when the block names one.
+pub const ENV_OPENBAO_NAMESPACE: &str = "BANLIEUE_OPENBAO_NAMESPACE";
+/// The JWT auth mount.
+pub const ENV_OPENBAO_AUTH_MOUNT: &str = "BANLIEUE_OPENBAO_AUTH_MOUNT";
+/// The auth role bound to this workload's ServiceAccount.
+pub const ENV_OPENBAO_LOGIN_ROLE: &str = "BANLIEUE_OPENBAO_LOGIN_ROLE";
+/// The identity OIDC role whose token is the assertion.
+pub const ENV_OPENBAO_TOKEN_ROLE: &str = "BANLIEUE_OPENBAO_TOKEN_ROLE";
+/// The file holding the login token.
+pub const ENV_OPENBAO_SA_TOKEN_FILE: &str = "BANLIEUE_OPENBAO_SA_TOKEN_FILE";
+/// The value of [`ENV_ASSERTION_SOURCE`] that selects OpenBao.
+const ASSERTION_SOURCE_OPENBAO: &str = "openbao";
+
 /// Everything needed to build one Provider's workload, already resolved.
 ///
 /// Namespaces are separate on purpose: the Deployment and ServiceAccount live
@@ -140,6 +169,11 @@ pub struct WorkloadInputs<'a> {
     /// (ADR-0133). Rendered as `--watch-namespace-selector`. `None` leaves the
     /// provider on its home namespace only.
     pub watch_namespace_selector: Option<&'a str>,
+    /// The Azure `Provider`'s `spec.connection.azure.openbao` block, when it
+    /// declares one (ADR-0176 Decision 8): the pod then gets a second
+    /// projected token and the settings the provider reads. Ignored for any
+    /// other backend; `None` renders nothing about OpenBao.
+    pub azure_openbao: Option<&'a AzureOpenBao>,
     /// Owner reference to the `Provider`, applied only to objects that share
     /// its namespace (a cross-namespace owner reference is invalid).
     pub owner: Option<OwnerReference>,
@@ -742,6 +776,75 @@ fn uses_azure_workload_identity(inputs: &WorkloadInputs<'_>) -> bool {
     inputs.class.backend == AZURE_BACKEND
 }
 
+/// The OpenBao block that applies: only an Azure workload honours one.
+fn openbao<'a>(inputs: &WorkloadInputs<'a>) -> Option<&'a AzureOpenBao> {
+    inputs
+        .azure_openbao
+        .filter(|_| uses_azure_workload_identity(inputs))
+}
+
+/// Full path of the OpenBao login token inside the provider container.
+#[must_use]
+pub fn openbao_token_file() -> String {
+    format!("{OPENBAO_TOKEN_MOUNT_PATH}/{OPENBAO_TOKEN_VOLUME}")
+}
+
+/// The ServiceAccount token the provider logs in to OpenBao with
+/// (ADR-0176): the audience the block declares, one hour, refreshed by the
+/// kubelet. A second token, never the cloud-audience one.
+fn openbao_token_volume(bao: &AzureOpenBao) -> Volume {
+    Volume {
+        name: OPENBAO_TOKEN_VOLUME.to_string(),
+        projected: Some(ProjectedVolumeSource {
+            sources: Some(vec![VolumeProjection {
+                service_account_token: Some(ServiceAccountTokenProjection {
+                    audience: Some(bao.audience.clone()),
+                    expiration_seconds: Some(AZURE_TOKEN_EXPIRATION_SECS),
+                    path: OPENBAO_TOKEN_VOLUME.to_string(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// Read-only mount of [`openbao_token_volume`].
+fn openbao_token_mount() -> VolumeMount {
+    VolumeMount {
+        name: OPENBAO_TOKEN_VOLUME.to_string(),
+        mount_path: OPENBAO_TOKEN_MOUNT_PATH.to_string(),
+        read_only: Some(true),
+        ..Default::default()
+    }
+}
+
+/// The settings the provider reads to take its assertion from OpenBao: a
+/// rendering of the block, which stays the one source of truth.
+fn openbao_env(bao: &AzureOpenBao) -> Vec<EnvVar> {
+    let var = |name: &str, value: &str| EnvVar {
+        name: name.to_string(),
+        value: Some(value.to_string()),
+        ..Default::default()
+    };
+    let mut env = vec![
+        var(ENV_ASSERTION_SOURCE, ASSERTION_SOURCE_OPENBAO),
+        var(ENV_OPENBAO_ADDR, &bao.address),
+    ];
+    if let Some(namespace) = &bao.namespace {
+        env.push(var(ENV_OPENBAO_NAMESPACE, namespace));
+    }
+    env.extend([
+        var(ENV_OPENBAO_AUTH_MOUNT, &bao.auth_mount),
+        var(ENV_OPENBAO_LOGIN_ROLE, &bao.login_role),
+        var(ENV_OPENBAO_TOKEN_ROLE, &bao.token_role),
+        var(ENV_OPENBAO_SA_TOKEN_FILE, &openbao_token_file()),
+    ]);
+    env
+}
+
 /// Full path of the projected token file inside the provider container.
 #[must_use]
 pub fn azure_federated_token_file() -> String {
@@ -790,6 +893,9 @@ fn container_env(inputs: &WorkloadInputs<'_>) -> Vec<EnvVar> {
     if uses_azure_workload_identity(inputs) {
         env.push(azure_token_env());
     }
+    if let Some(bao) = openbao(inputs) {
+        env.extend(openbao_env(bao));
+    }
     env
 }
 
@@ -800,6 +906,27 @@ pub(crate) fn azure_token_env() -> EnvVar {
         value: Some(azure_federated_token_file()),
         ..Default::default()
     }
+}
+
+/// The pod's volumes: only the Azure provider mounts anything, the cloud
+/// token first and unchanged, then the OpenBao login token when declared.
+fn pod_volumes(inputs: &WorkloadInputs<'_>) -> Option<Vec<Volume>> {
+    if !uses_azure_workload_identity(inputs) {
+        return None;
+    }
+    let mut volumes = vec![azure_token_volume()];
+    volumes.extend(openbao(inputs).map(openbao_token_volume));
+    Some(volumes)
+}
+
+/// The container's mounts, matching [`pod_volumes`].
+fn container_mounts(inputs: &WorkloadInputs<'_>) -> Option<Vec<VolumeMount>> {
+    if !uses_azure_workload_identity(inputs) {
+        return None;
+    }
+    let mut mounts = vec![azure_token_mount()];
+    mounts.extend(openbao(inputs).map(|_| openbao_token_mount()));
+    Some(mounts)
 }
 
 /// Build the pod spec for a provider workload.
@@ -828,7 +955,7 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
         containers: vec![build_container(inputs)],
         // Only the Azure provider mounts anything: every other backend's pod
         // spec is unchanged, with no volumes at all.
-        volumes: uses_azure_workload_identity(inputs).then(|| vec![azure_token_volume()]),
+        volumes: pod_volumes(inputs),
         ..Default::default()
     }
 }
@@ -846,7 +973,7 @@ fn build_container(inputs: &WorkloadInputs<'_>) -> Container {
             .map(|p| pull_policy_str(p).to_string()),
         args: Some(build_args(inputs)),
         env: Some(container_env(inputs)),
-        volume_mounts: uses_azure_workload_identity(inputs).then(|| vec![azure_token_mount()]),
+        volume_mounts: container_mounts(inputs),
         ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
             LIVENESS_PATH,

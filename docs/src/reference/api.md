@@ -316,6 +316,7 @@ not set: the provider's ServiceAccount token is its only credential.
 | `encryptionAtHost` | boolean |  | Create every VM with `securityProfile.encryptionAtHost` (ADR-0172 Decision 3): temp disks and disk caches encrypted on the host. The subscription must have the `Microsoft.Compute/EncryptionAtHost` feature registered, and every mapped instance size must support it. |
 | `imageGallery` | object |  | The admin's existing Compute Gallery this `Provider` publishes a `VMImage`'s `Url` source into (ADR-0162 Decisions 4 and 8). banlieue never creates or deletes the gallery; it creates and deletes only the image definitions and versions it tags. Unset: no `Url` source is published to this `Provider`, and its rows report `GalleryNotConfigured`. `Template` sources need no gallery here. |
 | `location` | string | Yes | The region (`location`), such as `canadacentral`. One `Provider` is one region; its availability zones are the failure domains (ADR-0158 Decisions 1 and 3). |
+| `openbao` | object |  | Take the federation assertion from OpenBao's identity engine instead of presenting the provider's projected ServiceAccount token directly (ADR-0176). For a cluster whose ServiceAccount issuer cannot be published: Entra ID then verifies a token OpenBao signs, against two static documents the admin publishes. Unset: the projected token is the assertion (ADR-0159), and nothing about OpenBao is rendered. |
 | `publisher` | object |  | The image publisher's own identity (ADR-0159 Decision 3, ADR-0162 Decision 1), separate from `clientId`: the publish Job federates to it, and only it holds the rights to create and delete images. Its tenant is `tenantId`. Unset: no `Url` source is published to this `Provider` (`PublisherNotConfigured`). |
 | `resourceGroup` | string | Yes | The resource group VMs, NICs and disks are created in. Must exist; banlieue never creates or deletes it, and never touches anything in it that does not carry its ownership tags (ADR-0158 Decision 4). |
 | `subscriptionId` | string | Yes | Subscription ID. |
@@ -335,6 +336,28 @@ published to this `Provider`, and its rows report
 | --- | --- | --- | --- |
 | `name` | string | Yes | The gallery's name. |
 | `resourceGroup` | string | Yes | The resource group the gallery is in. It may differ from the `Provider`'s `resourceGroup`. |
+
+###### `.spec.connection.azure.openbao`
+
+Take the federation assertion from OpenBao's identity engine instead
+of presenting the provider's projected ServiceAccount token directly
+(ADR-0176). For a cluster whose ServiceAccount issuer cannot be
+published: Entra ID then verifies a token OpenBao signs, against two
+static documents the admin publishes. Unset: the projected token is
+the assertion (ADR-0159), and nothing about OpenBao is rendered.
+
+The login token is the provider pod's, so the OpenBao identity, and the
+federated credential's subject, belong to the workload; a shared
+provider (ADR-0133) reads this block from the `Provider` that owns it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `address` | string | Yes | OpenBao's address: `https://host[:port]`, no path. |
+| `audience` | string |  | Audience of the ServiceAccount token that logs in; the auth role's `bound_audiences` must name it. Defaults to `openbao`. |
+| `authMount` | string | Yes | The JWT auth mount that trusts this cluster's ServiceAccount tokens (`auth/<authMount>/login`). |
+| `loginRole` | string | Yes | The auth role bound to this workload's ServiceAccount. |
+| `namespace` | string |  | The namespace path the auth mount and identity engine live in. Unset: the root namespace. |
+| `tokenRole` | string | Yes | The identity OIDC role whose token is the assertion (`identity/oidc/token/<tokenRole>`). |
 
 ###### `.spec.connection.azure.publisher`
 

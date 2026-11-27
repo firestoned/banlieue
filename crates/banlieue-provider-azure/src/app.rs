@@ -20,6 +20,7 @@ use std::sync::Arc;
 use anyhow::{Context as _, Result};
 use banlieue_api::banlieue::{Provider, VMImage};
 use banlieue_api::infrastructure::AzureVirtualMachine;
+use banlieue_azure::{OpenBaoAssertion, OpenBaoConfig};
 use banlieue_provider_sdk::bootstrap::{
     Observability, init_tracing, shutdown_signal, start_observability,
 };
@@ -165,10 +166,54 @@ pub struct Cli {
     )]
     pub federated_token_file: std::path::PathBuf,
 
+    /// Where the federation assertion comes from (ADR-0176): `file`, the
+    /// projected ServiceAccount token above (the default), or `openbao`, which
+    /// logs in to OpenBao with a ServiceAccount token and reads the assertion
+    /// from its identity engine, for a cluster whose ServiceAccount issuer
+    /// cannot be published. `openbao` is configured by the
+    /// `BANLIEUE_OPENBAO_*` variables.
+    #[arg(
+        long,
+        env = "BANLIEUE_ASSERTION_SOURCE",
+        value_enum,
+        default_value_t = AssertionSourceKind::File,
+    )]
+    pub assertion_source: AssertionSourceKind,
+
     /// Optional subcommand. When absent, `run` starts the controllers; when
     /// `image-publish`, it runs one publish or delete and exits.
     #[command(subcommand)]
     pub command: Option<AzureCommand>,
+}
+
+/// Where the federation assertion comes from (ADR-0176).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum AssertionSourceKind {
+    /// The projected ServiceAccount token, read from a file (ADR-0159).
+    File,
+    /// A token OpenBao's identity engine signs for this Provider (ADR-0176).
+    Openbao,
+}
+
+/// The ARM client factory for the chosen assertion source.
+///
+/// `lookup` reads the `BANLIEUE_OPENBAO_*` variables (normally
+/// `std::env::var(..).ok()`); the `file` source reads none.
+///
+/// # Errors
+/// An error naming the first OpenBao variable that is unset, or the reason an
+/// OpenBao address or name is refused.
+pub fn client_factory(
+    cli: &Cli,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Result<HttpClientFactory> {
+    let factory = HttpClientFactory::new(cli.federated_token_file.clone());
+    if cli.assertion_source == AssertionSourceKind::File {
+        return Ok(factory);
+    }
+    let config = OpenBaoConfig::from_lookup(lookup).context("OpenBao assertion source")?;
+    let source = OpenBaoAssertion::new(config).context("OpenBao assertion source")?;
+    Ok(factory.with_assertion_source(Arc::new(source)))
 }
 
 /// Subcommands of `banlieue provider azure`.
@@ -267,7 +312,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Context::new(
             client.clone(),
             Some(namespace.clone()),
-            Arc::new(HttpClientFactory::new(cli.federated_token_file.clone())),
+            Arc::new(client_factory(&cli, |k| std::env::var(k).ok())?),
             cli.provider_name.clone(),
         )
         .with_scope(scope.clone(), gate)

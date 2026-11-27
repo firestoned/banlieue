@@ -1346,6 +1346,38 @@
       "node-type": "system",
       "name": "EC2 NitroTPM guest",
       "description": "DESIGNED, NOT IMPLEMENTED, NOT VERIFIED LIVE (ADR-0175, ADR-0167, both Proposed). A UEFI instance with a NitroTPM booted from a banlieue-published AMI of the pre-laid disk (ADR-0113): no EK certificate, the EK public key reported by the EC2 API instead (ADR-0167). Every build of a VMImage with an ec2 source carries the EC2 guest layer and the banlieue-ec2-guest helper (crates/banlieue-guest-ec2, a static musl binary delivered as a digest-pinned bundle in the OSArtifact's bundles, installed at /usr/bin, --ec2-guest-image must be digest-pinned), every step gated on the Amazon EC2 DMI identity so the image is unchanged on other backends. In the initramfs stage it masks systemd-networkd-wait-online and runs `userdata`: an IMDSv2 token, then GET /latest/user-data within 16 KiB, only a #cloud-config document, written to /oem/91_ec2_userdata.yaml 0600 atomically, so the same boot applies it; IMDS turned off on later boots is not an error, the copy on COS_OEM is applied. In the boot stage `grow` extends COS_PERSISTENT (and its LUKS mapping) to the volume with no shell. banlieue-ec2-ready.service, after cos-setup-network.service on active or passive boots only, writes `banlieue-ec2-guest: GuestReady instance=<instance-id>` to /dev/kmsg at level 3, which reaches the serial console even on a quiet boot. User data is never logged. No public IP and no instance profile."
+    },
+    {
+      "unique-id": "service-openbao-oidc-signer",
+      "node-type": "service",
+      "name": "OpenBao identity engine as federation assertion signer (internal, operator-run)",
+      "description": "ACCEPTED, NOT IMPLEMENTED (ADR-0176; gated by its Decision 6 spike). For a Provider whose cluster cannot publish its ServiceAccount issuer, OpenBao's identity secrets engine signs the OIDC JWT the provider presents to Entra ID as its federation assertion. A Kubernetes auth role per Provider, bound to that Provider's ServiceAccount, with a policy that reads exactly one identity/oidc/token/<role>; an RS256 key on a long rotation period; the role's client_id is the cloud audience and the key's allowed_client_ids lists exactly the audiences in use. The token's sub is the Provider's entity UUID. The private key never leaves OpenBao; the discovery and key endpoints are unauthenticated and carry public keys only.",
+      "interfaces": [
+        {
+          "unique-id": "openbao-oidc-api-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 8200,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
+    },
+    {
+      "unique-id": "network-openbao-oidc-publication",
+      "node-type": "network",
+      "name": "Published OpenBao OIDC documents (operator-provided)",
+      "description": "ACCEPTED, NOT IMPLEMENTED (ADR-0176). Two static JSON files on a public HTTPS host the operator chooses: a copy of OpenBao's discovery document and of its JWKS (public keys only), with identity/oidc/config issuer set to that URL. A prerequisite banlieue states but does not provide, as for the ServiceAccount issuer (ADR-0159 Decision 2). Must be re-published after every key rotation and before the key's verification_ttl elapses.",
+      "interfaces": [
+        {
+          "unique-id": "openbao-oidc-publication-https",
+          "definition-url": "https://calm.finos.org/release/1.2/prototype/interface/http-endpoint.json",
+          "config": {
+            "port": 443,
+            "protocol": "HTTPS"
+          }
+        }
+      ]
     }
   ],
   "relationships": [
@@ -3931,7 +3963,7 @@
     },
     {
       "unique-id": "rel-provider-azure-entra-id",
-      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): exchanges its projected ServiceAccount token (audience api://AzureADTokenExchange, 1 hour, kubelet-refreshed) for an ARM access token of the Provider's managed identity. Verified end to end 2026-11-24 from a throwaway cluster: 0.6 s exchange; another ServiceAccount (AADSTS700213) and another audience (AADSTS700212) refused.",
+      "description": "DESIGNED, NOT IMPLEMENTED (ADR-0159): exchanges its projected ServiceAccount token (audience api://AzureADTokenExchange, 1 hour, kubelet-refreshed) for an ARM access token of the Provider's managed identity. Verified end to end 2026-11-24 from a throwaway cluster: 0.6 s exchange; another ServiceAccount (AADSTS700213) and another audience (AADSTS700212) refused. Alternative assertion source for clusters that cannot publish their issuer: ADR-0176 (OpenBao signs the assertion).",
       "relationship-type": {
         "connects": {
           "source": {
@@ -4844,6 +4876,110 @@
           ]
         }
       }
+    },
+    {
+      "unique-id": "rel-provider-azure-openbao-oidc",
+      "description": "IMPLEMENTED, live-verified against a stand-in login token only (ADR-0176): as an alternative to presenting its projected ServiceAccount token directly (ADR-0159), the provider logs in to OpenBao with that token (audience openbao, Kubernetes auth) and reads identity/oidc/token/<role> for its own Provider, holds the result in memory only, and presents it to Entra ID as the client assertion. Declared by the admin on the Provider (spec.connection.azure.openbao) and rendered by the operator into the pod (a second projected token of audience openbao plus the BANLIEUE_OPENBAO_* settings); with no block the file source is used and nothing about OpenBao is rendered.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "service-provider-azure"
+          },
+          "destination": {
+            "node": "service-openbao-oidc-signer",
+            "interfaces": [
+              "openbao-oidc-api-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "openbao-per-provider-oidc-role": {
+          "description": "IMPLEMENTED (ADR-0176 Decision 2): one Kubernetes auth role and one OIDC role per Provider, bound to that Provider's ServiceAccount, with a policy allowing exactly one token path. A Provider cannot read another Provider's token, so one Provider cannot assume another's cloud identity.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "IA-2",
+                  "IA-5",
+                  "AC-6"
+                ],
+                "evidence": "docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md"
+              }
+            }
+          ]
+        },
+        "openbao-signer-dependency-accepted-gap": {
+          "description": "ACCEPTED GAP, not a control (ADR-0176 Consequences): an OpenBao outage stops new ARM tokens once the cached one expires (about an hour); running VMs are unaffected and reconciliation pauses. The ServiceAccount-token source has no such dependency and stays the default. Revisit when a signer outside the provider's critical path exists.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "CP-2",
+                  "SC-12"
+                ],
+                "evidence": "docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-entra-id-fetches-openbao-oidc-publication",
+      "description": "ACCEPTED, NOT IMPLEMENTED (ADR-0176): Entra ID fetches the static discovery document and JWKS to verify the OpenBao-signed assertion, and never calls OpenBao. Public by design: public keys only. That Entra ID accepts an issuer that is not OpenBao's own address is unproven until the ADR's spike.",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "network-entra-id"
+          },
+          "destination": {
+            "node": "network-openbao-oidc-publication",
+            "interfaces": [
+              "openbao-oidc-publication-https"
+            ]
+          }
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {
+        "openbao-oidc-republish-on-rotation-accepted-gap": {
+          "description": "ACCEPTED GAP, not a control (ADR-0176 Decision 5): a key rotation that is not republished makes every assertion fail once the old key's verification_ttl elapses. Mitigation: a long rotation period, a verification_ttl at least as long as the longest republish delay, and no default 24-hour rotation. Revisit when a publisher exists that needs no stored credential.",
+          "requirements": [
+            {
+              "requirement-url": "https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final",
+              "config": {
+                "framework": "NIST SP 800-53 Rev. 5",
+                "controls": [
+                  "SC-12",
+                  "CP-2"
+                ],
+                "evidence": "docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "unique-id": "rel-operator-publishes-openbao-oidc-documents",
+      "description": "ACCEPTED, NOT IMPLEMENTED (ADR-0176 Decision 3): the platform operator copies OpenBao's discovery document and JWKS to the public host, and re-publishes after each key rotation. banlieue holds no credential to publish them; a helper that prints the two documents for upload is acceptable.",
+      "relationship-type": {
+        "interacts": {
+          "actor": "actor-platform-operator",
+          "nodes": [
+            "service-openbao-oidc-signer",
+            "network-openbao-oidc-publication"
+          ]
+        }
+      },
+      "protocol": "HTTPS",
+      "controls": {}
     }
   ],
   "flows": [
@@ -6570,6 +6706,7 @@
     "docs/adr/0172-azure-policy-governed-subscriptions.md",
     "docs/adr/0173-an-allocation-failure-re-places-the-machine-in-another-zone.md",
     "docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md",
-    "docs/adr/0175-ec2-guest-layer.md"
+    "docs/adr/0175-ec2-guest-layer.md",
+    "docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md"
   ]
 }

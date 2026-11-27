@@ -419,6 +419,18 @@ pub struct AzureConnection {
     /// (`PublisherNotConfigured`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publisher: Option<AzurePublisherIdentity>,
+    /// Take the federation assertion from OpenBao's identity engine instead
+    /// of presenting the provider's projected ServiceAccount token directly
+    /// (ADR-0176). For a cluster whose ServiceAccount issuer cannot be
+    /// published: Entra ID then verifies a token OpenBao signs, against two
+    /// static documents the admin publishes. Unset: the projected token is
+    /// the assertion (ADR-0159), and nothing about OpenBao is rendered.
+    ///
+    /// The login token is the provider pod's, so the OpenBao identity, and the
+    /// federated credential's subject, belong to the workload; a shared
+    /// provider (ADR-0133) reads this block from the `Provider` that owns it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openbao: Option<AzureOpenBao>,
     /// Extra tags put on every resource this `Provider` creates by name: the
     /// NIC, the VM, and the publish Job's image definition, upload disk,
     /// snapshot and image version (ADR-0172 Decision 1). For a subscription
@@ -466,6 +478,90 @@ pub struct AzureImageGallery {
     /// The gallery's name.
     #[schemars(length(min = 1))]
     pub name: String,
+}
+
+/// Audience of the ServiceAccount token the provider logs in to OpenBao with
+/// when `audience` is not set (ADR-0176). Distinct from the cloud audience:
+/// the two tokens never share one.
+pub const DEFAULT_OPENBAO_AUDIENCE: &str = "openbao";
+
+/// A request-path segment OpenBao accepts here: letters, digits, `.`, `_`, `-`.
+const OPENBAO_SEGMENT_PATTERN: &str = "^[A-Za-z0-9._-]+$";
+/// As [`OPENBAO_SEGMENT_PATTERN`], with `/` between segments.
+const OPENBAO_NESTED_PATTERN: &str = "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$";
+/// Scheme and host and an optional port, `https` only: the token that logs in
+/// is a bearer credential, and the address takes no path.
+const OPENBAO_ADDRESS_PATTERN: &str = "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$";
+
+/// Where the OpenBao-signed assertion comes from (ADR-0176 Decision 8). The
+/// operator renders it into the provider's pod; the provider logs in with a
+/// projected ServiceAccount token of audience `audience`, reads
+/// `identity/oidc/token/<tokenRole>`, and presents the result to Entra ID.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AzureOpenBao {
+    /// OpenBao's address: `https://host[:port]`, no path.
+    #[schemars(length(min = 1), extend("pattern" = OPENBAO_ADDRESS_PATTERN))]
+    pub address: String,
+    /// The namespace path the auth mount and identity engine live in. Unset:
+    /// the root namespace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend(
+        "pattern" = OPENBAO_NESTED_PATTERN,
+        "x-kubernetes-validations" = [{
+            "rule": "!self.split('/').exists(s, s == '.' || s == '..')",
+            "message": "a namespace segment may not be '.' or '..'",
+        }],
+    ))]
+    pub namespace: Option<String>,
+    /// The JWT auth mount that trusts this cluster's ServiceAccount tokens
+    /// (`auth/<authMount>/login`).
+    #[schemars(extend(
+        "pattern" = OPENBAO_NESTED_PATTERN,
+        "x-kubernetes-validations" = [{
+            "rule": "!self.split('/').exists(s, s == '.' || s == '..')",
+            "message": "an auth mount segment may not be '.' or '..'",
+        }],
+    ))]
+    pub auth_mount: String,
+    /// The auth role bound to this workload's ServiceAccount.
+    #[schemars(extend(
+        "pattern" = OPENBAO_SEGMENT_PATTERN,
+        "x-kubernetes-validations" = [{
+            "rule": "self != '.' && self != '..'",
+            "message": "a role name may not be '.' or '..'",
+        }],
+    ))]
+    pub login_role: String,
+    /// The identity OIDC role whose token is the assertion
+    /// (`identity/oidc/token/<tokenRole>`).
+    #[schemars(extend(
+        "pattern" = OPENBAO_SEGMENT_PATTERN,
+        "x-kubernetes-validations" = [{
+            "rule": "self != '.' && self != '..'",
+            "message": "a role name may not be '.' or '..'",
+        }],
+    ))]
+    pub token_role: String,
+    /// Audience of the ServiceAccount token that logs in; the auth role's
+    /// `bound_audiences` must name it. Defaults to `openbao`.
+    ///
+    /// Never the cloud audience: the login token must not be one Entra ID
+    /// would accept, so the schema refuses `api://AzureADTokenExchange`.
+    #[serde(default = "default_openbao_audience")]
+    #[schemars(
+        length(min = 1),
+        default = "default_openbao_audience",
+        extend("x-kubernetes-validations" = [{
+            "rule": "self != 'api://AzureADTokenExchange'",
+            "message": "audience may not be the cloud audience: the OpenBao login token must not be a token Entra ID accepts",
+        }]),
+    )]
+    pub audience: String,
+}
+
+fn default_openbao_audience() -> String {
+    DEFAULT_OPENBAO_AUDIENCE.to_string()
 }
 
 /// The Entra ID identity the image publish Job runs as (ADR-0159 Decision 3).
