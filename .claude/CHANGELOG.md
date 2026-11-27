@@ -55,6 +55,88 @@ Roadmap 24 phase A, after ADR-0174 (#257). Same order as the Azure client (#236 
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-11-26 23:49] - OpenBao signs the federation assertion for an Azure cluster that cannot publish its issuer (ADR-0176)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0176-openbao-signs-the-federation-assertion-for-clusters-without-a-public-issuer.md`: Accepted. A
+  Provider whose cluster cannot publish its ServiceAccount issuer takes its Entra assertion from an OpenBao
+  identity engine; OpenBao stays internal and only two static documents (discovery, public keys) are public. Records
+  what the spike showed (issuer is a bare host that OpenBao extends with `/v1/<namespace>/identity/oidc`, `sub` is
+  `<entity uuid>.<namespace id>`, the key list carries the next key ahead of use, Entra accepts an issuer that is
+  not the signer's own address, a second workload's entity is refused with `AADSTS700213`).
+- `crates/banlieue-azure/src/assertion.rs`: `AssertionSource`, `FileAssertion` (the previous behaviour) and
+  `OpenBaoAssertion` (login with the pod's ServiceAccount token, read `identity/oidc/token/<role>`, revoke the
+  login token, even after a failed read). https only, no redirects, names checked per path segment, replies
+  capped, errors name the step and status and nothing else. `FederatedToken::with_source`; the cached ARM token
+  means OpenBao is called once per ARM token.
+- `crates/banlieue-api/src/banlieue/provider.rs`: `AzureConnection.openbao` (`AzureOpenBao`: `address`,
+  `namespace`, `authMount`, `loginRole`, `tokenRole`, `audience` defaulting to `openbao`). The schema requires an
+  https address with no path, safe names with a CEL rule against `.` and `..`, and refuses the cloud audience as
+  the login audience (found missing by the threat-model pass). `deploy/crds/banlieue.io_providers.yaml` and
+  `docs/src/reference/api.md` regenerated.
+- `crates/banlieue-operator/src/workload.rs`, `reconciler/provider.rs`: for an Azure Provider with the block, a
+  second projected ServiceAccount token (audience from the block, 1 h, read-only, its own directory) and the
+  `BANLIEUE_ASSERTION_SOURCE` / `BANLIEUE_OPENBAO_*` settings, rendered from the block only. Other backends and a
+  Provider without the block render exactly what they did. `banlieue-azure` is a dev-dependency of the operator
+  only, for the test that holds the rendered variable names to the client's.
+- `crates/banlieue-provider-azure/src/{app,client}.rs`: `--assertion-source file|openbao` (default `file`),
+  `client_factory`, `HttpClientFactory::with_assertion_source`.
+- `crates/banlieue-azure/tests/live_arm.rs`: `the_openbao_signed_assertion_is_exchanged_for_an_arm_token`, and an
+  `AZURE_ACCESS_TOKEN_FILE` smoke path for a workstation without a cluster issuer. Passed against a real Entra
+  tenant with a stand-in login token.
+- `deploy/provider-azure/openbao/` (`policy.hcl`, `README.md`), `examples/33-provider-azure-openbao.yaml` (with
+  test `azure_openbao_example_matches_the_types`), a comment in `deploy/network-policies/provider-azure.yaml`,
+  and section 2a of `docs/src/providers/azure.md`.
+- CALM: nodes `service-openbao-oidc-signer` and `network-openbao-oidc-publication`, three relationships and their
+  controls and accepted gaps; `make calm-validate` and `make calm-diagrams`.
+- Threat model pass: TB-24, A-33, two actors, section 7.37, three section 8 rows; stamp advanced to 2026-11-27 and
+  ADR-0176.
+- Tests: 23 in `assertion_tests.rs`, three in `auth_tests.rs`, nine in the provider's `app_tests.rs` and
+  `client_tests.rs`, three in `provider_tests.rs`, nine in `workload_tests.rs`, one in `examples.rs`.
+
+### Why
+A cluster whose API server issuer cannot be changed could not federate to Azure under ADR-0159. OpenBao is already
+trusted by the platform and Entra only needs two public documents, so the signer can stay internal.
+
+### Impact
+- [x] Requires cluster rollout: the `Provider` CRD gained a field, so re-apply `banlieue.io_providers.yaml`
+      (`kubectl diff -f deploy/crds/` first); a Provider that does not set `openbao` renders as before
+- [ ] Config change only
+- [x] Documentation updated
+
+### Not verified
+A real cluster ServiceAccount token as the OpenBao login (the spike used a throwaway-key stand-in), the
+operator-rendered pod running on a cluster, and a republish after a real key rotation. Spike resources (an
+OpenBao namespace, a storage account serving the public documents, a federated credential) remain in place.
+
+## [2026-11-27 02:30] - Release v0.6.1
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: workspace version 0.6.1 (all crates); `Cargo.lock` and the libvirt fuzz lock refreshed.
+- `deploy/{controller,operator,imagebuilder,provider-vsphere}/deployment.yaml`, `examples/10-providerclass-vsphere.yaml`,
+  `examples/11-providerclass-libvirt.yaml`, `docs/src/developer/rust-api-crate.md`: pinned to v0.6.1.
+- `CHANGELOG.md`: regenerated with git-cliff (`make changelog TAG=v0.6.1`).
+
+### Added
+- `docs/src/guides/upgrading-to-0.6.1.md`: 0.6.0 to 0.6.1 upgrade guide (new and changed CRDs, the provider Job Role
+  and `provider-jobs.yaml`, the recreate fix and how to find VMs it will recreate, the measured digest and
+  `--push-image`, Cloud Hypervisor notes, order of operations, rollback, the Azure provider); linked from the nav and
+  the guides index.
+
+### Why
+First release with the Azure provider (ADR-0164 to ADR-0173) and the migrationPolicy recreate fix (#255).
+`config/clusterctl/metadata.yaml` already lists the 0.6 series, so a patch release needs no entry there.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 01:30] - EC2 provider decisions: ADR-0174, ADR-0167, ADR-0175 and ADR-0162 Decision 9 (roadmap 24)
 
 **Author:** Erick Bourgeois

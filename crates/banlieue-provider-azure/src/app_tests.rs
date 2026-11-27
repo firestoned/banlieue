@@ -50,6 +50,79 @@ mod tests {
         assert_eq!(cli.federated_token_file, Path::new("/tmp/token"));
     }
 
+    /// ADR-0176: the assertion comes from the projected token unless the
+    /// operator asks for OpenBao, explicitly.
+    #[test]
+    fn the_assertion_source_defaults_to_the_projected_token_file() {
+        if std::env::var_os("BANLIEUE_ASSERTION_SOURCE").is_some() {
+            return;
+        }
+        assert_eq!(parse(&[]).assertion_source, AssertionSourceKind::File);
+    }
+
+    #[test]
+    fn the_assertion_source_flag_selects_openbao_and_rejects_anything_else() {
+        let cli = parse(&["--assertion-source", "openbao"]);
+        assert_eq!(cli.assertion_source, AssertionSourceKind::Openbao);
+        let cli = parse(&["--assertion-source", "file"]);
+        assert_eq!(cli.assertion_source, AssertionSourceKind::File);
+
+        let mut argv = vec!["azure", "--assertion-source", "vault"];
+        argv.truncate(3);
+        assert!(Wrapper::try_parse_from(argv).is_err());
+    }
+
+    fn openbao_env(name: &str) -> Option<String> {
+        match name {
+            "BANLIEUE_OPENBAO_ADDR" => Some("https://openbao.example.com".into()),
+            "BANLIEUE_OPENBAO_AUTH_MOUNT" => Some("k8s-jwt".into()),
+            "BANLIEUE_OPENBAO_LOGIN_ROLE" => Some("azure-prov".into()),
+            "BANLIEUE_OPENBAO_TOKEN_ROLE" => Some("azure-prov".into()),
+            "BANLIEUE_OPENBAO_SA_TOKEN_FILE" => Some("/var/run/secrets/openbao/token".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn the_file_source_needs_no_openbao_settings() {
+        install_default_crypto_provider();
+        let cli = parse(&["--assertion-source", "file"]);
+        assert!(client_factory(&cli, |_| None).is_ok());
+    }
+
+    #[test]
+    fn the_openbao_source_names_the_first_missing_setting() {
+        let cli = parse(&["--assertion-source", "openbao"]);
+        let err = client_factory(&cli, |_| None).err().expect("refused");
+        assert!(
+            format!("{err:#}").contains("BANLIEUE_OPENBAO_ADDR"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn the_openbao_source_builds_from_complete_settings() {
+        install_default_crypto_provider();
+        let cli = parse(&["--assertion-source", "openbao"]);
+        assert!(client_factory(&cli, openbao_env).is_ok());
+    }
+
+    #[test]
+    fn the_openbao_source_refuses_a_cleartext_address() {
+        install_default_crypto_provider();
+        let cli = parse(&["--assertion-source", "openbao"]);
+        let err = client_factory(&cli, |k| {
+            if k == "BANLIEUE_OPENBAO_ADDR" {
+                Some("http://openbao.example.com".into())
+            } else {
+                openbao_env(k)
+            }
+        })
+        .err()
+        .expect("refused");
+        assert!(format!("{err:#}").contains("https"), "{err:#}");
+    }
+
     #[test]
     fn build_leader_config_maps_cli_values() {
         let cli = parse(&[

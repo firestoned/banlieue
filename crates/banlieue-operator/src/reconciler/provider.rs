@@ -445,6 +445,12 @@ async fn apply_workload(
         ca_bundle_config_map: ca_config_map.as_deref(),
         ca_bundle_secret: ca_secret.as_deref(),
         watch_namespace_selector: namespace_selector.as_deref(),
+        azure_openbao: provider
+            .spec
+            .connection
+            .azure
+            .as_ref()
+            .and_then(|azure| azure.openbao.as_ref()),
         owner,
     };
     let set = build_workload(&inputs, &ctx.imagebuild_namespace);

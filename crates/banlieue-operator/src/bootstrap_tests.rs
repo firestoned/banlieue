@@ -1815,6 +1815,7 @@ mod tests {
             ca_bundle_config_map: None,
             ca_bundle_secret: None,
             watch_namespace_selector: None,
+            azure_openbao: None,
             owner: None,
         };
         let role = crate::workload::build_role(&inputs);

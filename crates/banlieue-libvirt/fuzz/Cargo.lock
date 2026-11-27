@@ -33,7 +33,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-libvirt"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "banlieue-tls",
  "rustls",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "banlieue-tls"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "rustls",
 ]

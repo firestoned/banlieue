@@ -33,6 +33,7 @@
 //! so those handshakes fall back to a classical group until they do.
 
 pub mod api;
+pub mod assertion;
 pub mod auth;
 pub mod client;
 pub mod encryption;
@@ -52,6 +53,7 @@ pub mod vm;
 mod test_server;
 
 pub use api::{ArmApi, DiskAccess, PowerAction, PublishApi};
+pub use assertion::{AssertionSource, FileAssertion, OpenBaoAssertion, OpenBaoConfig};
 pub use auth::{FederatedConfig, FederatedToken, TokenProvider};
 pub use client::{ArmClient, ArmConfig};
 pub use error::{Error, Result};

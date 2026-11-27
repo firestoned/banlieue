@@ -183,6 +183,98 @@ mod tests {
         assert!(missing.to_string().contains("AZURE_TENANT_ID"), "{missing}");
     }
 
+    /// Counts how many assertions were asked for, and returns a fixed one.
+    struct CountingAssertion {
+        calls: std::sync::atomic::AtomicU32,
+        value: &'static str,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::assertion::AssertionSource for CountingAssertion {
+        async fn assertion(&self) -> crate::error::Result<String> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            Ok(self.value.to_string())
+        }
+    }
+
+    fn counting(value: &'static str) -> std::sync::Arc<CountingAssertion> {
+        std::sync::Arc::new(CountingAssertion {
+            calls: AtomicU32::new(0),
+            value,
+        })
+    }
+
+    fn source_with(
+        authority: &str,
+        assertions: std::sync::Arc<CountingAssertion>,
+    ) -> FederatedToken {
+        install_provider();
+        FederatedToken::with_source(
+            FederatedConfig {
+                authority: authority.to_string(),
+                tenant_id: TENANT.to_string(),
+                client_id: CLIENT.to_string(),
+                token_file: PathBuf::from("/unused"),
+                scope: crate::token::ARM_SCOPE.to_string(),
+            },
+            assertions,
+        )
+        .expect("source")
+    }
+
+    #[tokio::test]
+    async fn another_assertion_source_is_what_gets_exchanged() {
+        let (authority, server) = serve(vec![granted("arm-1", 3600)]).await;
+        let src = source_with(&authority, counting("eyJ.from-openbao.sig"));
+
+        assert_eq!(src.token().await.expect("token").secret(), "arm-1");
+
+        let seen = server.await.unwrap();
+        let form: HashMap<String, String> =
+            form_urlencoded::parse(&seen[0].body).into_owned().collect();
+        assert_eq!(form["client_assertion"], "eyJ.from-openbao.sig");
+    }
+
+    #[tokio::test]
+    async fn a_cached_token_does_not_ask_the_assertion_source_again() {
+        // The source is where OpenBao is called: a cached ARM token must
+        // not cost a login and a token read on every ARM request.
+        let (authority, _server) = serve(vec![granted("arm-1", 3600)]).await;
+        let assertions = counting("eyJ.from-openbao.sig");
+        let src = source_with(&authority, assertions.clone());
+
+        src.token().await.unwrap();
+        src.token().await.unwrap();
+        src.token().await.unwrap();
+
+        assert_eq!(assertions.calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn an_assertion_source_failure_is_the_tokens_failure() {
+        struct Failing;
+        #[async_trait::async_trait]
+        impl crate::assertion::AssertionSource for Failing {
+            async fn assertion(&self) -> crate::error::Result<String> {
+                Err(Error::Decode("no assertion".to_string()))
+            }
+        }
+        install_provider();
+        let src = FederatedToken::with_source(
+            FederatedConfig {
+                authority: "https://login.microsoftonline.com".to_string(),
+                tenant_id: TENANT.to_string(),
+                client_id: CLIENT.to_string(),
+                token_file: PathBuf::from("/unused"),
+                scope: crate::token::ARM_SCOPE.to_string(),
+            },
+            std::sync::Arc::new(Failing),
+        )
+        .unwrap();
+        let err = src.token().await.unwrap_err();
+        assert!(matches!(err, Error::Decode(_)), "{err}");
+    }
+
     #[test]
     fn debug_never_prints_a_token() {
         let src = source("https://login.microsoftonline.com", token_file(SA_TOKEN_A));

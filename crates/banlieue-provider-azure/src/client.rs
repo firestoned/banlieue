@@ -20,7 +20,9 @@ use async_trait::async_trait;
 use banlieue_api::banlieue::{AzureConnection, ProviderConnection};
 use banlieue_azure::encryption::check_disk_encryption_set_id;
 use banlieue_azure::tags::validate_extra_tags;
-use banlieue_azure::{ArmApi, ArmClient, ArmConfig, FederatedConfig, FederatedToken};
+use banlieue_azure::{
+    ArmApi, ArmClient, ArmConfig, AssertionSource, FederatedConfig, FederatedToken,
+};
 
 use crate::cloud::resolve_cloud;
 use crate::error::{Error, Result};
@@ -135,6 +137,8 @@ type ClientKey = (String, String, String, String, String);
 /// again on every exchange.
 pub struct HttpClientFactory {
     token_file: PathBuf,
+    /// Where the assertion comes from instead of `token_file` (ADR-0176).
+    assertions: Option<Arc<dyn AssertionSource>>,
     clients: Mutex<BTreeMap<ClientKey, Arc<dyn ArmApi>>>,
 }
 
@@ -144,8 +148,18 @@ impl HttpClientFactory {
     pub fn new(token_file: PathBuf) -> Self {
         Self {
             token_file,
+            assertions: None,
             clients: Mutex::new(BTreeMap::new()),
         }
+    }
+
+    /// Takes the assertion from `source` instead of reading the token file,
+    /// for a cluster whose ServiceAccount issuer cannot be published
+    /// (ADR-0176). Every client the factory builds shares the one source.
+    #[must_use]
+    pub fn with_assertion_source(mut self, source: Arc<dyn AssertionSource>) -> Self {
+        self.assertions = Some(source);
+        self
     }
 }
 
@@ -168,7 +182,10 @@ impl ArmClientFactory for HttpClientFactory {
         if let Some(client) = clients.get(&key) {
             return Ok(client.clone());
         }
-        let token = Arc::new(FederatedToken::new(federated)?);
+        let token = Arc::new(match &self.assertions {
+            Some(source) => FederatedToken::with_source(federated, source.clone())?,
+            None => FederatedToken::new(federated)?,
+        });
         let client: Arc<dyn ArmApi> = Arc::new(ArmClient::new(arm, token)?);
         clients.insert(key, client.clone());
         Ok(client)

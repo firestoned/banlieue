@@ -277,6 +277,39 @@ fn proxmox_example_matches_the_types() {
     }
 }
 
+/// `33-provider-azure-openbao.yaml` must parse into the types it names with no
+/// dropped key, name no credential, and declare the OpenBao block over `https`
+/// with the audience the cloud token never shares (ADR-0176 Decision 8).
+#[test]
+fn azure_openbao_example_matches_the_types() {
+    use banlieue_api::banlieue::Provider;
+
+    let path = format!("{EXAMPLES}/33-provider-azure-openbao.yaml");
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut providers = 0;
+    for text in yaml_documents(&text) {
+        let doc: serde_json::Value = serde_saphyr::from_str(&text).expect("valid YAML");
+        assert_eq!(doc["kind"], "Provider");
+        let p: Provider = serde_json::from_value(doc.clone()).expect("Provider");
+        assert_no_dropped_keys(&doc["spec"], &p.spec);
+        assert!(p.spec.connection.credentials_ref.is_none());
+        let bao = p
+            .spec
+            .connection
+            .azure
+            .as_ref()
+            .and_then(|a| a.openbao.as_ref())
+            .expect("connection.azure.openbao");
+        assert!(bao.address.starts_with("https://"), "{}", bao.address);
+        assert_ne!(
+            bao.audience, "api://AzureADTokenExchange",
+            "the two tokens must not share an audience"
+        );
+        providers += 1;
+    }
+    assert_eq!(providers, 1);
+}
+
 /// Every document in `31-virtualmachine-azure.yaml` must parse into the type
 /// its `kind` names with no dropped key. The Provider carries no credential
 /// (ADR-0159 Decision 1), names its Azure identity, and maps the class the
