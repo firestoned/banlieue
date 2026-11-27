@@ -12,7 +12,7 @@
   roadmap 20 phase C items and the ADR-0120 item (superseded by ADR-0140 Decision 3), and roadmap 07's `qemu+ssh`
   gotcha (superseded by ADR-0011). Roadmap 22 phase 0 is done and phases B, E and F are marked partial; roadmap 24
   records phase A (`banlieue-aws`) as done. Prose that still called ADR-0136, 0167, 0174 and 0175 Proposed is fixed.
-- `docs/adr/0174-*.md`, `docs/adr/0175-*.md`: Notes changed from "Not implemented" to "Partially implemented" (`banlieue-aws` exists).
+- `docs/adr/0174-*.md`, `docs/adr/0175-*.md`: Notes changed from "Not implemented" to "Partially implemented" (`banlieue-aws`, the `EC2Machine` CRDs and `banlieue-provider-ec2` exist; controller dispatch and the guest helper do not).
 - `.github/community/12-phase-4-finos-ready.md`: the nightly real-backend CI box closed by the maintainer (no self-hosted runners required); roadmap 12 stays complete.
 - `.github/community/07-phase-1d-libvirt-provider.md`: the CI-integration box closed by the maintainer (no self-hosted runner required); roadmap 07 stays complete.
 - `ROADMAPS.md`: row 03 moves from done to in progress (open items remain); rows 07 and 12 stay done; rows 21 and 24 updated.

@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-27
 - **Proposed:** 2026-11-26
-- **Notes:** Partially implemented: phase A: the `banlieue-aws` client (SigV4, STS, EC2 Query, `FakeEc2`, live test). The rest is not implemented.
+- **Notes:** Partially implemented (2026-11-27). Built: the `banlieue-aws` client (SigV4, STS, EC2 Query, `FakeEc2`, live test; phase A); the `EC2Machine` and `EC2MachineTemplate` CRDs in `banlieue-api` and the `ec2` connection on `Provider` (phase B, mostly); and the `banlieue-provider-ec2` provider with its reconcilers and `banlieue provider ec2` subcommand, unit tested and not yet run live (phase C). Not built: controller dispatch to an `ec2` Provider, so nothing schedules onto one yet (phase E), and the live lifecycle test.
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 24 (EC2 provider), which reserved ADR-0166 for this
   decision; that number went to
