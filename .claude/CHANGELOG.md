@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-27 02:30] - Release v0.6.1
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.toml`: workspace version 0.6.1 (all crates); `Cargo.lock` and the libvirt fuzz lock refreshed.
+- `deploy/{controller,operator,imagebuilder,provider-vsphere}/deployment.yaml`, `examples/10-providerclass-vsphere.yaml`,
+  `examples/11-providerclass-libvirt.yaml`, `docs/src/developer/rust-api-crate.md`: pinned to v0.6.1.
+- `CHANGELOG.md`: regenerated with git-cliff (`make changelog TAG=v0.6.1`).
+
+### Added
+- `docs/src/guides/upgrading-to-0.6.1.md`: 0.6.0 to 0.6.1 upgrade guide (new and changed CRDs, the provider Job Role
+  and `provider-jobs.yaml`, the recreate fix and how to find VMs it will recreate, the measured digest and
+  `--push-image`, Cloud Hypervisor notes, order of operations, rollback, the Azure provider); linked from the nav and
+  the guides index.
+
+### Why
+First release with the Azure provider (ADR-0164 to ADR-0173) and the migrationPolicy recreate fix (#255).
+`config/clusterctl/metadata.yaml` already lists the 0.6 series, so a patch release needs no entry there.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 01:30] - EC2 provider decisions: ADR-0174, ADR-0167, ADR-0175 and ADR-0162 Decision 9 (roadmap 24)
 
 **Author:** Erick Bourgeois

@@ -8,6 +8,36 @@ All notable changes to banlieue, by release. Generated from the commit
 history with [git-cliff](https://git-cliff.org/); do not edit by hand, run
 `make changelog`.
 
+## [0.6.1](https://github.com/firestoned/banlieue/releases/tag/v0.6.1) (2026-11-27)
+
+### Features
+
+- **cloud-hypervisor:** isolate sandbox taps with bridge port isolation, with installer and preflight support (ADR-0144) ([#242](https://github.com/firestoned/banlieue/pull/242))
+- **azure:** AzureVirtualMachine, banlieue provider azure, controller dispatch (ADR-0164, roadmap 23) ([#247](https://github.com/firestoned/banlieue/pull/247))
+- **azure:** per-Provider tags, disk encryption set, encryption at host (ADR-0172, roadmap 23) ([#253](https://github.com/firestoned/banlieue/pull/253))
+- **azure:** re-place a machine its zone refused, back-off, sweep metrics (ADR-0173, roadmap 23) ([#254](https://github.com/firestoned/banlieue/pull/254))
+
+### Bug fixes
+
+- **cloud-hypervisor:** every guest has an SMBIOS system UUID, its machine uid ([#246](https://github.com/firestoned/banlieue/pull/246))
+- **bootstrap:** pass --push-image and --azure-guest-image to the imagebuilder (ADR-0171, ADR-0110) ([#249](https://github.com/firestoned/banlieue/pull/249))
+- **host:** send OpenBao max_path_length as a string; align ADR-0146 docs ([#250](https://github.com/firestoned/banlieue/pull/250))
+- **controller:** a migrationPolicy recreate converges instead of deleting forever ([#255](https://github.com/firestoned/banlieue/pull/255))
+- **host:** send OpenBao max_path_length as a string; align ADR-0146 docs ([#256](https://github.com/firestoned/banlieue/pull/256))
+
+### Documentation
+
+- **adr:** accept the Firecracker and shared-host ADRs (0137, 0138, 0140, 0141, 0142, 0143) ([#243](https://github.com/firestoned/banlieue/pull/243))
+- **security:** threat model pass for ADR-0144 (sandbox segment and port isolation) ([#244](https://github.com/firestoned/banlieue/pull/244))
+- **adr:** 0166 sandbox addresses are private and unique across the fleet (Proposed) ([#245](https://github.com/firestoned/banlieue/pull/245))
+- **adr:** EC2 provider decisions, ADR-0174, 0167, 0175 and 0162 Decision 9 (roadmap 24) ([#257](https://github.com/firestoned/banlieue/pull/257))
+
+### Build and CI
+
+- strip build-host paths from release and helper binaries ([#248](https://github.com/firestoned/banlieue/pull/248))
+- **release:** publish the banlieue-azure-guest image and state its digest (ADR-0171, roadmap 23) ([#251](https://github.com/firestoned/banlieue/pull/251))
+- **release:** publish the banlieue-azure-guest image and state its digest (ADR-0171, roadmap 23) ([#252](https://github.com/firestoned/banlieue/pull/252))
+
 ## [0.6.0](https://github.com/firestoned/banlieue/releases/tag/v0.6.0) (2026-11-25)
 
 ### Features
@@ -30,6 +60,7 @@ history with [git-cliff](https://git-cliff.org/); do not edit by hand, run
 - **ci:** rebuild the pre-lay apt layer daily (ADR-0113) ([#233](https://github.com/firestoned/banlieue/pull/233))
 - **controller,provider-cloud-hypervisor:** a placed tenant VM keeps its host, and a host never reuses a uid it holds ([#234](https://github.com/firestoned/banlieue/pull/234))
 - **deps:** kube 5.2 for RUSTSEC-2026-0600, MSRV 1.95 ([#239](https://github.com/firestoned/banlieue/pull/239))
+- **ch:** report a lost vTPM state as TpmStateLost and stop the 5 s retry ([#241](https://github.com/firestoned/banlieue/pull/241))
 
 ### Performance
 
