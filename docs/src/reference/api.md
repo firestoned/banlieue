@@ -2384,7 +2384,7 @@ on the siblings, so the controller's status mirror treats backends alike.
 | `initialization` | object |  | CAPI contract field. |
 | `observedGeneration` | integer |  | The `metadata.generation` this status was computed from. |
 | `observedPowerState` | string |  | The VM's last observed run state (deallocated reads `PoweredOff`). Allowed: `PoweredOn`, `PoweredOff`, `Suspended`, `null`. |
-| `osDiskTagged` | boolean |  | Sticky: the OS disk carries this machine's ownership tags. ARM takes none in the VM body, so the provider merges them onto the disk once the VM exists (ADR-0173). |
+| `osDiskTagged` | boolean |  | Deprecated, no longer written. v0.6.1 providers set it once they had merged the ownership tags onto the OS disk; ARM already creates the disk with the VM's tags, so the merge is gone (ADR-0173 as amended 2026-11-27). Kept so stored objects stay valid; a value already set is left as it is. |
 | `pendingOperation` | object |  | The ARM operation in flight, if any. |
 | `provisioningState` | string |  | The VM's ARM `provisioningState` (`Creating`, `Succeeded`, `Failed`). |
 | `vmName` | string |  | The VM's resource name, derived from this object's UID. |

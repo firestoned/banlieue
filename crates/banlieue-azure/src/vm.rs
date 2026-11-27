@@ -11,9 +11,11 @@
 //!   Kairos first boot has no room to lay out its partitions (ADR-0160).
 //! - `deleteOption: Delete` on the OS disk and NIC: deleting the VM removes
 //!   both (ADR-0158 Decision 6).
-//! - `osDisk.name` from the owner's UID ([`os_disk_name`]): ARM accepts no
-//!   tags on the OS disk in the VM body and copies none of the VM's onto it,
-//!   so the provider tags the disk by name once the VM exists (ADR-0173).
+//! - `osDisk.name` from the owner's UID ([`os_disk_name`]), so the disk is
+//!   found by its owner, not by a name ARM made up (ADR-0173). ARM creates
+//!   the implicit OS disk with the VM's tags in the same write, so it carries
+//!   the ownership tags and a `Provider`'s extra tags from the start
+//!   (ADR-0172 and ADR-0173 as amended 2026-11-27).
 //! - `diagnosticsProfile.bootDiagnostics.enabled`: always, since a VM that
 //!   times out cannot be changed afterwards (ADR-0163 Decision 4).
 //! - `linuxConfiguration.provisionVMAgent: false`: the image reports ready

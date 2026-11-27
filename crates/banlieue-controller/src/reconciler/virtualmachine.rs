@@ -35,7 +35,8 @@ use banlieue_api::banlieue::{
     VirtualMachineStatus,
 };
 use banlieue_api::common::{
-    LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference, condition_types,
+    InitializationStatus, LocalObjectReference as _PlaceholderLocalRef, TypedObjectReference,
+    condition_types,
 };
 use banlieue_api::infrastructure::{
     AzureVirtualMachine, CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
@@ -65,8 +66,9 @@ use super::address_conflict::{
     held_addresses,
 };
 use super::infra::{
-    InfraKind, build_azure_virtual_machine, build_cloud_hypervisor_machine, build_libvirt_machine,
-    build_proxmox_machine, build_vsphere_machine, install_mode, machine_name,
+    InfraBuildError, InfraKind, build_azure_virtual_machine, build_cloud_hypervisor_machine,
+    build_libvirt_machine, build_proxmox_machine, build_vsphere_machine, install_mode,
+    machine_name,
 };
 use super::migration::{
     MESSAGE_PLACEMENT_INVALID, MigrationAction, PlacementDriftReason, REASON_PLACEMENT_INVALID,
@@ -561,9 +563,25 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
     let applied = match applied {
         Ok(m) => m,
         Err(e) => {
-            warn!(error = %e, "infra builder failed; reporting Scheduled=False");
-            patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string()).await?;
-            return Ok(requeue_on_error());
+            // An image ref goes missing while its VMImage republishes; the
+            // image only creates a machine, so a running one is left as it is
+            // and mirrored rather than reported as a build failure.
+            let existing = get_infra(&infra_apis, infra_kind, &machine_name(&vm)).await?;
+            match existing {
+                Some(m) if keeps_provisioned_infra(&e, Some(m.initialization())) => {
+                    debug!(
+                        reason = %e,
+                        "image ref not resolved; leaving the provisioned infra CR as it is"
+                    );
+                    m as Box<dyn InfraMachineRead + Send>
+                }
+                _ => {
+                    warn!(error = %e, "infra builder failed; reporting Scheduled=False");
+                    patch_infra_build_failure(&vm_api, &vm, &name, generation, &e.to_string())
+                        .await?;
+                    return Ok(requeue_on_error());
+                }
+            }
         }
     };
 
@@ -807,6 +825,29 @@ async fn owned_infra_state(apis: &InfraApis, infra_kind: InfraKind, name: &str) 
 #[must_use]
 fn waits_for_infra(state: InfraState) -> bool {
     state == InfraState::Terminating
+}
+
+/// Whether a failed infra build should leave the VM's existing infra CR as
+/// it is and carry on mirroring it, instead of reporting `InfraBuildFailed`.
+///
+/// Only for [`InfraBuildError::MissingResolvedImageRef`] on an infra CR that
+/// reports `provisioned`: a `VMImage` that is republishing (a new build, a
+/// new gallery version) has no ready row for a while, and the image is used
+/// only to create a machine, so a running one does not need it. Everything
+/// else the apply would change waits until the image is ready again. A
+/// machine not yet provisioned still waits for its image, and every other
+/// build error is still reported.
+///
+/// # Arguments
+/// * `error` - why the builder failed
+/// * `existing` - the existing infra CR's `status.initialization`, if any
+#[must_use]
+fn keeps_provisioned_infra(
+    error: &InfraBuildError,
+    existing: Option<&InitializationStatus>,
+) -> bool {
+    matches!(error, InfraBuildError::MissingResolvedImageRef { .. })
+        && existing.is_some_and(|init| init.provisioned == Some(true))
 }
 
 /// Delete the owned infra CR of `infra_kind` by name. 404 is treated as
