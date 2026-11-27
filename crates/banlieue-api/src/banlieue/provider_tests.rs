@@ -691,6 +691,24 @@ mod tests {
         }
         assert_eq!(props["audience"]["default"], "openbao");
 
+        // Every string is capped: the API server prices a CEL rule by the
+        // longest string it may see, and an uncapped `split('/')` exceeds the
+        // per-rule budget, so the whole Provider CRD is refused at install.
+        for name in [
+            "namespace",
+            "authMount",
+            "loginRole",
+            "tokenRole",
+            "audience",
+        ] {
+            assert_eq!(
+                props[name]["maxLength"].as_u64(),
+                Some(256),
+                "{name} has no maxLength"
+            );
+        }
+        assert_eq!(props["address"]["maxLength"].as_u64(), Some(512));
+
         // The login token must never be a cloud-audience token (ADR-0176
         // Decision 8): the schema refuses the cloud audience.
         let rules = props["audience"]["x-kubernetes-validations"]

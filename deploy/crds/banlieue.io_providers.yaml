@@ -548,6 +548,7 @@ spec:
                         properties:
                           address:
                             description: "OpenBao's address: `https://host[:port]`, no path."
+                            maxLength: 512
                             minLength: 1
                             pattern: ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$
                             type: string
@@ -559,6 +560,7 @@ spec:
 
                               Never the cloud audience: the login token must not be one Entra ID
                               would accept, so the schema refuses `api://AzureADTokenExchange`.
+                            maxLength: 256
                             minLength: 1
                             type: string
                             x-kubernetes-validations:
@@ -568,6 +570,7 @@ spec:
                             description: |-
                               The JWT auth mount that trusts this cluster's ServiceAccount tokens
                               (`auth/<authMount>/login`).
+                            maxLength: 256
                             pattern: ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$
                             type: string
                             x-kubernetes-validations:
@@ -575,6 +578,7 @@ spec:
                               rule: "!self.split('/').exists(s, s == '.' || s == '..')"
                           loginRole:
                             description: The auth role bound to this workload's ServiceAccount.
+                            maxLength: 256
                             pattern: ^[A-Za-z0-9._-]+$
                             type: string
                             x-kubernetes-validations:
@@ -584,6 +588,7 @@ spec:
                             description: |-
                               The namespace path the auth mount and identity engine live in. Unset:
                               the root namespace.
+                            maxLength: 256
                             nullable: true
                             pattern: ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$
                             type: string
@@ -594,6 +599,7 @@ spec:
                             description: |-
                               The identity OIDC role whose token is the assertion
                               (`identity/oidc/token/<tokenRole>`).
+                            maxLength: 256
                             pattern: ^[A-Za-z0-9._-]+$
                             type: string
                             x-kubernetes-validations:

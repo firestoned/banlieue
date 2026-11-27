@@ -1,5 +1,30 @@
 # Changelog
 
+## [2026-11-27 09:30] - Provider CRD refused at install: cap the OpenBao strings (ADR-0176 fix)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-api/src/banlieue/provider.rs`: every `connection.azure.openbao` string now has a
+  `maxLength` (`address` 512, `namespace`, `authMount`, `loginRole`, `tokenRole` and `audience` 256). Without
+  one, the API server priced the `!self.split('/').exists(...)` rules on `namespace` and `authMount` for a string
+  as long as a request, 2.6 times over the per-rule CEL cost budget, and refused the whole
+  `providers.banlieue.io` CRD: every e2e job on main has failed at CRD install since ADR-0176 (#260).
+  Reproduced on kind with `kindest/node:v1.31.0` (main's CRDs refused with CI's error; with this change all 23
+  CRDs apply).
+- `crates/banlieue-api/src/banlieue/provider_tests.rs`: the OpenBao schema test asserts each cap.
+- `deploy/crds/banlieue.io_providers.yaml`: regenerated.
+
+### Why
+No offline test runs the API server's CEL cost estimator; only the e2e jobs install the CRDs, so the unit
+tier passed while every install failed.
+
+### Impact
+- [ ] Breaking change (values longer than the caps were never valid OpenBao paths in practice)
+- [x] Requires cluster rollout (re-apply `banlieue.io_providers.yaml`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 08:00] - EC2 provider reconcilers: EC2Machine and Provider (roadmap 24 phase C, ADR-0174)
 
 **Author:** Erick Bourgeois

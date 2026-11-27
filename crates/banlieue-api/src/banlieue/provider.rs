@@ -721,6 +721,13 @@ const OPENBAO_NESTED_PATTERN: &str = "^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$";
 /// Scheme and host and an optional port, `https` only: the token that logs in
 /// is a bearer credential, and the address takes no path.
 const OPENBAO_ADDRESS_PATTERN: &str = "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$";
+/// Longest OpenBao namespace, mount, role or audience accepted. The cap is
+/// what lets the API server accept the CEL rules on these fields: it prices
+/// each rule by the longest string it may see, and an uncapped
+/// `split('/')` exceeds the per-rule cost budget, refusing the whole CRD.
+const OPENBAO_NAME_MAX_LEN: u32 = 256;
+/// Longest OpenBao address: a 253-character host, the scheme and a port fit.
+const OPENBAO_ADDRESS_MAX_LEN: u32 = 512;
 
 /// Where the OpenBao-signed assertion comes from (ADR-0176 Decision 8). The
 /// operator renders it into the provider's pod; the provider logs in with a
@@ -730,12 +737,15 @@ const OPENBAO_ADDRESS_PATTERN: &str = "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$";
 #[serde(rename_all = "camelCase")]
 pub struct AzureOpenBao {
     /// OpenBao's address: `https://host[:port]`, no path.
-    #[schemars(length(min = 1), extend("pattern" = OPENBAO_ADDRESS_PATTERN))]
+    #[schemars(
+        length(min = 1, max = OPENBAO_ADDRESS_MAX_LEN),
+        extend("pattern" = OPENBAO_ADDRESS_PATTERN)
+    )]
     pub address: String,
     /// The namespace path the auth mount and identity engine live in. Unset:
     /// the root namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(extend(
+    #[schemars(length(max = OPENBAO_NAME_MAX_LEN), extend(
         "pattern" = OPENBAO_NESTED_PATTERN,
         "x-kubernetes-validations" = [{
             "rule": "!self.split('/').exists(s, s == '.' || s == '..')",
@@ -745,7 +755,7 @@ pub struct AzureOpenBao {
     pub namespace: Option<String>,
     /// The JWT auth mount that trusts this cluster's ServiceAccount tokens
     /// (`auth/<authMount>/login`).
-    #[schemars(extend(
+    #[schemars(length(max = OPENBAO_NAME_MAX_LEN), extend(
         "pattern" = OPENBAO_NESTED_PATTERN,
         "x-kubernetes-validations" = [{
             "rule": "!self.split('/').exists(s, s == '.' || s == '..')",
@@ -754,7 +764,7 @@ pub struct AzureOpenBao {
     ))]
     pub auth_mount: String,
     /// The auth role bound to this workload's ServiceAccount.
-    #[schemars(extend(
+    #[schemars(length(max = OPENBAO_NAME_MAX_LEN), extend(
         "pattern" = OPENBAO_SEGMENT_PATTERN,
         "x-kubernetes-validations" = [{
             "rule": "self != '.' && self != '..'",
@@ -764,7 +774,7 @@ pub struct AzureOpenBao {
     pub login_role: String,
     /// The identity OIDC role whose token is the assertion
     /// (`identity/oidc/token/<tokenRole>`).
-    #[schemars(extend(
+    #[schemars(length(max = OPENBAO_NAME_MAX_LEN), extend(
         "pattern" = OPENBAO_SEGMENT_PATTERN,
         "x-kubernetes-validations" = [{
             "rule": "self != '.' && self != '..'",
@@ -779,7 +789,7 @@ pub struct AzureOpenBao {
     /// would accept, so the schema refuses `api://AzureADTokenExchange`.
     #[serde(default = "default_openbao_audience")]
     #[schemars(
-        length(min = 1),
+        length(min = 1, max = OPENBAO_NAME_MAX_LEN),
         default = "default_openbao_audience",
         extend("x-kubernetes-validations" = [{
             "rule": "self != 'api://AzureADTokenExchange'",
