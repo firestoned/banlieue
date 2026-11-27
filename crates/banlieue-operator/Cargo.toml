@@ -39,5 +39,9 @@ tracing.workspace = true
 clap.workspace = true
 
 [dev-dependencies]
+# Only for the test that holds the operator's rendered variable names to the
+# ones the Azure client reads (ADR-0176 Decision 8); the operator itself stays
+# backend-agnostic and does not depend on it.
+banlieue-azure = { path = "../banlieue-azure" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

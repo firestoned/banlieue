@@ -524,6 +524,79 @@ spec:
                           (ADR-0158 Decisions 1 and 3).
                         minLength: 1
                         type: string
+                      openbao:
+                        description: |-
+                          Take the federation assertion from OpenBao's identity engine instead
+                          of presenting the provider's projected ServiceAccount token directly
+                          (ADR-0176). For a cluster whose ServiceAccount issuer cannot be
+                          published: Entra ID then verifies a token OpenBao signs, against two
+                          static documents the admin publishes. Unset: the projected token is
+                          the assertion (ADR-0159), and nothing about OpenBao is rendered.
+
+                          The login token is the provider pod's, so the OpenBao identity, and the
+                          federated credential's subject, belong to the workload; a shared
+                          provider (ADR-0133) reads this block from the `Provider` that owns it.
+                        nullable: true
+                        properties:
+                          address:
+                            description: "OpenBao's address: `https://host[:port]`, no path."
+                            minLength: 1
+                            pattern: ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$
+                            type: string
+                          audience:
+                            default: openbao
+                            description: |-
+                              Audience of the ServiceAccount token that logs in; the auth role's
+                              `bound_audiences` must name it. Defaults to `openbao`.
+
+                              Never the cloud audience: the login token must not be one Entra ID
+                              would accept, so the schema refuses `api://AzureADTokenExchange`.
+                            minLength: 1
+                            type: string
+                            x-kubernetes-validations:
+                            - message: "audience may not be the cloud audience: the OpenBao login token must not be a token Entra ID accepts"
+                              rule: self != 'api://AzureADTokenExchange'
+                          authMount:
+                            description: |-
+                              The JWT auth mount that trusts this cluster's ServiceAccount tokens
+                              (`auth/<authMount>/login`).
+                            pattern: ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$
+                            type: string
+                            x-kubernetes-validations:
+                            - message: an auth mount segment may not be '.' or '..'
+                              rule: "!self.split('/').exists(s, s == '.' || s == '..')"
+                          loginRole:
+                            description: The auth role bound to this workload's ServiceAccount.
+                            pattern: ^[A-Za-z0-9._-]+$
+                            type: string
+                            x-kubernetes-validations:
+                            - message: a role name may not be '.' or '..'
+                              rule: self != '.' && self != '..'
+                          namespace:
+                            description: |-
+                              The namespace path the auth mount and identity engine live in. Unset:
+                              the root namespace.
+                            nullable: true
+                            pattern: ^[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)*$
+                            type: string
+                            x-kubernetes-validations:
+                            - message: a namespace segment may not be '.' or '..'
+                              rule: "!self.split('/').exists(s, s == '.' || s == '..')"
+                          tokenRole:
+                            description: |-
+                              The identity OIDC role whose token is the assertion
+                              (`identity/oidc/token/<tokenRole>`).
+                            pattern: ^[A-Za-z0-9._-]+$
+                            type: string
+                            x-kubernetes-validations:
+                            - message: a role name may not be '.' or '..'
+                              rule: self != '.' && self != '..'
+                        required:
+                        - address
+                        - authMount
+                        - loginRole
+                        - tokenRole
+                        type: object
                       publisher:
                         description: |-
                           The image publisher's own identity (ADR-0159 Decision 3, ADR-0162

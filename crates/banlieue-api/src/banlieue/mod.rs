@@ -12,14 +12,14 @@ pub mod vmclass;
 pub mod vmimage;
 
 pub use provider::{
-    AzureConnection, AzureImageGallery, AzurePublisherIdentity, DEFAULT_CPU_OVERCOMMIT_RATIO,
-    DEFAULT_STORAGE_RESERVE_PERCENT, FEATURE_MOVE, FailureDomain, FailureDomainAttributes,
-    FailureDomainCapacity, FailureDomainNameOverride, Heartbeat, InstanceSizeMapping,
-    LABEL_UNSCHEDULABLE, LABEL_ZONE, MAX_CPU_OVERCOMMIT_RATIO, MAX_STORAGE_RESERVE_PERCENT,
-    MIN_CPU_OVERCOMMIT_RATIO, NetworkClassMapping, Provider, ProviderCapabilities,
-    ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus, ProviderWorkloadStatus,
-    RAW_CPU_MODEL, RAW_VMM, ScopedSubnet, ScopedTarget, StorageCapacity, StorageClassMapping,
-    SubnetShape, WorkloadMode, ZonedInstanceSize,
+    AzureConnection, AzureImageGallery, AzureOpenBao, AzurePublisherIdentity,
+    DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT, FEATURE_MOVE, FailureDomain,
+    FailureDomainAttributes, FailureDomainCapacity, FailureDomainNameOverride, Heartbeat,
+    InstanceSizeMapping, LABEL_UNSCHEDULABLE, LABEL_ZONE, MAX_CPU_OVERCOMMIT_RATIO,
+    MAX_STORAGE_RESERVE_PERCENT, MIN_CPU_OVERCOMMIT_RATIO, NetworkClassMapping, Provider,
+    ProviderCapabilities, ProviderConnection, ProviderScheduling, ProviderSpec, ProviderStatus,
+    ProviderWorkloadStatus, RAW_CPU_MODEL, RAW_VMM, ScopedSubnet, ScopedTarget, StorageCapacity,
+    StorageClassMapping, SubnetShape, WorkloadMode, ZonedInstanceSize,
 };
 pub use providerclass::{
     DEFAULT_PROVIDER_REPLICAS, ImagePullPolicy, LoggingSpec, ProviderClass, ProviderClassSpec,

@@ -24,6 +24,23 @@
 //!   cargo test -p banlieue-azure --test live_arm -- --ignored --test-threads=1
 //! ```
 //!
+//! **Without a cluster issuer** (a first check from a workstation), set
+//! `AZURE_ACCESS_TOKEN_FILE` to a file holding an ARM access token instead of
+//! the four workload identity variables, for example
+//! `az account get-access-token --resource https://management.azure.com
+//! --query accessToken -o tsv > "$TOKEN_FILE"`. Every ARM test then runs as
+//! *that principal*, which usually holds far more than the provider's custom
+//! role, so a missing RBAC action will not fail here, and the token exchange
+//! test is not exercised. It is a smoke test of the client against a real
+//! subscription, not a substitute for the federated run.
+//!
+//! **With OpenBao as the signer** (ADR-0176), the OpenBao test
+//! (`the_openbao_signed_assertion_is_exchanged_for_an_arm_token`) needs
+//! `AZURE_TENANT_ID`, `AZURE_CLIENT_ID` and the `BANLIEUE_OPENBAO_*`
+//! variables instead of a token file: the source logs in with the
+//! ServiceAccount token named by `BANLIEUE_OPENBAO_SA_TOKEN_FILE` and reads the
+//! assertion from `identity/oidc/token/<role>`.
+//!
 //! The lifecycle test also needs `AZURE_SUBNET_ID`, `AZURE_IMAGE_VERSION_ID`
 //! and `AZURE_SSH_PUBLIC_KEY` (optionally `AZURE_VM_SIZE`, `AZURE_ZONE`,
 //! `AZURE_OS_DISK_GB`). It creates and deletes one VM (a few minutes and a
@@ -35,14 +52,17 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use async_trait::async_trait;
 use banlieue_azure::api::ArmApi;
 use banlieue_azure::operation::{OperationHandle, OperationStatus};
+use banlieue_azure::token::{AccessToken, parse_token_response};
 use banlieue_azure::types::{Provisioning, vcpu_headroom};
 use banlieue_azure::vm::{DEFAULT_ADMIN_USERNAME, nic_name, vm_name};
 use banlieue_azure::{
     ArmClient, ArmConfig, FederatedConfig, FederatedToken, NicRequest, OwnershipTags,
     TokenProvider, VmRequest,
 };
+use banlieue_azure::{OpenBaoAssertion, OpenBaoConfig};
 
 const DEFAULT_VM_SIZE: &str = "Standard_D2s_v7";
 const DEFAULT_ZONE: &str = "1";
@@ -80,12 +100,40 @@ fn token_source() -> Arc<FederatedToken> {
     Arc::new(FederatedToken::new(config).expect("token source"))
 }
 
+/// Lifetime claimed for a workstation token: ARM tokens last at least an
+/// hour, and the test run is far shorter.
+const STATIC_TOKEN_LIFETIME_SECS: u64 = 3000;
+
+/// A bearer token read once from `AZURE_ACCESS_TOKEN_FILE`; see the module docs
+/// for why this is a smoke test and not the federated run.
+struct StaticToken(String);
+
+#[async_trait]
+impl TokenProvider for StaticToken {
+    async fn token(&self) -> banlieue_azure::Result<AccessToken> {
+        let body = serde_json::json!({
+            "access_token": self.0,
+            "expires_in": STATIC_TOKEN_LIFETIME_SECS,
+        });
+        parse_token_response(body.to_string().as_bytes(), Instant::now())
+    }
+}
+
+fn arm_token() -> Arc<dyn TokenProvider> {
+    let Some(path) = std::env::var("AZURE_ACCESS_TOKEN_FILE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+    else {
+        return token_source();
+    };
+    let token = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("AZURE_ACCESS_TOKEN_FILE {path}: {e}"));
+    Arc::new(StaticToken(token.trim().to_string()))
+}
+
 fn client() -> ArmClient {
-    ArmClient::new(
-        ArmConfig::new(&env("AZURE_SUBSCRIPTION_ID")),
-        token_source(),
-    )
-    .expect("client")
+    install_provider();
+    ArmClient::new(ArmConfig::new(&env("AZURE_SUBSCRIPTION_ID")), arm_token()).expect("client")
 }
 
 async fn wait(client: &ArmClient, handle: Option<OperationHandle>, what: &str) {
@@ -113,6 +161,31 @@ async fn the_service_account_token_is_exchanged_for_an_arm_token() {
     let token = source.token().await.expect("exchange");
     assert!(!token.secret().is_empty());
     // Cached: the second call makes no exchange and returns the same token.
+    let again = source.token().await.expect("cached");
+    assert_eq!(again.expires_at(), token.expires_at());
+}
+
+#[tokio::test]
+#[ignore = "talks to OpenBao and Entra ID; see module docs (ADR-0176)"]
+async fn the_openbao_signed_assertion_is_exchanged_for_an_arm_token() {
+    install_provider();
+    let federated = FederatedConfig::from_lookup(|k| {
+        // The assertion comes from OpenBao, so no token file is needed.
+        (k == "AZURE_FEDERATED_TOKEN_FILE")
+            .then(|| "/unused".to_string())
+            .or_else(|| std::env::var(k).ok())
+    })
+    .expect("tenant and client variables");
+    let openbao = OpenBaoAssertion::new(
+        OpenBaoConfig::from_lookup(|k| std::env::var(k).ok())
+            .expect("BANLIEUE_OPENBAO_* variables"),
+    )
+    .expect("openbao source");
+    let source = FederatedToken::with_source(federated, Arc::new(openbao)).expect("token source");
+
+    let token = source.token().await.expect("exchange");
+    assert!(!token.secret().is_empty());
+    // Cached: the second call reaches neither OpenBao nor Entra ID.
     let again = source.token().await.expect("cached");
     assert_eq!(again.expires_at(), token.expires_at());
 }

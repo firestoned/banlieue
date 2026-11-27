@@ -68,3 +68,13 @@ spec:
     - ports:
         - protocol: TCP
           port: 443
+    # OpenBao, when the Provider declares spec.connection.azure.openbao
+    # (ADR-0176): the provider also logs in to the address named there.
+    # TCP 443 above covers it when OpenBao listens on 443. For any other port
+    # add a rule scoped to OpenBao's address; this file does not open one:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 192.0.2.20/32
+    #     ports:
+    #       - protocol: TCP
+    #         port: 8200
