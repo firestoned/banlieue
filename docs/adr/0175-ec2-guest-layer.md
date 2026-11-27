@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 - **Status:** Accepted
 - **Date:** 2026-11-27
 - **Proposed:** 2026-11-26
-- **Notes:** Partially implemented: the `GuestReady` console-line matcher in `banlieue-aws` (`console.rs`); the guest helper is not built. The rest is not implemented.
+- **Notes:** Partially implemented (2026-11-27). Built: the host side of the report channel, the `GuestReady` console-line matcher in `banlieue-aws` (`console.rs`), which `banlieue-provider-ec2` uses to publish `GuestReady`. Not built: the Rust guest helper, its digest-pinned bundle and the guest layer itself (decisions 3 to 5), so no image carries the `/dev/kmsg` report yet.
 - **Deciders:** Erick Bourgeois
 - **Related:** Implements [ADR-0163](0163-guestready-on-a-cloud.md) for EC2,
   with the transport [ADR-0174](0174-ec2-inframachine-and-a-first-party-aws-client.md)
