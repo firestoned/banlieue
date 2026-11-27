@@ -4,10 +4,11 @@
 # Cluster-wide role for the EC2 provider binary (ADR-0158, ADR-0174).
 #
 # Mirrors deploy/provider-azure/rbac/clusterrole.yaml with EC2Machine in place
-# of AzureVirtualMachine, and narrower: the EC2 provider does not serve
-# VMImages yet (publishing AMIs is roadmap 24 phase D), so it has no VMImage
-# rule and no image publish Jobs. Add them in the change that adds that
-# reconciler, not before.
+# of AzureVirtualMachine, and narrower: the EC2 provider serves only VMImage
+# Template sources (a hand-published AMI ID, written as a status row), so it
+# reads VMImages and patches their status but has no update on VMImages
+# themselves (no finalizer: nothing is published) and no image publish Jobs.
+# Publishing AMIs is roadmap 24 phase D; add its grants in that change.
 #
 # No Secrets anywhere, here or in the per-instance Role (ADR-0159 Decision 1):
 # the provider's only cloud credential is the projected ServiceAccount token
@@ -25,7 +26,7 @@ metadata:
     app.kubernetes.io/component: provider-ec2
 rules:
   # ---------------------------------------------------------------------------
-  # banlieue.io group: read Providers, patch their status
+  # banlieue.io group: read Providers and VMImages, patch their status
   # ---------------------------------------------------------------------------
   - apiGroups: ["banlieue.io"]
     resources:
@@ -34,6 +35,18 @@ rules:
   - apiGroups: ["banlieue.io"]
     resources:
       - providers/status
+    verbs: ["get", "update", "patch"]
+
+  # VMImage is cluster-scoped. Read every one, write only this provider's own
+  # row of status.perProvider (server-side apply, merge-keyed, ADR-0015). No
+  # update or patch on the VMImage itself: the EC2 provider sets no finalizer.
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["banlieue.io"]
+    resources:
+      - vmimages/status
     verbs: ["get", "update", "patch"]
 
   # ---------------------------------------------------------------------------

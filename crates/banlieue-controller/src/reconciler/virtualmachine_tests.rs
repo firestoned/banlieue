@@ -314,12 +314,24 @@ mod tests {
         proxmox: InfraState,
         azure: InfraState,
     ) -> [(InfraKind, InfraState); INFRA_KIND_COUNT] {
+        let mut states = only_ec2(InfraState::Absent);
+        states[0].1 = vsphere;
+        states[1].1 = libvirt;
+        states[2].1 = cloud_hypervisor;
+        states[3].1 = proxmox;
+        states[4].1 = azure;
+        states
+    }
+
+    /// Every kind absent but `EC2Machine`, which is `ec2`.
+    fn only_ec2(ec2: InfraState) -> [(InfraKind, InfraState); INFRA_KIND_COUNT] {
         [
-            (InfraKind::VSphere, vsphere),
-            (InfraKind::Libvirt, libvirt),
-            (InfraKind::CloudHypervisor, cloud_hypervisor),
-            (InfraKind::Proxmox, proxmox),
-            (InfraKind::Azure, azure),
+            (InfraKind::VSphere, InfraState::Absent),
+            (InfraKind::Libvirt, InfraState::Absent),
+            (InfraKind::CloudHypervisor, InfraState::Absent),
+            (InfraKind::Proxmox, InfraState::Absent),
+            (InfraKind::Azure, InfraState::Absent),
+            (InfraKind::Ec2, ec2),
         ]
     }
 
@@ -328,6 +340,24 @@ mod tests {
         assert_eq!(INFRA_KINDS.len(), INFRA_KIND_COUNT);
         assert!(INFRA_KINDS.contains(&InfraKind::Azure));
         assert!(INFRA_KINDS.contains(&InfraKind::Proxmox));
+        assert!(INFRA_KINDS.contains(&InfraKind::Ec2));
+    }
+
+    #[test]
+    fn a_present_ec2_machine_is_deleted_and_blocks_the_finalizer() {
+        let plan = plan_finalize(&only_ec2(InfraState::Present));
+        assert_eq!(plan.delete, vec![InfraKind::Ec2]);
+        assert!(!plan.remove_finalizer);
+    }
+
+    #[test]
+    fn an_unknown_or_terminating_ec2_machine_blocks_the_finalizer() {
+        for state in [InfraState::Unknown, InfraState::Terminating] {
+            let plan = plan_finalize(&only_ec2(state));
+            assert!(plan.delete.is_empty(), "{state:?}");
+            assert!(!plan.remove_finalizer, "{state:?}");
+        }
+        assert!(plan_finalize(&only_ec2(InfraState::Absent)).remove_finalizer);
     }
 
     #[test]

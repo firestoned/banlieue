@@ -54,9 +54,10 @@ pub use vmclass::{
 };
 pub use vmimage::{
     Architecture, BuildArtifactKind, BuildArtifactPhase, BuildArtifactStatus, DiskController,
-    FirstBootSealingProvenance, GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind,
-    InstallMode, IsoOverlayFile, IsoOverlaySource, MAX_PRELAY_DISK_SIZE_GIB,
-    MIN_PRELAY_DISK_SIZE_GIB, NicAdapter, OciArtifactPhase, OciArtifactStatus, OsFamily,
-    PrelaySpec, TrustedBootSource, VMImage, VMImageSpec, VMImageStatus, VMImageTemplate,
-    VMImageTemplateDisk, VMImageTemplateNic, ZoneImageStatus,
+    EC2_BOOT_MODE_UEFI, EC2_TPM_SUPPORT_V2, Ec2ImageAttributes, FirstBootSealingProvenance,
+    GuestAgent, ImagePerProviderStatus, ImageSource, ImageSourceKind, InstallMode, IsoOverlayFile,
+    IsoOverlaySource, MAX_PRELAY_DISK_SIZE_GIB, MIN_PRELAY_DISK_SIZE_GIB, NicAdapter,
+    OciArtifactPhase, OciArtifactStatus, OsFamily, PrelaySpec, TrustedBootSource, VMImage,
+    VMImageSpec, VMImageStatus, VMImageTemplate, VMImageTemplateDisk, VMImageTemplateNic,
+    ZoneImageStatus,
 };

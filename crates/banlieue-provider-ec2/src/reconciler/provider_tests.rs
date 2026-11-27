@@ -112,6 +112,66 @@ mod tests {
         assert_eq!(fd.attributes.raw[RAW_KEY_TPM_VM_CLASSES], "large");
     }
 
+    const ARM_TYPE: &str = "m8g.large";
+
+    fn arm_type() -> InstanceTypeInfo {
+        InstanceTypeInfo {
+            instance_type: ARM_TYPE.into(),
+            default_vcpus: 2,
+            architectures: vec!["arm64".into()],
+            nitro_tpm_supported: true,
+            nitro_tpm_versions: vec!["2.0".into()],
+            boot_modes: vec!["uefi".into()],
+        }
+    }
+
+    /// The scheduler matches a `VMImage`'s architecture against these
+    /// (roadmap 24 phase E): each class under the architecture of its type.
+    #[tokio::test]
+    async fn classes_are_published_by_architecture() {
+        let fake = FakeEc2::ca_central_1();
+        fake.add_instance_type(arm_type());
+        fake.set_offered(ZONE_A, ARM_TYPE, true);
+        let status = status_for(
+            caps(vec![size("arm", ARM_TYPE), size("large", TYPE_LARGE)]),
+            &fake,
+        )
+        .await;
+        let fd = &status.failure_domains[0];
+        assert_eq!(fd.attributes.raw[KEY_ZONE], ZONE_A);
+        assert_eq!(fd.attributes.raw[RAW_KEY_AMD64_VM_CLASSES], "large");
+        assert_eq!(fd.attributes.raw[RAW_KEY_ARM64_VM_CLASSES], "arm");
+    }
+
+    /// Both keys are published even when one architecture has no class, so
+    /// an empty list means "none", not "unknown".
+    #[tokio::test]
+    async fn an_architecture_with_no_class_is_published_empty() {
+        let fake = FakeEc2::ca_central_1();
+        let status = status_for(caps(vec![size("small", TYPE_SMALL)]), &fake).await;
+        let raw = &status.failure_domains[0].attributes.raw;
+        assert_eq!(raw[RAW_KEY_AMD64_VM_CLASSES], "small");
+        assert_eq!(raw[RAW_KEY_ARM64_VM_CLASSES], "");
+    }
+
+    #[test]
+    fn architecture_lists_need_every_type_described() {
+        let region = RegionView::default();
+        assert_eq!(architecture_lists(&region, &[("small", TYPE_SMALL)]), None);
+    }
+
+    #[test]
+    fn architecture_lists_split_by_ec2_architecture_name() {
+        let mut amd = no_tpm_type();
+        amd.instance_type = TYPE_SMALL.into();
+        let region = RegionView {
+            types: vec![amd, arm_type()],
+            ..RegionView::default()
+        };
+        let lists = architecture_lists(&region, &[("small", TYPE_SMALL), ("arm", ARM_TYPE)]);
+        assert_eq!(lists, Some(("small".to_string(), "arm".to_string())));
+    }
+
     /// A mistyped mapping is a condition, never a probe failure that hides
     /// every zone (EC2 refuses to describe a type it does not know).
     #[tokio::test]

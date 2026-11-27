@@ -515,12 +515,14 @@ async fn hold(
 /// `attestationSubject` is always present: `null` when the member has none,
 /// because a merge patch removes a field only by naming it `null`, and a
 /// subject the member withdrew must not linger on the claim (ADR-0143
-/// Decision 3). The certificates are overwritten the same way, as a list.
+/// Decision 3). The certificates and the EK public keys (ADR-0167
+/// Decision 1) are overwritten the same way, as lists.
 #[must_use]
 pub fn mirrored_status_fields(mirrored: &MirroredMemberState) -> Value {
     json!({
         "addresses": mirrored.addresses,
         "tpmEndorsementCertificates": mirrored.tpm_endorsement_certificates,
+        "tpmEndorsementPublicKeys": mirrored.tpm_endorsement_public_keys,
         "attestationSubject": mirrored.attestation_subject,
     })
 }

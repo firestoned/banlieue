@@ -756,6 +756,50 @@ spec:
                 items:
                   description: Readiness of a VMImage on one specific Provider.
                   properties:
+                    ec2:
+                      description: |-
+                        `ec2` `Provider`s only: what EC2's `DescribeImages` reports of the AMI
+                        in `resolvedRef`, read by the provider so the controller and the
+                        scheduler can decide without calling EC2 (roadmap 24 phase E). Unset
+                        on every other backend, and until the provider has read the AMI.
+                      nullable: true
+                      properties:
+                        architecture:
+                          description: |-
+                            The AMI's architecture: EC2's `x86_64` is `amd64`, `arm64` is
+                            `arm64`. An AMI of any other architecture is not made ready.
+                          enum:
+                          - amd64
+                          - arm64
+                          type: string
+                        bootMode:
+                          description: |-
+                            `bootMode` (`uefi`, `legacy-bios`, `uefi-preferred`); unset when the
+                            AMI leaves it to the instance type.
+                          maxLength: 32
+                          nullable: true
+                          type: string
+                        enaSupport:
+                          description: "`enaSupport`."
+                          type: boolean
+                        rootDeviceName:
+                          description: |-
+                            The AMI's root device name (`/dev/xvda`, `/dev/sda1`): the device the
+                            `EC2Machine`'s root volume mapping must name, or EC2 adds the volume
+                            beside the AMI's own instead of resizing it.
+                          maxLength: 64
+                          minLength: 1
+                          pattern: ^/dev/[a-z0-9]+$
+                          type: string
+                        tpmSupport:
+                          description: "`tpmSupport`: `v2.0` for an AMI registered for NitroTPM."
+                          maxLength: 32
+                          nullable: true
+                          type: string
+                      required:
+                      - architecture
+                      - rootDeviceName
+                      type: object
                     message:
                       description: Long human-readable detail.
                       nullable: true

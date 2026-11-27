@@ -106,6 +106,86 @@ pub const AZURE_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/azure/tokens";
 /// workload identity credential reads.
 pub const AZURE_FEDERATED_TOKEN_FILE_ENV: &str = "AZURE_FEDERATED_TOKEN_FILE";
 
+/// Backend whose provider authenticates by `AssumeRoleWithWebIdentity` at
+/// AWS STS (ADR-0174 Decision 6) and so gets a projected token.
+pub const EC2_BACKEND: &str = "ec2";
+
+/// Audience AWS STS requires on a web identity token (ADR-0174 Decision 6).
+/// The account's IAM OIDC provider must list it as a client ID.
+pub const EC2_TOKEN_AUDIENCE: &str = "sts.amazonaws.com";
+
+/// Lifetime of the EC2 provider's projected token, in seconds: ten minutes,
+/// the shortest the kubelet issues (ADR-0174 Decision 6). The token is only
+/// exchanged at STS, never sent to EC2, so a short life costs nothing; the
+/// kubelet refreshes it before it expires.
+pub const EC2_TOKEN_EXPIRATION_SECS: i64 = 600;
+
+/// Name of the EC2 provider's projected token volume, and of the file in it.
+pub const EC2_TOKEN_VOLUME: &str = "aws-identity-token";
+
+/// Directory the EC2 provider's token volume is mounted at, read-only.
+pub const EC2_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/aws/tokens";
+
+/// Environment variable naming the token file: the name the AWS SDKs read,
+/// and the `env` of `banlieue provider ec2 --web-identity-token-file`.
+pub const AWS_WEB_IDENTITY_TOKEN_FILE_ENV: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
+
+/// The projected ServiceAccount token a cloud provider exchanges for its
+/// cloud credential, and how its pod sees it. One per backend that
+/// authenticates by workload identity federation, never a Secret
+/// (ADR-0159 Decision 1, ADR-0174 Decision 6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloudToken {
+    /// The token's `aud` claim, which the cloud's token exchange checks.
+    pub audience: &'static str,
+    /// Lifetime the kubelet requests, in seconds.
+    pub expiration_seconds: i64,
+    /// Name of the projected volume, and of the file inside it.
+    pub volume: &'static str,
+    /// Directory the volume is mounted at, read-only.
+    pub mount_path: &'static str,
+    /// Environment variable that names the token file to the provider.
+    pub env: &'static str,
+}
+
+impl CloudToken {
+    /// Full path of the token file inside the provider container.
+    #[must_use]
+    pub fn file(&self) -> String {
+        format!("{}/{}", self.mount_path, self.volume)
+    }
+}
+
+/// Azure's token: exchanged with Entra ID (ADR-0159 Decision 1).
+const AZURE_TOKEN: CloudToken = CloudToken {
+    audience: AZURE_TOKEN_AUDIENCE,
+    expiration_seconds: AZURE_TOKEN_EXPIRATION_SECS,
+    volume: AZURE_TOKEN_VOLUME,
+    mount_path: AZURE_TOKEN_MOUNT_PATH,
+    env: AZURE_FEDERATED_TOKEN_FILE_ENV,
+};
+
+/// EC2's token: exchanged at STS by `AssumeRoleWithWebIdentity`
+/// (ADR-0174 Decision 6).
+const EC2_TOKEN: CloudToken = CloudToken {
+    audience: EC2_TOKEN_AUDIENCE,
+    expiration_seconds: EC2_TOKEN_EXPIRATION_SECS,
+    volume: EC2_TOKEN_VOLUME,
+    mount_path: EC2_TOKEN_MOUNT_PATH,
+    env: AWS_WEB_IDENTITY_TOKEN_FILE_ENV,
+};
+
+/// The projected token `backend`'s provider authenticates with, or `None`
+/// for a backend that reads a credentials Secret (or needs none).
+#[must_use]
+pub fn cloud_token(backend: &str) -> Option<&'static CloudToken> {
+    match backend {
+        AZURE_BACKEND => Some(&AZURE_TOKEN),
+        EC2_BACKEND => Some(&EC2_TOKEN),
+        _ => None,
+    }
+}
+
 /// Name of the OpenBao login token's projected volume, and of the file in it
 /// (ADR-0176 Decision 8).
 pub const OPENBAO_TOKEN_VOLUME: &str = "openbao-identity-token";
@@ -771,7 +851,7 @@ pub fn shared_cluster_role_name(backend: &str) -> String {
 }
 
 /// Whether this workload's provider authenticates by workload identity
-/// federation with Entra ID, and so gets the projected token (ADR-0159).
+/// federation with Entra ID, which alone honours an OpenBao block (ADR-0176).
 fn uses_azure_workload_identity(inputs: &WorkloadInputs<'_>) -> bool {
     inputs.class.backend == AZURE_BACKEND
 }
@@ -845,25 +925,31 @@ fn openbao_env(bao: &AzureOpenBao) -> Vec<EnvVar> {
     env
 }
 
-/// Full path of the projected token file inside the provider container.
+/// Full path of the projected token file inside an Azure provider container.
 #[must_use]
 pub fn azure_federated_token_file() -> String {
-    format!("{AZURE_TOKEN_MOUNT_PATH}/{AZURE_TOKEN_VOLUME}")
+    AZURE_TOKEN.file()
 }
 
-/// The projected ServiceAccount token an Azure provider exchanges with Entra
-/// ID for an ARM token (ADR-0159 Decision 1): audience
-/// [`AZURE_TOKEN_AUDIENCE`], one hour, refreshed by the kubelet. It is the
-/// provider's only cloud credential; the provider never writes it anywhere.
-pub(crate) fn azure_token_volume() -> Volume {
+/// Full path of the projected token file inside an EC2 provider container:
+/// the file `banlieue provider ec2` reads by default.
+#[must_use]
+pub fn ec2_web_identity_token_file() -> String {
+    EC2_TOKEN.file()
+}
+
+/// The projected ServiceAccount token `token` describes: its audience and
+/// lifetime, refreshed by the kubelet. It is the provider's only cloud
+/// credential; the provider never writes it anywhere.
+pub(crate) fn cloud_token_volume(token: &CloudToken) -> Volume {
     Volume {
-        name: AZURE_TOKEN_VOLUME.to_string(),
+        name: token.volume.to_string(),
         projected: Some(ProjectedVolumeSource {
             sources: Some(vec![VolumeProjection {
                 service_account_token: Some(ServiceAccountTokenProjection {
-                    audience: Some(AZURE_TOKEN_AUDIENCE.to_string()),
-                    expiration_seconds: Some(AZURE_TOKEN_EXPIRATION_SECS),
-                    path: AZURE_TOKEN_VOLUME.to_string(),
+                    audience: Some(token.audience.to_string()),
+                    expiration_seconds: Some(token.expiration_seconds),
+                    path: token.volume.to_string(),
                     ..Default::default()
                 }),
                 ..Default::default()
@@ -874,24 +960,33 @@ pub(crate) fn azure_token_volume() -> Volume {
     }
 }
 
-/// Read-only mount of [`azure_token_volume`].
-pub(crate) fn azure_token_mount() -> VolumeMount {
+/// Read-only mount of [`cloud_token_volume`].
+pub(crate) fn cloud_token_mount(token: &CloudToken) -> VolumeMount {
     VolumeMount {
-        name: AZURE_TOKEN_VOLUME.to_string(),
-        mount_path: AZURE_TOKEN_MOUNT_PATH.to_string(),
+        name: token.volume.to_string(),
+        mount_path: token.mount_path.to_string(),
         read_only: Some(true),
         ..Default::default()
     }
 }
 
+/// The variable naming the token file to the provider.
+pub(crate) fn cloud_token_env(token: &CloudToken) -> EnvVar {
+    EnvVar {
+        name: token.env.to_string(),
+        value: Some(token.file()),
+        ..Default::default()
+    }
+}
+
 /// Container environment: the downward API identity, plus the token file for
-/// an Azure provider. Tenant, client, subscription and authority host are not
-/// passed here: the provider reads them from its own `Provider`'s
-/// `spec.connection.azure`, the one source of truth.
+/// a cloud provider. Tenant, client, subscription, region, role and authority
+/// host are not passed here: the provider reads them from its own
+/// `Provider`'s `spec.connection`, the one source of truth.
 fn container_env(inputs: &WorkloadInputs<'_>) -> Vec<EnvVar> {
     let mut env = downward_api_env(DOWNWARD_API_ENV);
-    if uses_azure_workload_identity(inputs) {
-        env.push(azure_token_env());
+    if let Some(token) = cloud_token(&inputs.class.backend) {
+        env.push(cloud_token_env(token));
     }
     if let Some(bao) = openbao(inputs) {
         env.extend(openbao_env(bao));
@@ -899,32 +994,20 @@ fn container_env(inputs: &WorkloadInputs<'_>) -> Vec<EnvVar> {
     env
 }
 
-/// `AZURE_FEDERATED_TOKEN_FILE`, pointing at the projected token.
-pub(crate) fn azure_token_env() -> EnvVar {
-    EnvVar {
-        name: AZURE_FEDERATED_TOKEN_FILE_ENV.to_string(),
-        value: Some(azure_federated_token_file()),
-        ..Default::default()
-    }
-}
-
-/// The pod's volumes: only the Azure provider mounts anything, the cloud
-/// token first and unchanged, then the OpenBao login token when declared.
+/// The pod's volumes: only a cloud provider mounts anything, the cloud token
+/// first and unchanged, then (Azure only) the OpenBao login token when
+/// declared.
 fn pod_volumes(inputs: &WorkloadInputs<'_>) -> Option<Vec<Volume>> {
-    if !uses_azure_workload_identity(inputs) {
-        return None;
-    }
-    let mut volumes = vec![azure_token_volume()];
+    let token = cloud_token(&inputs.class.backend)?;
+    let mut volumes = vec![cloud_token_volume(token)];
     volumes.extend(openbao(inputs).map(openbao_token_volume));
     Some(volumes)
 }
 
 /// The container's mounts, matching [`pod_volumes`].
 fn container_mounts(inputs: &WorkloadInputs<'_>) -> Option<Vec<VolumeMount>> {
-    if !uses_azure_workload_identity(inputs) {
-        return None;
-    }
-    let mut mounts = vec![azure_token_mount()];
+    let token = cloud_token(&inputs.class.backend)?;
+    let mut mounts = vec![cloud_token_mount(token)];
     mounts.extend(openbao(inputs).map(|_| openbao_token_mount()));
     Some(mounts)
 }
@@ -953,8 +1036,8 @@ fn build_pod_spec(inputs: &WorkloadInputs<'_>) -> PodSpec {
         security_context: Some(pod_security_context()),
         termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
         containers: vec![build_container(inputs)],
-        // Only the Azure provider mounts anything: every other backend's pod
-        // spec is unchanged, with no volumes at all.
+        // Only a cloud provider (Azure, EC2) mounts anything: every other
+        // backend's pod spec is unchanged, with no volumes at all.
         volumes: pod_volumes(inputs),
         ..Default::default()
     }

@@ -99,6 +99,7 @@ fn row(name: &str, ready: bool, reason: &str) -> ImagePerProviderStatus {
         source_digest: None,
         min_os_disk_size_gib: None,
         superseded_refs: Vec::new(),
+        ec2: None,
     }
 }
 

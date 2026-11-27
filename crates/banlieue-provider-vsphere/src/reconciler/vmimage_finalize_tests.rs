@@ -100,6 +100,7 @@ mod tests {
                     source_digest: None,
                     min_os_disk_size_gib: None,
                     superseded_refs: Vec::new(),
+                    ec2: None,
                 }],
                 ..Default::default()
             }),
@@ -339,6 +340,7 @@ mod tests {
             source_digest: None,
             min_os_disk_size_gib: None,
             superseded_refs: Vec::new(),
+            ec2: None,
         }
     }
 

@@ -117,6 +117,11 @@ const PROVIDER_PROXMOX_CLUSTER_ROLE: &str =
 /// credential is a projected ServiceAccount token (ADR-0159 Decision 1).
 const PROVIDER_AZURE_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-azure/rbac/clusterrole.yaml");
+/// The EC2 provider (ADR-0174). Grants no Secret access: its only cloud
+/// credential is a projected ServiceAccount token exchanged at STS
+/// (ADR-0174 Decision 6).
+const PROVIDER_EC2_CLUSTER_ROLE: &str =
+    include_str!("../../../deploy/provider-ec2/rbac/clusterrole.yaml");
 const PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE: &str =
     include_str!("../../../deploy/provider-cloud-hypervisor/rbac/clusterrole.yaml");
 /// The opt-in shared-serving ClusterRole of the Cloud Hypervisor provider
@@ -370,6 +375,7 @@ impl InstallRole {
                 "libvirt" => "banlieue-provider-libvirt",
                 "proxmox" => "banlieue-provider-proxmox",
                 "azure" => "banlieue-provider-azure",
+                "ec2" => "banlieue-provider-ec2",
                 "cloud-hypervisor" => "banlieue-provider-cloud-hypervisor",
                 _ => "banlieue-provider",
             },
@@ -464,6 +470,7 @@ impl InstallRole {
                 "libvirt" => PROVIDER_LIBVIRT_CLUSTER_ROLE,
                 "proxmox" => PROVIDER_PROXMOX_CLUSTER_ROLE,
                 "azure" => PROVIDER_AZURE_CLUSTER_ROLE,
+                "ec2" => PROVIDER_EC2_CLUSTER_ROLE,
                 "cloud-hypervisor" => PROVIDER_CLOUD_HYPERVISOR_CLUSTER_ROLE,
                 other => anyhow::bail!("no embedded ClusterRole for backend {other:?}"),
             },
@@ -1238,11 +1245,12 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
                     security_context: Some(pod_security_context()),
                     termination_grace_period_seconds: Some(TERMINATION_GRACE_PERIOD_SECS),
                     containers: vec![build_container(role, opts)],
-                    // The projected Entra ID token, for a static Azure
-                    // provider only (ADR-0159 Decision 1), as the operator
-                    // mounts it for one it spawns.
-                    volumes: uses_azure_workload_identity(role)
-                        .then(|| vec![crate::workload::azure_token_volume()]),
+                    // The projected cloud token, for a static Azure or EC2
+                    // provider only (ADR-0159 Decision 1, ADR-0174
+                    // Decision 6), as the operator mounts it for one it
+                    // spawns.
+                    volumes: role_cloud_token(role)
+                        .map(|t| vec![crate::workload::cloud_token_volume(t)]),
                     ..Default::default()
                 }),
             },
@@ -1252,21 +1260,25 @@ pub fn build_deployment(role: &InstallRole, opts: &InstallOptions) -> Deployment
     }
 }
 
-/// Whether a role is a statically installed Azure provider, which
-/// authenticates with a projected ServiceAccount token (ADR-0159 Decision 1).
-fn uses_azure_workload_identity(role: &InstallRole) -> bool {
-    matches!(role, InstallRole::Provider(backend) if backend == crate::workload::AZURE_BACKEND)
+/// The projected token a statically installed cloud provider authenticates
+/// with (Azure, ADR-0159 Decision 1; EC2, ADR-0174 Decision 6), or `None` for
+/// every other role.
+fn role_cloud_token(role: &InstallRole) -> Option<&'static crate::workload::CloudToken> {
+    let InstallRole::Provider(backend) = role else {
+        return None;
+    };
+    crate::workload::cloud_token(backend)
 }
 
 /// A role's container environment: the downward API identity, plus the
-/// federated token file for a static Azure provider.
+/// token file for a static cloud provider.
 fn role_env(role: &InstallRole) -> Vec<EnvVar> {
     let mut env = downward_api_env(&[
         ("POD_NAME", "metadata.name"),
         ("POD_NAMESPACE", "metadata.namespace"),
     ]);
-    if uses_azure_workload_identity(role) {
-        env.push(crate::workload::azure_token_env());
+    if let Some(token) = role_cloud_token(role) {
+        env.push(crate::workload::cloud_token_env(token));
     }
     env
 }
@@ -1301,8 +1313,7 @@ fn build_container(role: &InstallRole, opts: &InstallOptions) -> Container {
         image_pull_policy: Some("IfNotPresent".to_string()),
         args: Some(args),
         env: Some(role_env(role)),
-        volume_mounts: uses_azure_workload_identity(role)
-            .then(|| vec![crate::workload::azure_token_mount()]),
+        volume_mounts: role_cloud_token(role).map(|t| vec![crate::workload::cloud_token_mount(t)]),
         ports: Some(container_ports()),
         liveness_probe: Some(http_probe(
             LIVENESS_PATH,

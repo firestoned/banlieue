@@ -16,7 +16,11 @@
 //!   zone ID, so two accounts compare, ADR-0158 Decision 3), `region`,
 //!   `endpoint`, `vmClasses` (the comma-separated `VMClass`es whose mapped
 //!   type is offered in that zone) and `tpmVmClasses` (those whose type
-//!   supports NitroTPM 2.0 and UEFI boot, ADR-0167 Decision 5);
+//!   supports NitroTPM 2.0 and UEFI boot, ADR-0167 Decision 5), and
+//!   `amd64VmClasses` and `arm64VmClasses` (those whose type runs `x86_64` or
+//!   `arm64`, so the scheduler can match a `VMImage`'s architecture; both
+//!   published, possibly empty, when every offered type was described, and
+//!   neither otherwise);
 //! - the storage classes whose target in that zone names a `volumeType`, and
 //!   the network classes whose target names a `subnetId` and
 //!   `securityGroupIds`.
@@ -88,6 +92,16 @@ pub const RAW_KEY_VM_CLASSES: &str = "vmClasses";
 /// Raw key: comma-separated `VMClass`es offered in this zone whose type
 /// supports NitroTPM 2.0 and UEFI boot (ADR-0167 Decision 5).
 pub const RAW_KEY_TPM_VM_CLASSES: &str = "tpmVmClasses";
+/// Raw key: comma-separated `VMClass`es offered in this zone whose type
+/// runs `x86_64` (a `VMImage` of architecture `amd64`).
+pub const RAW_KEY_AMD64_VM_CLASSES: &str = "amd64VmClasses";
+/// Raw key: comma-separated `VMClass`es offered in this zone whose type
+/// runs `arm64` (a `VMImage` of architecture `arm64`).
+pub const RAW_KEY_ARM64_VM_CLASSES: &str = "arm64VmClasses";
+/// EC2's name for the architecture banlieue calls `amd64`.
+const EC2_ARCH_X86_64: &str = "x86_64";
+/// EC2's name for the architecture banlieue calls `arm64`.
+const EC2_ARCH_ARM64: &str = "arm64";
 /// How often zones and offerings are read again (ADR-0160).
 pub const PROVIDER_REQUEUE: Duration = Duration::from_secs(600);
 /// How long a throttled read waits: the client already retried it with
@@ -157,6 +171,29 @@ fn supports_nitro_tpm(info: &InstanceTypeInfo) -> bool {
             .nitro_tpm_versions
             .iter()
             .any(|v| v == NITRO_TPM_VERSION)
+}
+
+/// The `(amd64, arm64)` comma-separated class lists for the `usable`
+/// `(class, instance type)` pairs of one zone, or `None` when a type was not
+/// described (its architecture is unknown, so neither list is published and
+/// the scheduler does not judge architecture there).
+#[must_use]
+pub fn architecture_lists(
+    region: &RegionView,
+    usable: &[(&str, &str)],
+) -> Option<(String, String)> {
+    let mut amd64: Vec<&str> = Vec::new();
+    let mut arm64: Vec<&str> = Vec::new();
+    for (class, instance_type) in usable {
+        let info = region.info(instance_type)?;
+        if info.architectures.iter().any(|a| a == EC2_ARCH_X86_64) {
+            amd64.push(class);
+        }
+        if info.architectures.iter().any(|a| a == EC2_ARCH_ARM64) {
+            arm64.push(class);
+        }
+    }
+    Some((amd64.join(LIST_SEPARATOR), arm64.join(LIST_SEPARATOR)))
 }
 
 fn target_has(target: Option<&BTreeMap<String, String>>, key: &str) -> bool {
@@ -245,7 +282,7 @@ pub fn compute_status(provider: &Provider, region: &RegionView, generation: i64)
         let mut labels = provider.metadata.labels.clone().unwrap_or_default();
         labels.insert(LABEL_NAME.to_string(), name.clone());
         labels.insert(KEY_ZONE.to_string(), zone.name.clone());
-        let raw = BTreeMap::from([
+        let mut raw = BTreeMap::from([
             (KEY_ZONE.to_string(), zone.name.clone()),
             (RAW_KEY_ZONE_ID.to_string(), zone.id.clone()),
             (RAW_KEY_REGION.to_string(), ec2.region.clone()),
@@ -262,6 +299,10 @@ pub fn compute_status(provider: &Provider, region: &RegionView, generation: i64)
                 tpm_classes.join(LIST_SEPARATOR),
             ),
         ]);
+        if let Some((amd64, arm64)) = architecture_lists(region, &usable) {
+            raw.insert(RAW_KEY_AMD64_VM_CLASSES.to_string(), amd64);
+            raw.insert(RAW_KEY_ARM64_VM_CLASSES.to_string(), arm64);
+        }
         domains.push(FailureDomain {
             name,
             labels,

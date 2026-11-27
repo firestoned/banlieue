@@ -817,6 +817,165 @@ mod tests {
     }
 
     // ======================================================================
+    // The concrete EC2Machine impl (ADR-0174, ADR-0167 Decision 1)
+    // ======================================================================
+
+    const EC2_EK_RSA: &str = "-----BEGIN PUBLIC KEY-----\nRSA\n-----END PUBLIC KEY-----\n";
+    const EC2_EK_ECC: &str = "-----BEGIN PUBLIC KEY-----\nECC\n-----END PUBLIC KEY-----\n";
+
+    fn ec2_machine() -> banlieue_api::infrastructure::EC2Machine {
+        use banlieue_api::infrastructure::{
+            EC2Machine, EC2MachineSpec, EC2MachineStatus, Ec2VolumeType,
+        };
+        EC2Machine {
+            metadata: Default::default(),
+            spec: EC2MachineSpec {
+                provider_id: Some("aws:///ca-central-1a/i-0123456789abcdef0".to_string()),
+                failure_domain: Some("aws1-ca-central-1a".to_string()),
+                provider_ref: banlieue_api::common::ProviderReference {
+                    name: "aws1".to_string(),
+                    namespace: None,
+                },
+                zone: "ca-central-1a".to_string(),
+                instance_type: "m7i.large".to_string(),
+                image_id: "ami-0123456789abcdef0".to_string(),
+                root_device_name: "/dev/xvda".to_string(),
+                root_volume_gi_b: 30,
+                volume_type: Ec2VolumeType::Gp3,
+                iops: None,
+                throughput: None,
+                kms_key_id: None,
+                subnet_id: "subnet-0123456789abcdef0".to_string(),
+                security_group_ids: vec!["sg-0123456789abcdef0".to_string()],
+                tpm_enabled: true,
+                user_data: None,
+                desired_power_state: PowerState::PoweredOn,
+            },
+            status: Some(EC2MachineStatus {
+                initialization: InitializationStatus {
+                    provisioned: Some(true),
+                },
+                failure_domain: Some("aws1-ca-central-1a".to_string()),
+                addresses: vec![MachineAddress {
+                    address_type: MachineAddressType::InternalIP,
+                    address: "10.0.1.4".to_string(),
+                }],
+                observed_power_state: Some(PowerState::PoweredOn),
+                tpm_endorsement_public_keys: vec![EC2_EK_RSA.to_string(), EC2_EK_ECC.to_string()],
+                conditions: vec![
+                    cond(
+                        condition_types::READY,
+                        condition_status::TRUE,
+                        "InstanceRunning",
+                    ),
+                    cond(
+                        condition_types::GUEST_READY,
+                        condition_status::TRUE,
+                        "GuestReported",
+                    ),
+                ],
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn ec2_impl_reads_provider_id_from_spec_and_the_rest_from_status() {
+        let m = ec2_machine();
+        assert!(m.provider_id().is_some_and(|p| p.starts_with("aws:///")));
+        assert_eq!(m.failure_domain(), Some("aws1-ca-central-1a"));
+        assert_eq!(m.initialization().provisioned, Some(true));
+        assert_eq!(m.observed_power_state(), Some(&PowerState::PoweredOn));
+        assert_eq!(m.provider_name(), Some("aws1"));
+        assert!(
+            m.tpm_endorsement_certificates().is_empty(),
+            "no EK certificate on EC2 (ADR-0167)"
+        );
+        assert_eq!(m.tpm_endorsement_public_keys().len(), 2);
+        assert_eq!(m.attestation_subject(), None);
+    }
+
+    #[test]
+    fn ec2_machine_mirrors_provisioned_addresses_guest_ready_and_ek_public_keys() {
+        let m = ec2_machine();
+        let status = mirror_status_from_infra(&baseline_status_scheduled(), &m, 1);
+        let infra = find_condition(&status.conditions, condition_types::INFRASTRUCTURE_READY)
+            .expect("InfrastructureReady must be published");
+        assert_eq!(infra.status, condition_status::TRUE);
+        let guest = find_condition(&status.conditions, condition_types::GUEST_READY)
+            .expect("GuestReady is mirrored");
+        assert_eq!(guest.status, condition_status::TRUE);
+        assert_eq!(guest.reason, "GuestReported");
+        assert_eq!(status.initialization.provisioned, Some(true));
+        assert_eq!(status.addresses[0].address, "10.0.1.4");
+        assert_eq!(
+            status.tpm_endorsement_public_keys,
+            vec![EC2_EK_RSA.to_string(), EC2_EK_ECC.to_string()]
+        );
+        assert!(status.tpm_endorsement_certificates.is_empty());
+    }
+
+    #[test]
+    fn withdrawn_ek_public_keys_are_cleared_on_the_parent() {
+        let mut current = baseline_status_scheduled();
+        current.tpm_endorsement_public_keys = vec![EC2_EK_RSA.to_string()];
+        let mut m = ec2_machine();
+        if let Some(s) = m.status.as_mut() {
+            s.tpm_endorsement_public_keys.clear();
+        }
+        let status = mirror_status_from_infra(&current, &m, 1);
+        assert!(status.tpm_endorsement_public_keys.is_empty());
+    }
+
+    #[test]
+    fn a_kind_without_ek_public_keys_mirrors_none() {
+        let mut current = baseline_status_scheduled();
+        current.tpm_endorsement_public_keys = vec![EC2_EK_RSA.to_string()];
+        let status = mirror_status_from_infra(&current, &azure_machine(), 1);
+        assert!(status.tpm_endorsement_public_keys.is_empty());
+    }
+
+    #[test]
+    fn ec2_impl_tolerates_an_absent_status() {
+        let mut m = ec2_machine();
+        m.status = None;
+        assert_eq!(m.initialization().provisioned, None);
+        assert!(m.addresses().is_empty());
+        assert!(m.conditions().is_empty());
+        assert!(m.observed_power_state().is_none());
+        assert!(m.tpm_endorsement_public_keys().is_empty());
+    }
+
+    /// A zone EC2 refused (no capacity, a type not offered) reaches the
+    /// re-placement path through the same accessor (ADR-0173).
+    #[test]
+    fn an_ec2_zone_refusal_is_an_allocation_failure() {
+        use banlieue_api::banlieue::ScheduledPlacement;
+        use banlieue_api::common::allocation;
+        let mut m = ec2_machine();
+        if let Some(s) = m.status.as_mut() {
+            s.initialization.provisioned = None;
+            s.conditions = vec![cond(
+                allocation::VM_CREATED,
+                condition_status::FALSE,
+                allocation::ZONE_UNAVAILABLE,
+            )];
+        }
+        let recorded = ScheduledPlacement {
+            provider_name: "aws1".into(),
+            provider_class: "ec2".into(),
+            failure_domain: "aws1-ca-central-1a".into(),
+            resolved_storage: Vec::new(),
+            resolved_networks: Vec::new(),
+            scheduled_at: None,
+        };
+        let failure = crate::reconciler::placement_failure::allocation_failure(&m, &recorded)
+            .expect("ZoneUnavailable is a refusal");
+        assert_eq!(failure.failure_domain, "aws1-ca-central-1a");
+        assert_eq!(failure.reason, allocation::ZONE_UNAVAILABLE);
+    }
+
+    // ======================================================================
     // The concrete FirecrackerMachine impl and attestationSubject (ADR-0143)
     // ======================================================================
 

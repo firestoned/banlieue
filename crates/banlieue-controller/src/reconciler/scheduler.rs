@@ -31,6 +31,18 @@
 //!    and every cloud class such as `azure` even when it declares none)
 //!    takes a VM only when its `VMClass` is mapped in the failure domain's
 //!    zone. Nothing is guessed from vCPU and memory.
+//!    3d. ec2 (roadmap 24 phase E): on an `ec2` Provider, from what the
+//!    provider read from `DescribeInstanceTypes` and published on the
+//!    failure domain, a new placement is refused when the image sets
+//!    `trustedBoot` (ADR-0167 Decision 5), the class's type is not offered
+//!    in the zone (`vmClasses`), it does not run the AMI's architecture
+//!    (`amd64VmClasses` / `arm64VmClasses`; the architecture `DescribeImages`
+//!    recorded on the image's row for the Provider, else the `VMImage`'s),
+//!    or the class sets `tpmEnabled` and the AMI was recorded without
+//!    `TpmSupport=v2.0` and `BootMode=uefi` or the type lacks NitroTPM
+//!    (`tpmVmClasses`). A list the provider did not publish is unknown and
+//!    filters nothing, except `tpmVmClasses`: a TPM is never assumed. On ec2
+//!    this replaces step 8's `vtpm` feature.
 //! 4. Storage classes — every disk's `storageClass` must appear in
 //!    `FailureDomain.attributes.availableStorageClasses`.
 //! 5. Network classes — every NIC's `networkClass` must appear in
@@ -87,10 +99,11 @@
 use std::collections::{BTreeMap, HashMap};
 
 use banlieue_api::banlieue::{
-    AffinityMode, AntiAffinityRule, DEFAULT_CPU_OVERCOMMIT_RATIO, DEFAULT_STORAGE_RESERVE_PERCENT,
-    FailureDomain, FailureDomainCapacity, Heartbeat, ImageSourceKind, LABEL_POOL,
-    LABEL_UNSCHEDULABLE, NetworkClassMapping, Provider, ProviderCapabilities, ProviderScheduling,
-    ResolvedResource, StorageClassMapping, VMClass, VMImage, VirtualMachine,
+    AffinityMode, AntiAffinityRule, Architecture, DEFAULT_CPU_OVERCOMMIT_RATIO,
+    DEFAULT_STORAGE_RESERVE_PERCENT, Ec2ImageAttributes, FailureDomain, FailureDomainCapacity,
+    Heartbeat, ImageSourceKind, LABEL_POOL, LABEL_UNSCHEDULABLE, NetworkClassMapping, Provider,
+    ProviderCapabilities, ProviderScheduling, ResolvedResource, StorageClassMapping, VMClass,
+    VMImage, VirtualMachine,
 };
 use banlieue_api::common::{Firmware, LabelSelector, LabelSelectorOperator};
 
@@ -98,7 +111,7 @@ use kube::ResourceExt;
 use tracing::warn;
 
 use super::infra::{
-    CLOUD_PROVIDER_CLASSES, FD_ZONE_KEY, effective_cpus, effective_memory_mi_b,
+    CLOUD_PROVIDER_CLASSES, FD_ZONE_KEY, PROVIDER_CLASS_EC2, effective_cpus, effective_memory_mi_b,
     merge_disk_size_override,
 };
 
@@ -110,6 +123,19 @@ pub const FEATURE_EFI_SECURE_BOOT: &str = "efiSecureBoot";
 /// `Provider.spec.capabilities.features` once the operator confirms KMS +
 /// vTPM actually work end-to-end in that vCenter — never auto-discovered.
 pub const FEATURE_VTPM: &str = "vtpm";
+
+/// Failure-domain raw key an `ec2` provider publishes: the comma-separated
+/// `VMClass`es whose mapped instance type is offered in the zone.
+pub const FD_RAW_EC2_VM_CLASSES: &str = "vmClasses";
+/// Raw key: those whose type supports NitroTPM 2.0 and UEFI boot
+/// (ADR-0167 Decision 5).
+pub const FD_RAW_EC2_TPM_VM_CLASSES: &str = "tpmVmClasses";
+/// Raw key: those whose type runs `x86_64` (an `amd64` image).
+pub const FD_RAW_EC2_AMD64_VM_CLASSES: &str = "amd64VmClasses";
+/// Raw key: those whose type runs `arm64` (an `arm64` image).
+pub const FD_RAW_EC2_ARM64_VM_CLASSES: &str = "arm64VmClasses";
+/// Separator of a list-valued raw attribute.
+const RAW_LIST_SEPARATOR: char = ',';
 
 /// Divisor turning `storageReservePercent` into a share of a store.
 const PERCENT: u64 = 100;
@@ -206,6 +232,50 @@ pub enum ScheduleError {
         "VMClass {0} has no instance size on any candidate provider; map it in the Provider's spec.capabilities.instanceSizes (ADR-0160)"
     )]
     InstanceSizeUnmapped(String),
+
+    /// Every candidate failure domain was rejected because it is an `ec2`
+    /// zone where the class's instance type is not offered (its
+    /// `vmClasses` omits the class). Carries the `VMClass` name.
+    #[error(
+        "VMClass {0}'s instance type is not offered in any candidate ec2 zone (the failure domains' vmClasses omit it)"
+    )]
+    InstanceTypeNotOffered(String),
+
+    /// Every candidate failure domain was rejected because the class sets
+    /// `tpmEnabled` and its instance type there lacks NitroTPM 2.0 with UEFI
+    /// boot (ADR-0167 Decision 5). Carries the `VMClass` name.
+    #[error(
+        "VMClass {0} sets tpmEnabled, but its instance type supports no NitroTPM 2.0 with UEFI boot on any candidate ec2 failure domain (ADR-0167 Decision 5)"
+    )]
+    NitroTpmUnsupported(String),
+
+    /// Every candidate failure domain was rejected because the class sets
+    /// `tpmEnabled` and the AMI was recorded (by `DescribeImages`) without
+    /// `TpmSupport=v2.0` and `BootMode=uefi` (ADR-0167 Decision 5). Carries
+    /// the `VMImage` name.
+    #[error(
+        "VMImage {0}'s AMI is not registered with TpmSupport=v2.0 and BootMode=uefi on any candidate ec2 Provider, and the class sets tpmEnabled (ADR-0167 Decision 5)"
+    )]
+    AmiTpmUnsupported(String),
+
+    /// Every candidate was an `ec2` failure domain and the image sets
+    /// `trustedBoot` (ADR-0167 Decision 5).
+    #[error(
+        "the image sets trustedBoot, which ec2 refuses: UEFI Secure Boot needs the AMI's own UEFI variable store, which banlieue does not write (ADR-0167 Decision 5)"
+    )]
+    TrustedBootUnsupported,
+
+    /// Every candidate failure domain was rejected because the class's
+    /// instance type there does not run the image's architecture.
+    #[error(
+        "VMClass {vm_class} maps to no instance type that runs {architecture} on any candidate ec2 failure domain"
+    )]
+    ArchitectureMismatch {
+        /// The `VMClass` name.
+        vm_class: String,
+        /// The image's architecture (`amd64`, `arm64`).
+        architecture: String,
+    },
 }
 
 /// Stable condition reasons. Mapped onto the `Scheduled` condition.
@@ -231,6 +301,18 @@ pub mod reasons {
     /// The `VMClass` has no instance size on any candidate Provider that
     /// maps classes to sizes (ADR-0160 Decision 1).
     pub const INSTANCE_SIZE_UNMAPPED: &str = "InstanceSizeUnmapped";
+    /// The class's ec2 instance type is offered in no candidate zone.
+    pub const INSTANCE_TYPE_NOT_OFFERED: &str = "InstanceTypeNotOffered";
+    /// `tpmEnabled` on an ec2 instance type without NitroTPM
+    /// (ADR-0167 Decision 5).
+    pub const NITRO_TPM_UNSUPPORTED: &str = "NitroTpmUnsupported";
+    /// `tpmEnabled` on an AMI recorded without NitroTPM support
+    /// (ADR-0167 Decision 5).
+    pub const AMI_TPM_UNSUPPORTED: &str = "AmiTpmUnsupported";
+    /// `trustedBoot` on ec2 (ADR-0167 Decision 5).
+    pub const TRUSTED_BOOT_UNSUPPORTED: &str = "TrustedBootUnsupported";
+    /// The class's ec2 instance type does not run the image's architecture.
+    pub const ARCHITECTURE_MISMATCH: &str = "ArchitectureMismatch";
 }
 
 impl ScheduleError {
@@ -247,6 +329,11 @@ impl ScheduleError {
             ScheduleError::ProviderNotAlive => reasons::PROVIDER_NOT_ALIVE,
             ScheduleError::ProviderUnschedulable(_) => reasons::PROVIDER_UNSCHEDULABLE,
             ScheduleError::InstanceSizeUnmapped(_) => reasons::INSTANCE_SIZE_UNMAPPED,
+            ScheduleError::InstanceTypeNotOffered(_) => reasons::INSTANCE_TYPE_NOT_OFFERED,
+            ScheduleError::NitroTpmUnsupported(_) => reasons::NITRO_TPM_UNSUPPORTED,
+            ScheduleError::AmiTpmUnsupported(_) => reasons::AMI_TPM_UNSUPPORTED,
+            ScheduleError::TrustedBootUnsupported => reasons::TRUSTED_BOOT_UNSUPPORTED,
+            ScheduleError::ArchitectureMismatch { .. } => reasons::ARCHITECTURE_MISMATCH,
         }
     }
 }
@@ -444,6 +531,7 @@ fn place(
     let mut firmware_unsupported_seen = false;
     let mut tpm_unsupported_seen = false;
     let mut size_rejects: usize = 0;
+    let mut ec2_rejects = Ec2RejectCounts::default();
     let class_name = class.name_any();
     let mut survivors: Vec<(&Provider, &FailureDomain)> = Vec::new();
 
@@ -506,6 +594,24 @@ fn place(
                     fd.name,
                     class_name,
                     failure_domain_zone(fd).unwrap_or("unset"),
+                ));
+                continue;
+            }
+
+            // Step 3d: ec2 (roadmap 24 phase E). New placements only, as 3c.
+            if !here
+                && is_ec2(provider)
+                && let Some(reject) = ec2_reject(class, image, provider, fd)
+            {
+                ec2_rejects.count(reject);
+                if reject == Ec2Reject::Architecture {
+                    ec2_rejects.note_architecture(ec2_image_architecture(image, provider));
+                }
+                reject_reasons.push(format!(
+                    "{}/{}: {}",
+                    provider.name_any(),
+                    fd.name,
+                    reject.describe(&class_name, image, provider),
                 ));
                 continue;
             }
@@ -574,8 +680,12 @@ fn place(
                 continue;
             }
 
-            // Step 8: vTPM (ADR-0039)
-            if class.spec.tpm_enabled && !fd.attributes.features.iter().any(|f| f == FEATURE_VTPM) {
+            // Step 8: vTPM (ADR-0039). On ec2, step 3d judged NitroTPM from
+            // the instance type instead.
+            if class.spec.tpm_enabled
+                && !is_ec2(provider)
+                && !fd.attributes.features.iter().any(|f| f == FEATURE_VTPM)
+            {
                 tpm_unsupported_seen = true;
                 reject_reasons.push(format!(
                     "{}/{}: tpmEnabled requested but '{}' feature absent",
@@ -717,6 +827,9 @@ fn place(
         // keeps the compound message, which names this one among them.
         if size_rejects > 0 && size_rejects == reject_reasons.len() {
             return Err(ScheduleError::InstanceSizeUnmapped(class_name));
+        }
+        if let Some(err) = ec2_rejects.sole_cause(reject_reasons.len(), &class_name, image) {
+            return Err(err);
         }
         return Err(ScheduleError::NoFailureDomainMatched(
             reject_reasons.render(),
@@ -1195,6 +1308,208 @@ fn image_ready_in_zone(image: &VMImage, provider: &Provider, zone: &str) -> bool
         return true;
     }
     row.zones.iter().any(|z| z.name == zone && z.ready)
+}
+
+/// Whether `provider` is of the `ec2` class (ADR-0174).
+fn is_ec2(provider: &Provider) -> bool {
+    provider.spec.provider_class_ref.name == PROVIDER_CLASS_EC2
+}
+
+/// Why step 3d refused an `ec2` failure domain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ec2Reject {
+    /// The image sets `trustedBoot` (ADR-0167 Decision 5).
+    TrustedBoot,
+    /// The class's instance type is not offered in the zone.
+    NotOffered,
+    /// The class's instance type does not run the image's architecture.
+    Architecture,
+    /// The class sets `tpmEnabled` and the AMI lacks NitroTPM support.
+    AmiTpm,
+    /// The class sets `tpmEnabled` and its type lacks NitroTPM.
+    NitroTpm,
+}
+
+impl Ec2Reject {
+    /// The per-candidate reject reason.
+    fn describe(self, class_name: &str, image: &VMImage, provider: &Provider) -> String {
+        match self {
+            Self::TrustedBoot => "image sets trustedBoot, which ec2 refuses (ADR-0167)".to_string(),
+            Self::NotOffered => {
+                format!("VMClass '{class_name}' instance type not offered in this zone")
+            }
+            Self::Architecture => format!(
+                "VMClass '{class_name}' instance type does not run {}",
+                architecture_name(&ec2_image_architecture(image, provider))
+            ),
+            Self::AmiTpm => format!(
+                "tpmEnabled requested but image '{}' AMI is not registered with TpmSupport=v2.0 and BootMode=uefi",
+                image.name_any()
+            ),
+            Self::NitroTpm => format!(
+                "tpmEnabled requested but VMClass '{class_name}' instance type has no NitroTPM here"
+            ),
+        }
+    }
+}
+
+/// How many candidates step 3d refused, by reason.
+#[derive(Default)]
+struct Ec2RejectCounts {
+    trusted_boot: usize,
+    not_offered: usize,
+    architecture: usize,
+    ami_tpm: usize,
+    nitro_tpm: usize,
+    /// The architecture last refused, for the error.
+    refused_architecture: Option<Architecture>,
+}
+
+impl Ec2RejectCounts {
+    fn count(&mut self, reject: Ec2Reject) {
+        let slot = match reject {
+            Ec2Reject::TrustedBoot => &mut self.trusted_boot,
+            Ec2Reject::NotOffered => &mut self.not_offered,
+            Ec2Reject::Architecture => &mut self.architecture,
+            Ec2Reject::AmiTpm => &mut self.ami_tpm,
+            Ec2Reject::NitroTpm => &mut self.nitro_tpm,
+        };
+        *slot += 1;
+    }
+
+    /// The typed error when one ec2 reason refused every one of `total`
+    /// rejected candidates; `None` for a mix, which keeps the compound
+    /// message.
+    fn sole_cause(&self, total: usize, class_name: &str, image: &VMImage) -> Option<ScheduleError> {
+        if total == 0 {
+            return None;
+        }
+        if self.trusted_boot == total {
+            return Some(ScheduleError::TrustedBootUnsupported);
+        }
+        if self.not_offered == total {
+            return Some(ScheduleError::InstanceTypeNotOffered(
+                class_name.to_string(),
+            ));
+        }
+        if self.architecture == total {
+            let architecture = self
+                .refused_architecture
+                .clone()
+                .unwrap_or_else(|| image.spec.architecture.clone());
+            return Some(ScheduleError::ArchitectureMismatch {
+                vm_class: class_name.to_string(),
+                architecture: architecture_name(&architecture).to_string(),
+            });
+        }
+        if self.ami_tpm == total {
+            return Some(ScheduleError::AmiTpmUnsupported(image.name_any()));
+        }
+        if self.nitro_tpm == total {
+            return Some(ScheduleError::NitroTpmUnsupported(class_name.to_string()));
+        }
+        None
+    }
+
+    /// Remembers which architecture an [`Ec2Reject::Architecture`] refused.
+    fn note_architecture(&mut self, architecture: Architecture) {
+        self.refused_architecture = Some(architecture);
+    }
+}
+
+/// What `DescribeImages` recorded of the image's AMI for `provider`: the
+/// `ec2` attributes on the image's row for it, if any.
+pub(crate) fn ec2_image_attributes<'a>(
+    image: &'a VMImage,
+    provider: &Provider,
+) -> Option<&'a Ec2ImageAttributes> {
+    let name = provider.name_any();
+    let namespace = provider.namespace().unwrap_or_default();
+    image
+        .status
+        .as_ref()?
+        .per_provider
+        .iter()
+        .find(|r| r.provider_name == name && r.provider_namespace == namespace)?
+        .ec2
+        .as_ref()
+}
+
+/// The architecture an ec2 placement must run: the AMI's, as recorded for
+/// `provider`, else the `VMImage`'s declared one.
+fn ec2_image_architecture(image: &VMImage, provider: &Provider) -> Architecture {
+    ec2_image_attributes(image, provider).map_or_else(
+        || image.spec.architecture.clone(),
+        |a| a.architecture.clone(),
+    )
+}
+
+/// The CRD spelling of an image architecture.
+fn architecture_name(architecture: &Architecture) -> &'static str {
+    match architecture {
+        Architecture::Amd64 => "amd64",
+        Architecture::Arm64 => "arm64",
+    }
+}
+
+/// The raw key listing the classes whose ec2 type runs `architecture`.
+fn architecture_key(architecture: &Architecture) -> &'static str {
+    match architecture {
+        Architecture::Amd64 => FD_RAW_EC2_AMD64_VM_CLASSES,
+        Architecture::Arm64 => FD_RAW_EC2_ARM64_VM_CLASSES,
+    }
+}
+
+/// Whether `class_name` is in `fd`'s comma-separated raw list `key`:
+/// `None` when the provider did not publish the key (unknown).
+fn raw_list_contains(fd: &FailureDomain, key: &str, class_name: &str) -> Option<bool> {
+    fd.attributes.raw.get(key).map(|list| {
+        list.split(RAW_LIST_SEPARATOR)
+            .map(str::trim)
+            .any(|c| c == class_name)
+    })
+}
+
+/// Step 3d for one `ec2` failure domain (roadmap 24 phase E): the first
+/// reason it cannot take a new VM of `class` and `image`, or `None`.
+///
+/// Every list but `tpmVmClasses` filters only when published: a provider
+/// that did not say is not taken to have said no. A TPM is never assumed,
+/// so an unpublished `tpmVmClasses` refuses a `tpmEnabled` class.
+///
+/// The AMI's architecture and TPM support come from the `ec2` attributes the
+/// provider recorded with `DescribeImages` on the image's row for this
+/// Provider. A row without them (an AMI not read yet, or published before
+/// the provider recorded them) falls back to the `VMImage`'s declared
+/// architecture and does not filter on TPM support.
+pub(crate) fn ec2_reject(
+    class: &VMClass,
+    image: &VMImage,
+    provider: &Provider,
+    fd: &FailureDomain,
+) -> Option<Ec2Reject> {
+    let class_name = class.name_any();
+    if image.spec.trusted_boot.is_some() {
+        return Some(Ec2Reject::TrustedBoot);
+    }
+    if raw_list_contains(fd, FD_RAW_EC2_VM_CLASSES, &class_name) == Some(false) {
+        return Some(Ec2Reject::NotOffered);
+    }
+    let arch_key = architecture_key(&ec2_image_architecture(image, provider));
+    if raw_list_contains(fd, arch_key, &class_name) == Some(false) {
+        return Some(Ec2Reject::Architecture);
+    }
+    if class.spec.tpm_enabled
+        && ec2_image_attributes(image, provider).is_some_and(|a| !a.supports_nitro_tpm())
+    {
+        return Some(Ec2Reject::AmiTpm);
+    }
+    if class.spec.tpm_enabled
+        && raw_list_contains(fd, FD_RAW_EC2_TPM_VM_CLASSES, &class_name) != Some(true)
+    {
+        return Some(Ec2Reject::NitroTpm);
+    }
+    None
 }
 
 /// The availability zone a failure domain stands for: its raw `zone`

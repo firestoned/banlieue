@@ -201,8 +201,14 @@ pub fn provider_namespace(namespace: Option<&str>, current: &str) -> Result<Stri
 /// offers a `Provider` in the provider namespace only for these (a machine
 /// nothing will reconcile must not be scheduled). A backend joins it in the
 /// same change that makes its binary accept the flag.
-pub const SHARED_PROVIDER_BACKENDS: &[&str] =
-    &["vsphere", "libvirt", "proxmox", "cloud-hypervisor", "azure"];
+pub const SHARED_PROVIDER_BACKENDS: &[&str] = &[
+    "vsphere",
+    "libvirt",
+    "proxmox",
+    "cloud-hypervisor",
+    "azure",
+    "ec2",
+];
 
 /// Whether `backend` can serve tenant namespaces from a shared provider.
 #[must_use]

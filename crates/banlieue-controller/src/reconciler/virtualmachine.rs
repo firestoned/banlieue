@@ -39,7 +39,8 @@ use banlieue_api::common::{
     condition_types,
 };
 use banlieue_api::infrastructure::{
-    AzureVirtualMachine, CloudHypervisorMachine, LibvirtMachine, ProxmoxMachine, VSphereMachine,
+    AzureVirtualMachine, CloudHypervisorMachine, EC2Machine, LibvirtMachine, ProxmoxMachine,
+    VSphereMachine,
 };
 use banlieue_provider_sdk::{
     finalizer::{ensure_finalizer, remove_finalizer},
@@ -67,8 +68,8 @@ use super::address_conflict::{
 };
 use super::infra::{
     InfraBuildError, InfraKind, build_azure_virtual_machine, build_cloud_hypervisor_machine,
-    build_libvirt_machine, build_proxmox_machine, build_vsphere_machine, install_mode,
-    machine_name,
+    build_ec2_machine, build_libvirt_machine, build_proxmox_machine, build_vsphere_machine,
+    install_mode, machine_name,
 };
 use super::migration::{
     MESSAGE_PLACEMENT_INVALID, MigrationAction, PlacementDriftReason, REASON_PLACEMENT_INVALID,
@@ -559,6 +560,9 @@ pub async fn reconcile(vm: Arc<VirtualMachine>, ctx: Arc<Context>) -> Result<Act
                 "AzureVirtualMachine"
             )
         }
+        InfraKind::Ec2 => {
+            build_and_apply!(build_ec2_machine, ec2, ec2_machine, "EC2Machine")
+        }
     };
     let applied = match applied {
         Ok(m) => m,
@@ -729,6 +733,7 @@ async fn existing_machine_provider(apis: &InfraApis, name: &str) -> Result<Optio
         InfraKind::VSphere,
         InfraKind::Proxmox,
         InfraKind::Azure,
+        InfraKind::Ec2,
     ] {
         if let Some(m) = get_infra(apis, kind, name).await?
             && let Some(p) = m.provider_name()
@@ -773,11 +778,12 @@ const INFRA_KINDS: [InfraKind; INFRA_KIND_COUNT] = [
     InfraKind::CloudHypervisor,
     InfraKind::Proxmox,
     InfraKind::Azure,
+    InfraKind::Ec2,
 ];
 
 /// How many infra kinds there are: the length of [`INFRA_KINDS`] and of the
 /// state array [`plan_finalize`] decides from.
-const INFRA_KIND_COUNT: usize = 5;
+const INFRA_KIND_COUNT: usize = 6;
 
 /// Evaluate `$body` with `$api` bound to the typed [`Api`] in `$apis` for the
 /// [`InfraKind`] `$kind`. A macro because each kind's `Api<K>` is a different
@@ -803,6 +809,10 @@ macro_rules! with_infra_api {
             }
             InfraKind::Azure => {
                 let $api = &$apis.azure;
+                $body
+            }
+            InfraKind::Ec2 => {
+                let $api = &$apis.ec2;
                 $body
             }
         }
@@ -884,6 +894,7 @@ struct InfraApis {
     cloud_hypervisor: Api<CloudHypervisorMachine>,
     proxmox: Api<ProxmoxMachine>,
     azure: Api<AzureVirtualMachine>,
+    ec2: Api<EC2Machine>,
 }
 
 impl InfraApis {
@@ -894,6 +905,7 @@ impl InfraApis {
             cloud_hypervisor: Api::namespaced(client.clone(), namespace),
             proxmox: Api::namespaced(client.clone(), namespace),
             azure: Api::namespaced(client.clone(), namespace),
+            ec2: Api::namespaced(client.clone(), namespace),
         }
     }
 }
@@ -1041,6 +1053,9 @@ async fn finalize_vm(
             }
             InfraKind::Azure => {
                 info!(azure_virtual_machine = %owned_name, "requesting AzureVirtualMachine deletion; waiting for cascade");
+            }
+            InfraKind::Ec2 => {
+                info!(ec2_machine = %owned_name, "requesting EC2Machine deletion; waiting for cascade");
             }
         }
         let result = delete_existing_infra(apis, *kind, &owned_name).await;

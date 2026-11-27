@@ -176,6 +176,7 @@ fn status_row(
         source_digest: None,
         min_os_disk_size_gib: None,
         superseded_refs: Vec::new(),
+        ec2: None,
     }
 }
 

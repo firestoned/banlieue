@@ -14,6 +14,13 @@
 # version, an AMI) or a published `Url` build (ADR-0162 Decisions 4 and 9).
 # ec2 refuses deferred installs for the same reason (ADR-0167 Decision 5).
 #
+# The second rule refuses `trustedBoot` (ADR-0051) on an image with an `ec2`
+# source (ADR-0167 Decision 5): UEFI Secure Boot on EC2 needs the AMI's own
+# UEFI variable store, which no banlieue publisher writes. Which Provider a
+# VirtualMachine lands on is not known at admission, but the image's sources
+# are, so the image is refused here; the scheduler refuses the placement
+# again (TrustedBootUnsupported) for an image admitted before this rule.
+#
 # The cloud classes are listed by name, as provider-connection.yaml does.
 # Add a class here in the same change that ships it.
 #
@@ -45,6 +52,14 @@ spec:
       message: >-
         spec.template.installMode: deferred cannot be combined with a cloud
         source (azure, ec2): a cloud VM has no install-media path (ADR-0162).
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.trustedBoot)
+          || !object.spec.sources.exists(s, s.providerClass == 'ec2')
+      message: >-
+        spec.trustedBoot cannot be combined with an ec2 source: UEFI Secure
+        Boot on EC2 needs the AMI's own UEFI variable store, which banlieue
+        does not write (ADR-0167 Decision 5).
       reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1

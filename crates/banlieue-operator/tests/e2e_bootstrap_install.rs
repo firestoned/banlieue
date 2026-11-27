@@ -35,7 +35,7 @@ fn namespace() -> String {
 /// been seeded by `bootstrap operator`.
 fn backends() -> Vec<String> {
     std::env::var("BANLIEUE_E2E_BACKENDS")
-        .unwrap_or_else(|_| "vsphere,libvirt".to_string())
+        .unwrap_or_else(|_| "vsphere,libvirt,azure,ec2".to_string())
         .split(',')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())

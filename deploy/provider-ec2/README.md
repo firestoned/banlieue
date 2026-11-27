@@ -11,7 +11,7 @@ SPDX-License-Identifier: Apache-2.0
 | `source-binding.json` | Denies every action unless the request comes from the site's egress addresses or the site's VPC endpoint (ADR-0174 Decision 6). Attached to **both** roles by default. |
 | `trust-policy.json` | The trust policy template for each role: one ServiceAccount of one cluster, by web identity. |
 | `revoke-sessions.json` | The incident step: ends every session of a role issued before a given moment (ADR-0174 Decision 6). Attached only during an incident. |
-| `rbac/clusterrole.yaml` | The provider's Kubernetes ClusterRole: read `Provider`s and own their status, realise `EC2Machine`s (no create or delete), list namespaces for a shared provider's selector, emit Events. No Secret, no Job, no `VMImage` until the publisher lands (roadmap 24 phase D). |
+| `rbac/clusterrole.yaml` | The provider's Kubernetes ClusterRole: read `Provider`s and own their status, realise `EC2Machine`s (no create or delete), list namespaces for a shared provider's selector, emit Events, read `VMImage`s and write their status rows (a `Template` source, a hand-published AMI ID, is read with `DescribeImages` and becomes a row for each `ec2` `Provider`: ready with the AMI's architecture, root device, boot mode and TPM support, or not ready as `AmiNotFound`, `AmiNotAvailable`, `AmiNotEbsBacked`, `AmiArchitectureUnsupported`; no finalizer, nothing is published). `ec2:DescribeImages` is already in `runtime-policy.json`. No Secret and no Job until the publisher lands (roadmap 24 phase D). |
 
 All five passed AWS Access Analyzer's `validate-policy` (identity policies,
 and the trust policy as `AWS::IAM::AssumeRolePolicyDocument`) with no
@@ -85,6 +85,15 @@ exchanges it with `AssumeRoleWithWebIdentity` for a session of
 Token and session live in memory only: never logged, never written to a
 file, an environment variable or a Kubernetes object. An `ec2` `Provider`
 sets no `credentialsRef`; admission refuses one.
+
+The operator renders that token for every `ec2` `Provider` it serves, and
+`banlieue bootstrap provider ec2` does the same for a static install: a
+projected volume mounted read-only at `/var/run/secrets/aws/tokens`, so the
+file is `/var/run/secrets/aws/tokens/aws-identity-token`, named to the
+provider by `AWS_WEB_IDENTITY_TOKEN_FILE` (the file `banlieue provider ec2`
+reads by default). The workload gets the ClusterRole in
+`rbac/clusterrole.yaml`, a Role for its own Lease, no Secret grant and no
+Job Role.
 
 The role's `MaxSessionDuration` can stay at its default (one hour): the
 provider asks for 900 seconds, and a session is never longer than asked.

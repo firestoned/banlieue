@@ -18,7 +18,8 @@ use async_trait::async_trait;
 use crate::error::Result;
 use crate::instance::{EkKeyType, RunInstancesRequest};
 use crate::types::{
-    AvailabilityZone, Instance, InstanceState, InstanceTypeInfo, InstanceTypeOffering, TpmEkPub,
+    AvailabilityZone, ImageInfo, Instance, InstanceState, InstanceTypeInfo, InstanceTypeOffering,
+    TpmEkPub,
 };
 
 /// Everything banlieue's EC2 provider asks of EC2 (ADR-0174 Decision 3).
@@ -108,4 +109,15 @@ pub trait Ec2Api: Send + Sync {
     /// # Errors
     /// Any EC2 error.
     async fn instance_types(&self, instance_types: &[String]) -> Result<Vec<InstanceTypeInfo>>;
+
+    /// `DescribeImages` for one AMI: its state, architecture, root device,
+    /// boot mode and TPM support (roadmap 24 phase E). `Ok(None)` when EC2
+    /// does not know it or the caller may not see it
+    /// (`InvalidAMIID.NotFound`, or an empty set).
+    ///
+    /// # Errors
+    /// [`crate::Error::Invalid`] for an ID that is not `ami-<hex>`, before
+    /// anything is sent; any EC2 error but not-found
+    /// (`InvalidAMIID.Malformed` is an invalid request).
+    async fn describe_image(&self, image_id: &str) -> Result<Option<ImageInfo>>;
 }

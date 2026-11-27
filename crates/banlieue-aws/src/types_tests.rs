@@ -392,4 +392,64 @@ mod tests {
             Err(Error::Decode(_))
         ));
     }
+
+    // ----- images (DescribeImages) -----------------------------------------
+
+    const IMAGES: &str = include_str!("../tests/fixtures/ec2/describe-images.xml");
+
+    #[test]
+    fn describe_images_yields_what_the_provider_records() {
+        let images = parse_describe_images(IMAGES).expect("parses");
+        assert_eq!(images.len(), 1);
+        let i = &images[0];
+        assert_eq!(i.image_id, "ami-0123456789abcdef0");
+        assert_eq!(i.state, "available");
+        assert_eq!(i.architecture, "x86_64");
+        assert_eq!(i.root_device_name, "/dev/xvda");
+        assert_eq!(i.root_device_type, "ebs");
+        assert_eq!(i.boot_mode.as_deref(), Some("uefi"));
+        assert_eq!(i.tpm_support.as_deref(), Some("v2.0"));
+        assert!(i.ena_support);
+        assert_eq!(
+            i.root_volume_size_gib,
+            Some(10),
+            "the root device's mapping, not /dev/sdb"
+        );
+        assert!(i.is_available() && i.is_ebs_backed() && i.is_uefi() && i.has_tpm_v2());
+    }
+
+    #[test]
+    fn the_owner_account_is_not_kept() {
+        let images = parse_describe_images(IMAGES).expect("parses");
+        assert!(!format!("{images:?}").contains("111122223333"));
+    }
+
+    #[test]
+    fn an_image_without_boot_mode_or_tpm_support_reads_none() {
+        let body = r#"<DescribeImagesResponse><imagesSet><item>
+            <imageId>ami-0123abcd</imageId><imageState>pending</imageState>
+            <architecture>arm64</architecture><rootDeviceType>instance-store</rootDeviceType>
+            <rootDeviceName>/dev/sda1</rootDeviceName>
+            </item></imagesSet></DescribeImagesResponse>"#;
+        let i = &parse_describe_images(body).expect("parses")[0];
+        assert_eq!(i.boot_mode, None);
+        assert_eq!(i.tpm_support, None);
+        assert!(!i.ena_support);
+        assert_eq!(i.root_volume_size_gib, None);
+        assert!(!i.is_available() && !i.is_ebs_backed() && !i.is_uefi() && !i.has_tpm_v2());
+    }
+
+    #[test]
+    fn an_empty_images_set_is_no_image() {
+        let body = "<DescribeImagesResponse><imagesSet/></DescribeImagesResponse>";
+        assert!(parse_describe_images(body).expect("parses").is_empty());
+    }
+
+    #[test]
+    fn malformed_describe_images_is_a_decode_error() {
+        assert!(matches!(
+            parse_describe_images("<DescribeImagesResponse><imagesSet>"),
+            Err(Error::Decode(_))
+        ));
+    }
 }

@@ -1130,6 +1130,125 @@ mod tests {
         );
     }
 
+    // ----------------------------------------------------------------------
+    // EC2: STS web identity (ADR-0174 Decision 6)
+    // ----------------------------------------------------------------------
+
+    fn ec2_class() -> ProviderClassSpec {
+        ProviderClassSpec {
+            backend: "ec2".to_string(),
+            ..class_spec()
+        }
+    }
+
+    /// An ec2 Provider names no credentialsRef (admission forbids it).
+    fn ec2_inputs(class: &ProviderClassSpec) -> WorkloadInputs<'_> {
+        WorkloadInputs {
+            class_name: "ec2",
+            provider_name: "ec2-cc",
+            credentials_secret: None,
+            ..inputs(class)
+        }
+    }
+
+    #[test]
+    fn ec2_pod_projects_an_sts_audience_token_for_ten_minutes() {
+        let class = ec2_class();
+        let deployment = build_deployment(&ec2_inputs(&class));
+        let volumes = pod_spec(&deployment).volumes.clone().expect("volumes");
+        assert_eq!(volumes.len(), 1);
+        let volume = &volumes[0];
+        assert_eq!(volume.name, "aws-identity-token");
+        let sources = volume
+            .projected
+            .as_ref()
+            .and_then(|p| p.sources.clone())
+            .expect("a projected volume");
+        assert_eq!(sources.len(), 1);
+        let token = sources[0]
+            .service_account_token
+            .as_ref()
+            .expect("a ServiceAccount token projection");
+        assert_eq!(token.audience.as_deref(), Some("sts.amazonaws.com"));
+        assert_eq!(token.expiration_seconds, Some(600));
+        assert_eq!(token.path, "aws-identity-token");
+    }
+
+    #[test]
+    fn ec2_container_mounts_the_token_read_only_and_names_the_file() {
+        let class = ec2_class();
+        let deployment = build_deployment(&ec2_inputs(&class));
+        let c = container(&deployment);
+        let mounts = c.volume_mounts.clone().expect("volume mounts");
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(mounts[0].name, "aws-identity-token");
+        assert_eq!(mounts[0].mount_path, "/var/run/secrets/aws/tokens");
+        assert_eq!(mounts[0].read_only, Some(true));
+        let env = c.env.clone().expect("env");
+        let names: Vec<&str> = env.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "POD_NAME",
+                "POD_NAMESPACE",
+                "POD_SERVICE_ACCOUNT",
+                "AWS_WEB_IDENTITY_TOKEN_FILE"
+            ]
+        );
+        assert_eq!(
+            env_value(c, "AWS_WEB_IDENTITY_TOKEN_FILE").as_deref(),
+            Some("/var/run/secrets/aws/tokens/aws-identity-token")
+        );
+    }
+
+    /// The file the operator mounts is the one the provider reads when no
+    /// flag overrides it, and the variable is the one its flag reads.
+    #[test]
+    fn ec2_token_file_is_the_one_the_provider_reads_by_default() {
+        assert_eq!(
+            ec2_web_identity_token_file(),
+            banlieue_provider_ec2::client::DEFAULT_WEB_IDENTITY_TOKEN_FILE
+        );
+        assert_eq!(
+            AWS_WEB_IDENTITY_TOKEN_FILE_ENV,
+            "AWS_WEB_IDENTITY_TOKEN_FILE"
+        );
+    }
+
+    /// No Secret, no Job Role, and nothing about OpenBao (an Azure-only
+    /// block) for an ec2 workload.
+    #[test]
+    fn ec2_workload_grants_no_secret_and_no_jobs() {
+        let class = ec2_class();
+        let set = build_workload(&ec2_inputs(&class), "banlieue-imagebuild");
+        assert!(rule_for(&set.role, "", "secrets").is_empty());
+        assert!(set.jobs_role.is_none() && set.jobs_role_binding.is_none());
+        let deployment = set.deployment.expect("a Managed deployment");
+        let c = container(&deployment);
+        assert!(
+            c.env
+                .as_ref()
+                .unwrap()
+                .iter()
+                .all(|e| !e.name.starts_with("BANLIEUE_OPENBAO"))
+        );
+    }
+
+    #[test]
+    fn cloud_token_is_none_for_backends_that_read_a_secret() {
+        for backend in ["vsphere", "libvirt", "proxmox", "cloud-hypervisor"] {
+            assert!(cloud_token(backend).is_none(), "{backend}");
+        }
+        assert_eq!(
+            cloud_token("ec2").map(|t| t.env),
+            Some("AWS_WEB_IDENTITY_TOKEN_FILE")
+        );
+        assert_eq!(
+            cloud_token("azure").map(|t| t.env),
+            Some("AZURE_FEDERATED_TOKEN_FILE")
+        );
+    }
+
     // ---- ADR-0176 Decision 8: the OpenBao assertion source ----
 
     fn openbao(namespace: Option<&str>) -> banlieue_api::banlieue::AzureOpenBao {
