@@ -29,8 +29,8 @@ POLICY = os.path.join(
 CM = {"name": "ek-cas", "key": "ca.crt"}
 
 
-def prov(attestation):
-    spec = {"providerClassRef": {"name": "cloud-hypervisor"}}
+def prov(attestation, cls="cloud-hypervisor"):
+    spec = {"providerClassRef": {"name": cls}}
     if attestation is not None:
         spec["attestation"] = attestation
     return {"spec": spec}
@@ -49,6 +49,10 @@ CASES = [
     ("two sources", prov({"ekTrustBundle": {"inline": "pem", "configMapRef": CM}}), False),
     ("three sources", prov({"ekTrustBundle": {"inline": "pem", "configMapRef": CM, "secretRef": CM}}), False),
     ("hostCa present, ekTrustBundle with two sources", prov({"hostCa": {"inline": "pem"}, "ekTrustBundle": {"inline": "pem", "secretRef": CM}}), False),
+    # ADR-0167 Decision 2: NitroTPM has no EK certificate to chain.
+    ("ec2 with an ekTrustBundle", prov({"ekTrustBundle": {"inline": "pem"}}, "ec2"), False),
+    ("ec2 without attestation", prov(None, "ec2"), True),
+    ("azure with an ekTrustBundle is not this rule's", prov({"ekTrustBundle": {"inline": "pem"}}, "azure"), True),
 ]
 
 

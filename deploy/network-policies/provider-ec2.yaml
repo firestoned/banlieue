@@ -1,0 +1,78 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Allow list for the EC2 provider (ADR-0094, ADR-0174): API server, DNS and
+# HTTPS to STS and EC2 out, metrics and health in.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: banlieue-provider-ec2
+  labels:
+    app.kubernetes.io/name: banlieue
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: banlieue
+      app.kubernetes.io/component: provider-ec2
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Prometheus scrapes, only from namespaces labelled
+    # banlieue.io/monitoring=true:
+    #   kubectl label namespace <monitoring-ns> banlieue.io/monitoring=true
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              banlieue.io/monitoring: "true"
+      ports:
+        - protocol: TCP
+          port: metrics
+    # Liveness and readiness probes. The kubelet does not connect from a pod,
+    # so this port is open to any source.
+    - ports:
+        - protocol: TCP
+          port: health
+  egress:
+    # DNS: cluster DNS pods only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API server. Its address is per cluster, so this rule has no
+    # "to" and allows any address on the two usual API ports. Narrow it by
+    # adding your cluster's API server address, for example:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 192.0.2.10/32
+    #     ports: ...
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # The region's STS (the token exchange, spec.connection.ec2.stsEndpoint)
+    # and EC2 (spec.connection.endpoint), both HTTPS. The provider sends
+    # tokens only to those two names, pinned to the region by admission and
+    # again by the provider. Their public addresses come from AWS's published
+    # ranges and change without notice, which a NetworkPolicy cannot follow,
+    # so this rule allows any address on 443. With interface VPC endpoints
+    # for STS and EC2 (recommended, ADR-0174 Decision 6), pin it to the
+    # endpoints' subnet, for example:
+    #   - to:
+    #       - ipBlock:
+    #           cidr: 198.51.100.0/28
+    #     ports:
+    #       - protocol: TCP
+    #         port: 443
+    - ports:
+        - protocol: TCP
+          port: 443

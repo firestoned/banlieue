@@ -43,6 +43,7 @@ mod tests {
                     ca_bundle: None,
                     insecure_skip_tls_verify: false,
                     azure: None,
+                    ec2: None,
                 },
                 capabilities: ProviderCapabilities::default(),
                 paused: false,

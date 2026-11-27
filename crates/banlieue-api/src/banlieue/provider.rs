@@ -12,6 +12,7 @@
 //! and the provider's controller verifies them and reports per-failure-domain
 //! availability in status.
 
+use crate::aws;
 use crate::common::*;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::{Condition, Time};
 use kube::CustomResource;
@@ -87,7 +88,7 @@ pub struct ProviderSpec {
     ///
     /// For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
     /// drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
-    /// `cloud-hypervisor`, `azure`. A future
+    /// `cloud-hypervisor`, `azure`, `ec2`. A future
     /// ProviderClass CRD will provide install metadata (image, RBAC) without
     /// changing this reference.
     pub provider_class_ref: LocalObjectReference,
@@ -246,7 +247,9 @@ pub struct ProviderAttestation {
     /// [`CABundleSource`]); references resolve in the Provider's namespace.
     /// Removal of an issuer from this bundle is the revocation mechanism on
     /// libvirt: swtpm EK certificates never expire. Not used by the
-    /// `firecracker` class, which has no vTPM.
+    /// `firecracker` class, which has no vTPM, and refused at admission on
+    /// `ec2`, whose NitroTPM has no EK certificate to chain (ADR-0167
+    /// Decision 2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ek_trust_bundle: Option<CABundleSource>,
 
@@ -329,6 +332,7 @@ pub struct ProviderConnection {
     ///   proxmox:  https://pve.example.com:8006
     ///   libvirt:  qemu+ssh://kvm-host.example.com/system
     ///   azure:    https://management.azure.com
+    ///   ec2:      https://ec2.<region>.amazonaws.com (or a VPC endpoint of it)
     pub endpoint: String,
 
     /// Reference to a Secret in the Provider's namespace containing the
@@ -373,6 +377,231 @@ pub struct ProviderConnection {
     /// not set: the provider's ServiceAccount token is its only credential.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure: Option<AzureConnection>,
+
+    /// `ec2` only: the region this `Provider` launches into and the IAM role
+    /// it assumes by web identity (ADR-0174 Decision 5, ADR-0159). `endpoint`
+    /// is the region's EC2 endpoint (`https://ec2.<region>.amazonaws.com`, or
+    /// the DNS name of an interface VPC endpoint for it) and
+    /// `credentialsRef` is not set: the provider's ServiceAccount token is
+    /// its only credential.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ec2: Option<Ec2Connection>,
+}
+
+/// Where an `ec2` `Provider` launches instances, and who it acts as. One
+/// `Provider` is one account and one region (ADR-0158 Decision 1); the role
+/// names the account. Every field is declared by the admin; nothing is
+/// discovered (non-negotiable 4).
+///
+/// [`validate`](Self::validate) is the provider's check; the CRD schema
+/// carries the same shapes as patterns, and
+/// `deploy/admission/provider-connection.yaml` and
+/// `provider-ec2-governance.yaml` refuse the rest at admission.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Ec2Connection {
+    /// The region, such as `ca-central-1`. Its availability zones are the
+    /// failure domains (ADR-0158 Decisions 1 and 3). Only the `aws`,
+    /// `aws-cn` and `aws-us-gov` partitions.
+    #[schemars(pattern(aws::REGION_PATTERN))]
+    pub region: String,
+
+    /// ARN of the IAM role the provider assumes with
+    /// `AssumeRoleWithWebIdentity`, whose trust policy names this
+    /// provider's ServiceAccount as the subject (ADR-0159):
+    /// `arn:aws:iam::<account>:role/<path/><name>`. Its partition must be the
+    /// region's.
+    #[schemars(pattern(aws::IAM_ROLE_ARN_PATTERN))]
+    pub role_arn: String,
+
+    /// STS endpoint the ServiceAccount token is exchanged at. Unset: the
+    /// region's own (`https://sts.<region>.amazonaws.com`). Set only to the
+    /// DNS name of an interface VPC endpoint for STS in the same region
+    /// (`https://vpce-<id>-<suffix>.sts.<region>.vpce.amazonaws.com`) or the
+    /// regional name itself; admission refuses any other host, since this is
+    /// where the token goes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sts_endpoint: Option<String>,
+
+    /// KMS key that encrypts every root volume this `Provider` creates: a
+    /// key ID, key ARN, alias name or alias ARN. Unset: the account's default
+    /// EBS key. Volumes are encrypted either way (ADR-0174 Decision 3). The
+    /// provider's role needs `kms:CreateGrant` on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(pattern(aws::KMS_KEY_PATTERN))]
+    pub kms_key_id: Option<String>,
+
+    /// Extra tags put on every resource this `Provider` and its publisher
+    /// create (instances and their volumes, import tasks, snapshots and
+    /// AMIs), in the create call itself, for an account whose service
+    /// control or tag policies require them (the EC2 counterpart of
+    /// ADR-0172 Decision 1).
+    ///
+    /// banlieue's own tags always win: a key starting with `banlieue-` or
+    /// `aws:` (in any case) is refused, as is `Name`, which banlieue sets to
+    /// the machine's name. At most 44 (EC2 allows 50 per resource); keys 1
+    /// to 128 and values up to 256 characters of ASCII letters, digits,
+    /// space and `+ - = . _ : / @`. Applies to resources created afterwards;
+    /// existing ones are not re-tagged.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[schemars(extend("maxProperties" = aws::MAX_EXTRA_TAGS))]
+    pub tags: BTreeMap<String, String>,
+
+    /// The image publisher's own identity and staging (ADR-0162 Decision 9,
+    /// ADR-0159 Decision 3), separate from `roleArn`: the publish Job
+    /// assumes it, and only it can import, register and delete images.
+    /// Unset: no `Url` source is published to this `Provider`
+    /// (`PublisherNotConfigured`); `Template` AMIs need none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<Ec2Publisher>,
+}
+
+/// The identity and staging the EC2 image publish Job uses (ADR-0162
+/// Decision 9). The Job assumes `roleArn` by web identity as
+/// `system:serviceaccount:<imagebuild namespace>:banlieue-ec2-publisher`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Ec2Publisher {
+    /// ARN of the publisher's IAM role, in the `Provider`'s account and not
+    /// the provider's own role. It may write to `stagingBucket`, pass
+    /// `vmImportRoleName` to VM Import, and import, register, tag and delete
+    /// images; it has no S3 read.
+    #[schemars(pattern(aws::IAM_ROLE_ARN_PATTERN))]
+    pub role_arn: String,
+
+    /// The admin-owned S3 bucket the disk is staged in, in the `Provider`'s
+    /// region, with block public access on and a lifecycle rule expiring
+    /// objects after a day. banlieue never creates or deletes it; it deletes
+    /// each object once its import completes. Dots are refused: they break
+    /// virtual-hosted-style HTTPS.
+    #[schemars(pattern(aws::S3_BUCKET_NAME_PATTERN))]
+    pub staging_bucket: String,
+
+    /// Name of the admin's VM Import service role (trusted by
+    /// `vmie.amazonaws.com`, reading only `stagingBucket`), passed to
+    /// `ImportSnapshot`. A name, not an ARN: it is in the `Provider`'s
+    /// account.
+    #[schemars(pattern(aws::IAM_ROLE_NAME_PATTERN))]
+    pub vm_import_role_name: String,
+
+    /// KMS key that encrypts the imported snapshot (and so the AMI's). Unset:
+    /// the account's default EBS key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(pattern(aws::KMS_KEY_PATTERN))]
+    pub kms_key_id: Option<String>,
+}
+
+impl Ec2Connection {
+    /// `stsEndpoint`, or the region's own STS endpoint when unset.
+    #[must_use]
+    pub fn sts_endpoint_or_default(&self) -> String {
+        self.sts_endpoint
+            .clone()
+            .unwrap_or_else(|| aws::regional_endpoint("sts", &self.region))
+    }
+
+    /// Checks the connection the provider is about to use: the region's
+    /// shape, a role ARN in the region's partition, `endpoint` (the
+    /// `Provider`'s `connection.endpoint`) and `stsEndpoint` pinned to the
+    /// region's own EC2 and STS (or VPC endpoints of them), KMS keys of the
+    /// right shape, the extra tags ([`aws::validate_extra_tags`]), and a
+    /// publisher in the same account under a separate role.
+    ///
+    /// # Errors
+    /// A human-readable reason for the first rule broken.
+    pub fn validate(&self, endpoint: &str) -> Result<(), String> {
+        if !aws::is_region(&self.region) {
+            return Err(format!(
+                "region {:?} is not an AWS region such as ca-central-1",
+                self.region
+            ));
+        }
+        let partition = aws::partition_of_region(&self.region);
+        check_role_arn("roleArn", &self.role_arn, partition)?;
+        if !aws::is_service_endpoint(endpoint, "ec2", &self.region) {
+            return Err(format!(
+                "endpoint {endpoint:?} must be {} or a VPC endpoint of it",
+                aws::regional_endpoint("ec2", &self.region)
+            ));
+        }
+        if let Some(sts) = &self.sts_endpoint
+            && !aws::is_service_endpoint(sts, "sts", &self.region)
+        {
+            return Err(format!(
+                "stsEndpoint {sts:?} must be {} or a VPC endpoint of it",
+                aws::regional_endpoint("sts", &self.region)
+            ));
+        }
+        check_kms_key("kmsKeyId", self.kms_key_id.as_deref())?;
+        aws::validate_extra_tags(&self.tags)?;
+        let Some(publisher) = &self.publisher else {
+            return Ok(());
+        };
+        publisher.validate(partition)?;
+        if aws::account_of_role_arn(&publisher.role_arn) != aws::account_of_role_arn(&self.role_arn)
+        {
+            return Err(
+                "publisher.roleArn must be in the same account as roleArn: the AMI is imported where the provider launches"
+                    .to_string(),
+            );
+        }
+        if publisher.role_arn == self.role_arn {
+            return Err(
+                "publisher.roleArn must be a separate role from roleArn (ADR-0159 Decision 3)"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+impl Ec2Publisher {
+    /// Checks the publisher's fields: a role ARN in `partition`, a bucket and
+    /// a role name S3 and IAM accept, and a KMS key of the right shape.
+    ///
+    /// # Errors
+    /// A human-readable reason for the first rule broken.
+    pub fn validate(&self, partition: &str) -> Result<(), String> {
+        check_role_arn("publisher.roleArn", &self.role_arn, partition)?;
+        if !aws::is_s3_bucket_name(&self.staging_bucket) {
+            return Err(format!(
+                "publisher.stagingBucket {:?} is not an S3 bucket name banlieue accepts (3 to 63 lowercase letters, digits and hyphens, no dots, none of S3's reserved prefixes or suffixes)",
+                self.staging_bucket
+            ));
+        }
+        if !aws::is_iam_role_name(&self.vm_import_role_name) {
+            return Err(format!(
+                "publisher.vmImportRoleName {:?} is not an IAM role name (a name, not an ARN)",
+                self.vm_import_role_name
+            ));
+        }
+        check_kms_key("publisher.kmsKeyId", self.kms_key_id.as_deref())
+    }
+}
+
+/// `field` holds an IAM role ARN in `partition`.
+fn check_role_arn(field: &str, arn: &str, partition: &str) -> Result<(), String> {
+    if !aws::is_iam_role_arn(arn) {
+        return Err(format!(
+            "{field} {arn:?} is not an IAM role ARN (arn:aws:iam::<12-digit account>:role/<name>)"
+        ));
+    }
+    if aws::partition_of_arn(arn) != Some(partition) {
+        return Err(format!(
+            "{field} {arn:?} is not in the region's partition ({partition})"
+        ));
+    }
+    Ok(())
+}
+
+/// `field`, when set, names a KMS key.
+fn check_kms_key(field: &str, key: Option<&str>) -> Result<(), String> {
+    match key {
+        Some(key) if !aws::is_kms_key(key) => Err(format!(
+            "{field} {key:?} is not a KMS key ID, key ARN, alias or alias ARN"
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Where an `azure` `Provider` creates VMs, and who it acts as. Every field
@@ -676,9 +905,10 @@ pub struct ZonedInstanceSize {
 /// rename. Shared by [`StorageClassMapping`] and [`NetworkClassMapping`] —
 /// same shape, same identity key (ADR-0030).
 ///
-/// A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
-/// availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
-/// and `cluster` empty (ADR-0158 Decision 3).
+/// A cloud `Provider` (`azure`, `ec2`) keys the same shape by `zone` instead,
+/// the availability zone name the cloud uses (`1`, `2` on Azure,
+/// `ca-central-1a` on EC2), and leaves `datacenter` and `cluster` empty
+/// (ADR-0158 Decision 3).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScopedTarget {
@@ -688,8 +918,8 @@ pub struct ScopedTarget {
     /// Cluster name as vCenter reports it. Empty on a cloud `Provider`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub cluster: String,
-    /// Availability zone name as the cloud reports it (`1`, `2`), on a cloud
-    /// `Provider` (ADR-0158 Decision 3).
+    /// Availability zone name as the cloud reports it (`1`, `2` on Azure,
+    /// `ca-central-1a` on EC2), on a cloud `Provider` (ADR-0158 Decision 3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone: Option<String>,
     /// Concrete backend target for this zone, same shape as
@@ -752,6 +982,8 @@ pub struct StorageClassMapping {
     ///   proxmox:  { storage: "ceph-pool-1" }
     ///   libvirt:  { pool: "nvme-pool" }
     ///   azure:    { sku: "Premium_LRS" }   (a managed-disk SKU, ADR-0160)
+    ///   ec2:      { volumeType: "gp3", iops: "6000", throughput: "250" }
+    ///             (an EBS volume type; iops and throughput optional, ADR-0174)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<BTreeMap<String, String>>,
     /// Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
@@ -793,6 +1025,8 @@ pub struct NetworkClassMapping {
     ///             { distributedPortGroup: "dvs-prod-vlan100" }
     ///   proxmox:  { bridge: "vmbr0", vlan: "100" }
     ///   libvirt:  { network: "br-prod" }
+    ///   ec2:      { subnetId: "subnet-...", securityGroupIds: "sg-...,sg-..." }
+    ///             (a subnet is zonal, so usually one `perZone` entry per zone)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<BTreeMap<String, String>>,
     /// Per-`(datacenter, cluster)` overrides of `target` (ADR-0030).
@@ -823,7 +1057,9 @@ impl NetworkClassMapping {
     /// Effective concrete target in a cloud availability zone: a `per_zone`
     /// entry keyed by `zone` wins, else the default `target` (ADR-0158).
     /// On `azure` the target carries `subnetId` (a subnet resource ID) and
-    /// may carry `acceleratedNetworking: "true"` (ADR-0160 Decision 4).
+    /// may carry `acceleratedNetworking: "true"` (ADR-0160 Decision 4). On
+    /// `ec2` it carries `subnetId` (a subnet in that zone) and
+    /// `securityGroupIds` (comma-separated `sg-` IDs, at least one).
     #[must_use]
     pub fn target_for_zone(&self, zone: &str) -> Option<&BTreeMap<String, String>> {
         cloud_zone_target(&self.per_zone, self.target.as_ref(), zone)

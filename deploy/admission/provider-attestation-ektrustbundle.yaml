@@ -7,6 +7,7 @@
 # resolves or verifies against this bundle — it is admin-supplied configuration
 # for the attestation broker — so admission is the only banlieue-side check a
 # malformed bundle would ever meet; there is no controller to fail closed on it.
+# On an ec2 Provider the bundle is refused outright (ADR-0167 Decision 2).
 # Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+
 # (ValidatingAdmissionPolicy GA).
 apiVersion: admissionregistration.k8s.io/v1
@@ -42,6 +43,16 @@ spec:
          has(object.spec.attestation.ekTrustBundle.secretRef)].filter(x, x).size() == 1
       messageExpression: >-
         'spec.attestation.ekTrustBundle must set exactly one of inline, configMapRef, secretRef.'
+      reason: Invalid
+    # EC2's NitroTPM has no EK certificate: banlieue publishes its EK public
+    # key, read host-side from the EC2 API, and there is nothing to chain to a
+    # CA (ADR-0167 Decision 2). A bundle on an ec2 Provider is refused rather
+    # than silently ignored, so nobody believes it is checked.
+    - expression: "object.spec.providerClassRef.name != 'ec2'"
+      message: >-
+        spec.attestation.ekTrustBundle does not apply to ec2 providers: NitroTPM
+        has no EK certificate, and the EK public key comes from the EC2 API
+        (ADR-0167 Decision 2).
       reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1

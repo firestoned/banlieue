@@ -51,6 +51,9 @@ rules:
       - azurevirtualmachines
       - azurevirtualmachines/status
       - azurevirtualmachinetemplates
+      - ec2machines
+      - ec2machines/status
+      - ec2machinetemplates
       - libvirtmachines
       - libvirtmachines/status
       - libvirtmachinetemplates

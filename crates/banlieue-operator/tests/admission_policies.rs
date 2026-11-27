@@ -1,8 +1,12 @@
 // Copyright (c) 2026 Erick Bourgeois, banlieue
 // SPDX-License-Identifier: Apache-2.0
 //! Structural checks on the ADR-0133 admission policies, and on the azure
-//! rules (ADR-0159, ADR-0162) in `provider-connection.yaml` and
-//! `vmimage-cloud-install-mode.yaml`, offline.
+//! and ec2 rules (ADR-0159, ADR-0162, ADR-0167, ADR-0174) in
+//! `provider-connection.yaml`, `provider-ec2-governance.yaml`,
+//! `provider-attestation-ektrustbundle.yaml` and
+//! `vmimage-cloud-install-mode.yaml`, offline. What the ec2 rules decide is
+//! evaluated as CEL by `make provider-connection-policy-test` and
+//! `make ec2-governance-policy-test`.
 //!
 //! What a policy *decides* can only be checked against a real API server (CEL
 //! is evaluated there; no CEL evaluator is linked into this workspace); that
@@ -26,6 +30,10 @@ const PROVIDER_CONNECTION: &str =
 const VMIMAGE_CLOUD_INSTALL_MODE: &str =
     include_str!("../../../deploy/admission/vmimage-cloud-install-mode.yaml");
 const PROVIDER_JOBS: &str = include_str!("../../../deploy/admission/provider-jobs.yaml");
+const PROVIDER_EC2_GOVERNANCE: &str =
+    include_str!("../../../deploy/admission/provider-ec2-governance.yaml");
+const PROVIDER_EK_TRUST_BUNDLE: &str =
+    include_str!("../../../deploy/admission/provider-attestation-ektrustbundle.yaml");
 /// The provider binary's cloud table, which the admission allowlist must
 /// match string for string.
 const AZURE_CLOUD_TABLE: &str = include_str!("../../banlieue-provider-azure/src/cloud.rs");
@@ -77,6 +85,8 @@ fn every_binding_names_a_policy_in_the_same_file_and_denies() {
         PROVIDER_CONNECTION,
         VMIMAGE_CLOUD_INSTALL_MODE,
         PROVIDER_JOBS,
+        PROVIDER_EC2_GOVERNANCE,
+        PROVIDER_EK_TRUST_BUNDLE,
     ] {
         let all = docs(yaml);
         let policies: Vec<&str> = of_kind(&all, "ValidatingAdmissionPolicy")
@@ -110,6 +120,8 @@ fn the_policies_fail_closed() {
         PROVIDER_CONNECTION,
         VMIMAGE_CLOUD_INSTALL_MODE,
         PROVIDER_JOBS,
+        PROVIDER_EC2_GOVERNANCE,
+        PROVIDER_EK_TRUST_BUNDLE,
     ] {
         for p in of_kind(&docs(yaml), "ValidatingAdmissionPolicy") {
             assert_eq!(p["spec"]["failurePolicy"], "Fail", "{}", name(p));
@@ -153,6 +165,8 @@ fn the_provider_ref_policies_cover_every_machine_kind_and_its_template_on_create
             "azurevirtualmachinetemplates",
             "cloudhypervisormachines",
             "cloudhypervisormachinetemplates",
+            "ec2machines",
+            "ec2machinetemplates",
             "libvirtmachines",
             "libvirtmachinetemplates",
             "proxmoxmachines",
@@ -398,7 +412,7 @@ fn azure_with_an_http_endpoint_is_refused() {
         "https://",
     );
     assert!(
-        expression.contains("['vsphere', 'proxmox', 'azure']"),
+        expression.contains("['vsphere', 'proxmox', 'azure', 'ec2']"),
         "{expression}"
     );
     rule_with(
@@ -524,8 +538,11 @@ fn a_valid_azure_provider_meets_every_azure_rule() {
             "object.spec.providerClassRef.name != 'azure' ||",
             "!variables.isAzure ||",
             "object.spec.providerClassRef.name == 'azure' ||",
-            "object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure'] ||",
-            "!(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure']) ||",
+            "object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure', 'ec2'] ||",
+            "!(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure', 'ec2']) ||",
+            // The ec2 token-destination rules read variables too; they are
+            // scoped to ec2 and do not apply to an azure Provider.
+            "!variables.isEc2 ||",
         ];
         assert!(
             escapes.iter().any(|e| expression.starts_with(e)),
@@ -570,7 +587,7 @@ fn a_cloud_vmimage_refuses_deferred_install_only() {
     let scope = squash(conditions[0]["expression"].as_str().expect("expression"));
     assert_eq!(
         scope,
-        "object.spec.sources.exists(s, s.providerClass in ['azure'])"
+        "object.spec.sources.exists(s, s.providerClass in ['azure', 'ec2'])"
     );
 
     let rules = validations(&policy);
@@ -595,11 +612,197 @@ fn the_install_modes_the_policy_names_are_the_crd_enum() {
     );
 }
 
+// ---- ec2: provider-connection.yaml, provider-ec2-governance.yaml, ---------
+// ---- provider-attestation-ektrustbundle.yaml ------------------------------
+
+/// ec2 without `connection.ec2` is refused: it names no region or role.
+#[test]
+fn ec2_without_its_connection_block_is_refused() {
+    rule_with(
+        &only_policy(PROVIDER_CONNECTION),
+        &[
+            "object.spec.providerClassRef.name != 'ec2'",
+            "|| has(object.spec.connection.ec2)",
+        ],
+        "spec.connection.ec2",
+    );
+}
+
+/// ec2 with `credentialsRef` is refused: it reads no Secret (ADR-0159).
+#[test]
+fn ec2_with_a_credentials_ref_is_refused() {
+    rule_with(
+        &only_policy(PROVIDER_CONNECTION),
+        &[
+            "object.spec.providerClassRef.name != 'ec2'",
+            "!has(object.spec.connection.credentialsRef)",
+        ],
+        "credentialsRef",
+    );
+}
+
+/// The `ec2` block on any other class is refused.
+#[test]
+fn a_non_ec2_provider_with_an_ec2_block_is_refused() {
+    rule_with(
+        &only_policy(PROVIDER_CONNECTION),
+        &[
+            "object.spec.providerClassRef.name == 'ec2'",
+            "|| !has(object.spec.connection.ec2)",
+        ],
+        "only valid for ec2",
+    );
+}
+
+/// The ec2 variables read the right fields, and the region they splice into
+/// a pattern is itself pinned to a safe shape by the CRD schema.
+#[test]
+fn the_ec2_variables_read_the_right_fields() {
+    let policy = only_policy(PROVIDER_CONNECTION);
+    let vars: Vec<(String, String)> = policy["spec"]["variables"]
+        .as_array()
+        .expect("variables")
+        .iter()
+        .map(|v| {
+            (
+                v["name"].as_str().expect("name").to_string(),
+                squash(v["expression"].as_str().expect("expression")),
+            )
+        })
+        .collect();
+    let get = |n: &str| {
+        vars.iter()
+            .find(|(name, _)| name == n)
+            .map(|(_, e)| e.clone())
+            .unwrap_or_else(|| panic!("variable {n}"))
+    };
+    assert_eq!(get("isEc2"), "object.spec.providerClassRef.name == 'ec2'");
+    assert_eq!(
+        get("region"),
+        "has(object.spec.connection.ec2) ? object.spec.connection.ec2.region : ''"
+    );
+    assert_eq!(
+        get("awsSuffix"),
+        "variables.region.startsWith('cn-') ? 'amazonaws[.]com[.]cn' : 'amazonaws[.]com'"
+    );
+    assert_eq!(
+        get("sts"),
+        "has(object.spec.connection.ec2) && has(object.spec.connection.ec2.stsEndpoint) ? object.spec.connection.ec2.stsEndpoint : ''"
+    );
+    let crd = squash(PROVIDER_CRD);
+    assert!(
+        crd.contains("stsEndpoint:"),
+        "the Provider CRD has no stsEndpoint"
+    );
+    assert!(
+        crd.contains(banlieue_api::aws::REGION_PATTERN),
+        "the Provider CRD does not pin connection.ec2.region's shape"
+    );
+}
+
+/// The session token goes only to the region's EC2 (or a VPC endpoint of
+/// it), and the ServiceAccount token only to the region's STS (or a VPC
+/// endpoint of it): anchored, with the service named.
+#[test]
+fn ec2_token_destinations_are_pinned_to_the_regions_names() {
+    let policy = only_policy(PROVIDER_CONNECTION);
+    for (fragment, service, field) in [
+        (
+            "variables.endpoint.matches(",
+            "ec2",
+            "spec.connection.endpoint",
+        ),
+        (
+            "variables.sts.matches(",
+            "sts",
+            "spec.connection.ec2.stsEndpoint",
+        ),
+    ] {
+        let expression = rule_with(&policy, &["!variables.isEc2", fragment], field);
+        for part in [
+            format!("'^https://({service}[.]' + variables.region"),
+            format!(
+                "'|vpce-[0-9a-f]{{17}}-[0-9a-z]{{8}}[.]{service}[.]' + variables.region + '[.]vpce)[.]'"
+            ),
+            "+ variables.awsSuffix + '/?$')".to_string(),
+        ] {
+            assert!(expression.contains(&part), "{part} not in {expression}");
+        }
+    }
+}
+
+/// A valid ec2 Provider passes every rule that names ec2 or reads its
+/// variables: each is scoped to ec2 with an escape for the valid shape.
+#[test]
+fn a_valid_ec2_provider_meets_every_ec2_rule() {
+    for (expression, _) in validations(&only_policy(PROVIDER_CONNECTION)) {
+        if !(expression.contains("'ec2'") || expression.contains("variables.isEc2")) {
+            continue;
+        }
+        let escapes = [
+            "object.spec.providerClassRef.name != 'ec2' ||",
+            "!variables.isEc2 ||",
+            "object.spec.providerClassRef.name == 'ec2' ||",
+            "object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure', 'ec2'] ||",
+            "!(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure', 'ec2']) ||",
+        ];
+        assert!(
+            escapes.iter().any(|e| expression.starts_with(e)),
+            "an ec2 rule without a recognised scope: {expression}"
+        );
+    }
+}
+
+/// The governance policy applies to providers with an ec2 block, and its
+/// cap is the one the CRD schema and the Rust check use.
+#[test]
+fn the_ec2_governance_policy_checks_ec2_blocks_with_the_rust_limits() {
+    let policy = only_policy(PROVIDER_EC2_GOVERNANCE);
+    let rule = &policy["spec"]["matchConstraints"]["resourceRules"][0];
+    assert_eq!(rule["resources"], serde_json::json!(["providers"]));
+    assert_eq!(rule["operations"], serde_json::json!(["CREATE", "UPDATE"]));
+    let conditions = policy["spec"]["matchConditions"]
+        .as_array()
+        .expect("matchConditions");
+    assert_eq!(
+        squash(conditions[0]["expression"].as_str().expect("expression")),
+        "has(object.spec.connection.ec2)"
+    );
+    rule_with(
+        &policy,
+        &[&format!(
+            "size(object.spec.connection.ec2.tags) <= {}",
+            banlieue_api::aws::MAX_EXTRA_TAGS
+        )],
+        "at most",
+    );
+    rule_with(&policy, &["(?i)^banlieue-"], "banlieue-");
+    rule_with(&policy, &["(?i)^aws:"], "aws:");
+    rule_with(&policy, &["'Name' in"], "Name");
+    let characters = format!("matches('{}')", banlieue_api::aws::TAG_CHARACTERS_PATTERN);
+    rule_with(&policy, &["size(k) <= 128", &characters], "key");
+    rule_with(&policy, &["<= 256", &characters], "value");
+}
+
+/// An ekTrustBundle on an ec2 Provider is refused (ADR-0167 Decision 2).
+#[test]
+fn an_ec2_provider_with_an_ek_trust_bundle_is_refused() {
+    rule_with(
+        &only_policy(PROVIDER_EK_TRUST_BUNDLE),
+        &["object.spec.providerClassRef.name != 'ec2'"],
+        "ec2",
+    );
+}
+
 // ---- provider-jobs.yaml: what a provider identity's Jobs may run ----------
 
 /// The ServiceAccounts a provider's Jobs may run as, sorted, as the policy
 /// spells the list.
-const JOB_ACCOUNTS: [&str; 2] = ["banlieue-azure-publisher", "banlieue-import"];
+const JOB_ACCOUNTS: [&str; 3] = [
+    "banlieue-azure-publisher",
+    "banlieue-ec2-publisher",
+    "banlieue-import",
+];
 
 #[test]
 fn the_provider_jobs_policy_matches_job_creates_and_updates_only() {
@@ -661,7 +864,7 @@ fn the_provider_jobs_policy_pins_the_build_namespace() {
     );
 }
 
-/// The allowed identities are exactly the two Job ServiceAccounts, sorted;
+/// The allowed identities are exactly the three Job ServiceAccounts, sorted;
 /// the provider's own identity is never one of them.
 #[test]
 fn the_provider_jobs_policy_allows_only_the_job_identities() {
@@ -680,7 +883,7 @@ fn the_provider_jobs_policy_allows_only_the_job_identities() {
     sorted.sort_unstable();
     assert_eq!(sorted, JOB_ACCOUNTS);
     assert_eq!(
-        JOB_ACCOUNTS[1],
+        JOB_ACCOUNTS[JOB_ACCOUNTS.len() - 1],
         banlieue_provider_sdk::defaults::DEFAULT_IMPORT_SERVICE_ACCOUNT
     );
     assert!(!expression.contains("banlieue-provider-"));

@@ -102,7 +102,9 @@ spec:
                       `CABundleSource`); references resolve in the Provider's namespace.
                       Removal of an issuer from this bundle is the revocation mechanism on
                       libvirt: swtpm EK certificates never expire. Not used by the
-                      `firecracker` class, which has no vTPM.
+                      `firecracker` class, which has no vTPM, and refused at admission on
+                      `ec2`, whose NitroTPM has no EK certificate to chain (ADR-0167
+                      Decision 2).
                     nullable: true
                     properties:
                       configMapRef:
@@ -268,9 +270,10 @@ spec:
                               rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
 
-                              A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
-                              availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
-                              and `cluster` empty (ADR-0158 Decision 3).
+                              A cloud `Provider` (`azure`, `ec2`) keys the same shape by `zone` instead,
+                              the availability zone name the cloud uses (`1`, `2` on Azure,
+                              `ca-central-1a` on EC2), and leaves `datacenter` and `cluster` empty
+                              (ADR-0158 Decision 3).
                             properties:
                               cluster:
                                 description: Cluster name as vCenter reports it. Empty on a cloud `Provider`.
@@ -287,8 +290,8 @@ spec:
                                 type: object
                               zone:
                                 description: |-
-                                  Availability zone name as the cloud reports it (`1`, `2`), on a cloud
-                                  `Provider` (ADR-0158 Decision 3).
+                                  Availability zone name as the cloud reports it (`1`, `2` on Azure,
+                                  `ca-central-1a` on EC2), on a cloud `Provider` (ADR-0158 Decision 3).
                                 nullable: true
                                 type: string
                             required:
@@ -362,6 +365,8 @@ spec:
                                         { distributedPortGroup: "dvs-prod-vlan100" }
                               proxmox:  { bridge: "vmbr0", vlan: "100" }
                               libvirt:  { network: "br-prod" }
+                              ec2:      { subnetId: "subnet-...", securityGroupIds: "sg-...,sg-..." }
+                                        (a subnet is zonal, so usually one `perZone` entry per zone)
                           nullable: true
                           type: object
                       required:
@@ -401,9 +406,10 @@ spec:
                               rename. Shared by `StorageClassMapping` and `NetworkClassMapping` —
                               same shape, same identity key (ADR-0030).
 
-                              A cloud `Provider` (`azure`) keys the same shape by `zone` instead, the
-                              availability zone name the cloud uses (`1`, `2`), and leaves `datacenter`
-                              and `cluster` empty (ADR-0158 Decision 3).
+                              A cloud `Provider` (`azure`, `ec2`) keys the same shape by `zone` instead,
+                              the availability zone name the cloud uses (`1`, `2` on Azure,
+                              `ca-central-1a` on EC2), and leaves `datacenter` and `cluster` empty
+                              (ADR-0158 Decision 3).
                             properties:
                               cluster:
                                 description: Cluster name as vCenter reports it. Empty on a cloud `Provider`.
@@ -420,8 +426,8 @@ spec:
                                 type: object
                               zone:
                                 description: |-
-                                  Availability zone name as the cloud reports it (`1`, `2`), on a cloud
-                                  `Provider` (ADR-0158 Decision 3).
+                                  Availability zone name as the cloud reports it (`1`, `2` on Azure,
+                                  `ca-central-1a` on EC2), on a cloud `Provider` (ADR-0158 Decision 3).
                                 nullable: true
                                 type: string
                             required:
@@ -442,6 +448,8 @@ spec:
                               proxmox:  { storage: "ceph-pool-1" }
                               libvirt:  { pool: "nvme-pool" }
                               azure:    { sku: "Premium_LRS" }   (a managed-disk SKU, ADR-0160)
+                              ec2:      { volumeType: "gp3", iops: "6000", throughput: "250" }
+                                        (an EBS volume type; iops and throughput optional, ADR-0174)
                           nullable: true
                           type: object
                       required:
@@ -720,6 +728,119 @@ spec:
                     required:
                     - name
                     type: object
+                  ec2:
+                    description: |-
+                      `ec2` only: the region this `Provider` launches into and the IAM role
+                      it assumes by web identity (ADR-0174 Decision 5, ADR-0159). `endpoint`
+                      is the region's EC2 endpoint (`https://ec2.<region>.amazonaws.com`, or
+                      the DNS name of an interface VPC endpoint for it) and
+                      `credentialsRef` is not set: the provider's ServiceAccount token is
+                      its only credential.
+                    nullable: true
+                    properties:
+                      kmsKeyId:
+                        description: |-
+                          KMS key that encrypts every root volume this `Provider` creates: a
+                          key ID, key ARN, alias name or alias ARN. Unset: the account's default
+                          EBS key. Volumes are encrypted either way (ADR-0174 Decision 3). The
+                          provider's role needs `kms:CreateGrant` on it.
+                        nullable: true
+                        pattern: ^((arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:key/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})|(arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:)?alias/[A-Za-z0-9/_-]{1,250})$
+                        type: string
+                      publisher:
+                        description: |-
+                          The image publisher's own identity and staging (ADR-0162 Decision 9,
+                          ADR-0159 Decision 3), separate from `roleArn`: the publish Job
+                          assumes it, and only it can import, register and delete images.
+                          Unset: no `Url` source is published to this `Provider`
+                          (`PublisherNotConfigured`); `Template` AMIs need none.
+                        nullable: true
+                        properties:
+                          kmsKeyId:
+                            description: |-
+                              KMS key that encrypts the imported snapshot (and so the AMI's). Unset:
+                              the account's default EBS key.
+                            nullable: true
+                            pattern: ^((arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:key/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})|(arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:)?alias/[A-Za-z0-9/_-]{1,250})$
+                            type: string
+                          roleArn:
+                            description: |-
+                              ARN of the publisher's IAM role, in the `Provider`'s account and not
+                              the provider's own role. It may write to `stagingBucket`, pass
+                              `vmImportRoleName` to VM Import, and import, register, tag and delete
+                              images; it has no S3 read.
+                            pattern: ^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/([!-~]{0,510}/)?[A-Za-z0-9+=,.@_-]{1,64}$
+                            type: string
+                          stagingBucket:
+                            description: |-
+                              The admin-owned S3 bucket the disk is staged in, in the `Provider`'s
+                              region, with block public access on and a lifecycle rule expiring
+                              objects after a day. banlieue never creates or deletes it; it deletes
+                              each object once its import completes. Dots are refused: they break
+                              virtual-hosted-style HTTPS.
+                            pattern: ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$
+                            type: string
+                          vmImportRoleName:
+                            description: |-
+                              Name of the admin's VM Import service role (trusted by
+                              `vmie.amazonaws.com`, reading only `stagingBucket`), passed to
+                              `ImportSnapshot`. A name, not an ARN: it is in the `Provider`'s
+                              account.
+                            pattern: ^[A-Za-z0-9+=,.@_-]{1,64}$
+                            type: string
+                        required:
+                        - roleArn
+                        - stagingBucket
+                        - vmImportRoleName
+                        type: object
+                      region:
+                        description: |-
+                          The region, such as `ca-central-1`. Its availability zones are the
+                          failure domains (ADR-0158 Decisions 1 and 3). Only the `aws`,
+                          `aws-cn` and `aws-us-gov` partitions.
+                        pattern: ^[a-z]{2}(-gov)?-[a-z]+-[0-9]{1,2}$
+                        type: string
+                      roleArn:
+                        description: |-
+                          ARN of the IAM role the provider assumes with
+                          `AssumeRoleWithWebIdentity`, whose trust policy names this
+                          provider's ServiceAccount as the subject (ADR-0159):
+                          `arn:aws:iam::<account>:role/<path/><name>`. Its partition must be the
+                          region's.
+                        pattern: ^arn:aws(-cn|-us-gov)?:iam::[0-9]{12}:role/([!-~]{0,510}/)?[A-Za-z0-9+=,.@_-]{1,64}$
+                        type: string
+                      stsEndpoint:
+                        description: |-
+                          STS endpoint the ServiceAccount token is exchanged at. Unset: the
+                          region's own (`https://sts.<region>.amazonaws.com`). Set only to the
+                          DNS name of an interface VPC endpoint for STS in the same region
+                          (`https://vpce-<id>-<suffix>.sts.<region>.vpce.amazonaws.com`) or the
+                          regional name itself; admission refuses any other host, since this is
+                          where the token goes.
+                        nullable: true
+                        type: string
+                      tags:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          Extra tags put on every resource this `Provider` and its publisher
+                          create (instances and their volumes, import tasks, snapshots and
+                          AMIs), in the create call itself, for an account whose service
+                          control or tag policies require them (the EC2 counterpart of
+                          ADR-0172 Decision 1).
+
+                          banlieue's own tags always win: a key starting with `banlieue-` or
+                          `aws:` (in any case) is refused, as is `Name`, which banlieue sets to
+                          the machine's name. At most 44 (EC2 allows 50 per resource); keys 1
+                          to 128 and values up to 256 characters of ASCII letters, digits,
+                          space and `+ - = . _ : / @`. Applies to resources created afterwards;
+                          existing ones are not re-tagged.
+                        maxProperties: 44
+                        type: object
+                    required:
+                    - region
+                    - roleArn
+                    type: object
                   endpoint:
                     description: |-
                       Endpoint URL or URI. Format depends on provider class:
@@ -727,6 +848,7 @@ spec:
                         proxmox:  https://pve.example.com:8006
                         libvirt:  qemu+ssh://kvm-host.example.com/system
                         azure:    https://management.azure.com
+                        ec2:      https://ec2.<region>.amazonaws.com (or a VPC endpoint of it)
                     type: string
                   insecureSkipTLSVerify:
                     description: |-
@@ -835,7 +957,7 @@ spec:
 
                   For v1alpha1 the ProviderClass CRD is deferred; treat this as a name
                   drawn from a well-known set: `vsphere`, `proxmox`, `libvirt`,
-                  `cloud-hypervisor`, `azure`. A future
+                  `cloud-hypervisor`, `azure`, `ec2`. A future
                   ProviderClass CRD will provide install metadata (image, RBAC) without
                   changing this reference.
                 properties:

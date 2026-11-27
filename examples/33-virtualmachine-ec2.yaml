@@ -1,0 +1,194 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# A complete, minimal VirtualMachine on Amazon EC2 (ADR-0158 to ADR-0162,
+# ADR-0167, ADR-0174).
+#
+# NOT YET END TO END: the EC2Machine CRD, the `ec2` Provider class and the
+# EC2 provider (`banlieue provider ec2`, roadmap 24 phase C) exist, but the
+# controller's dispatch to it and the operator's workload for it are roadmap
+# 24 phase E. Applying this today stores the objects; nothing launches an
+# instance yet.
+#
+# Every identifier below is a placeholder: 111122223333 stands for your
+# account, and the subnet, security group and AMI IDs for your own.
+#
+# Prepare AWS first:
+#
+#   1. Publish the cluster's ServiceAccount issuer (OIDC discovery document and
+#      JWKS) where STS can fetch them, and add it to IAM as an OIDC identity
+#      provider with audience sts.amazonaws.com (ADR-0159 Decision 2).
+#   2. Create the role named in roleArn below, trusting that provider for
+#        sub: system:serviceaccount:banlieue-system:banlieue-provider-ec2-ec2-cc
+#        aud: sts.amazonaws.com
+#      The subject is the ServiceAccount the operator creates for this Provider:
+#      banlieue-provider-<providerClassRef.name>-<Provider name>. Its policy
+#      requires IMDSv2, hop limit 1, encrypted volumes, no public IP and the
+#      ownership tag by condition key, and binds the role to the site's egress
+#      (ADR-0174 Decisions 3 and 6).
+#
+# No Secret and no access key anywhere: the provider's only credential is its
+# projected ServiceAccount token, exchanged by AssumeRoleWithWebIdentity for a
+# fifteen-minute session (ADR-0174 Decision 6). Admission refuses a
+# credentialsRef on an ec2 Provider, pins the endpoint and stsEndpoint to the
+# region's own AWS names, and refuses an attestation.ekTrustBundle: NitroTPM
+# has no EK certificate (deploy/admission/provider-connection.yaml,
+# provider-attestation-ektrustbundle.yaml, ADR-0167 Decision 2).
+#
+# WHAT WILL HAPPEN WHEN YOU APPLY THIS (once the provider lands)
+#
+#   1. The operator starts a provider pod for `ec2-cc` with the projected token.
+#   2. The provider checks the instance type, volume type, subnets and security
+#      groups declared here and publishes one failure domain per zone.
+#   3. It verifies the AMI and marks the VMImage ready.
+#   4. banlieue-controller schedules the VirtualMachine onto a zone and creates
+#      an EC2Machine beside it.
+#   5. The provider launches the instance (IMDSv2 only, encrypted root volume,
+#      no public IP, userData as instance user data), tagged as banlieue's,
+#      reports its private address, and turns IMDS off once the guest is ready.
+#
+# Deleting the VirtualMachine terminates the instance and removes its volumes;
+# the finalizer is released only after both are gone.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: Provider
+metadata:
+  name: ec2-cc
+  namespace: banlieue-system
+  labels:
+    env: aws
+spec:
+  providerClassRef:
+    name: ec2
+  connection:
+    # The region's EC2 endpoint, or the DNS name of an interface VPC endpoint
+    # for EC2 in the same region:
+    #   https://vpce-0123456789abcdef0-abcd1234.ec2.ca-central-1.vpce.amazonaws.com
+    endpoint: https://ec2.ca-central-1.amazonaws.com
+    ec2:
+      region: ca-central-1
+      # One Provider is one account and one region (ADR-0158 Decision 1).
+      roleArn: arn:aws:iam::111122223333:role/banlieue-ec2-provider
+      # Unset: https://sts.ca-central-1.amazonaws.com. Only a VPC endpoint for
+      # STS in this region may replace it.
+      # stsEndpoint: https://vpce-0123456789abcdef0-abcd1234.sts.ca-central-1.vpce.amazonaws.com
+      # Unset: the account's default EBS key. Volumes are encrypted either way.
+      # kmsKeyId: arn:aws:kms:ca-central-1:111122223333:alias/banlieue-ebs
+      # Only for an account whose policies require them: extra tags on
+      # everything this Provider creates (never a key starting banlieue- or
+      # aws:, and never Name).
+      # tags:
+      #   cost-centre: "1234"
+      # Only for a VMImage with an ec2 `Url` source (ADR-0162 Decision 9): the
+      # publisher's separate role (assumed as
+      # system:serviceaccount:banlieue-imagebuild:banlieue-ec2-publisher), the
+      # admin's staging bucket and VM Import service role.
+      # publisher:
+      #   roleArn: arn:aws:iam::111122223333:role/banlieue-ec2-publisher
+      #   stagingBucket: banlieue-image-staging
+      #   vmImportRoleName: vmimport
+  capabilities:
+    storageClasses:
+      # An EBS volume type (ADR-0160); iops and throughput are optional.
+      - name: ssd
+        target:
+          volumeType: gp3
+    networkClasses:
+      # A subnet is zonal: one entry per zone the Provider should use, each
+      # with its subnet and the security groups of the instance's interface.
+      - name: lan
+        perZone:
+          - zone: ca-central-1a
+            target:
+              subnetId: subnet-0123456789abcdef0
+              securityGroupIds: sg-0123456789abcdef0
+          - zone: ca-central-1b
+            target:
+              subnetId: subnet-0fedcba9876543210
+              securityGroupIds: sg-0123456789abcdef0
+    # Which instance type each VMClass runs as (ADR-0160 Decision 1). A
+    # VMClass with no entry is not schedulable on this Provider.
+    instanceSizes:
+      - vmClass: ec2-small
+        size: m7i.large
+---
+# `Template`: ref is the ID of an AMI you registered, UEFI, with
+# TpmSupport=v2.0 if the class asks for a TPM (ADR-0167 Decision 5).
+apiVersion: banlieue.io/v1alpha1
+kind: VMImage
+metadata:
+  name: kairos-ec2
+spec:
+  osFamily: linux
+  osDistribution: kairos
+  osVersion: "3"
+  architecture: amd64
+  guestAgent: cloud-init
+  sources:
+    - providerClass: ec2
+      kind: Template
+      ref: ami-0123456789abcdef0
+      # Or let banlieue build and publish it through VM Import (ADR-0162
+      # Decision 9), with publisher set on the Provider above:
+      # kind: Url
+      # ref: unused-for-url-sources
+      # importFrom: quay.io/kairos/ubuntu:24.04-core-amd64-generic-v4.4.0@sha256:<digest>
+      # See examples/32-vmimage-kairos-ec2.yaml for the guest layer an EC2
+      # image needs.
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VMClass
+metadata:
+  # VMClass is cluster-scoped: a distinct name from the other examples'.
+  name: ec2-small
+spec:
+  hardware:
+    # m7i.large: 2 vCPUs, 8 GiB. The instance type, not these numbers, decides
+    # what EC2 allocates; keep them in step so quota accounting is honest.
+    cpus: 2
+    memoryMiB: 8192
+    disks:
+      # The root volume, created from the AMI at this size.
+      - name: os
+        sizeGiB: 10
+        storageClass: ssd
+  network:
+    interfaces:
+      - name: eth0
+        networkClass: lan
+        ipam: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ec2-01-cloud-config
+  namespace: banlieue-system
+data:
+  # At most 16,384 bytes once resolved (EC2's user data limit).
+  user-data: |
+    #cloud-config
+    hostname: ec2-01
+    users:
+      - name: kairos
+        ssh_authorized_keys:
+          - ssh-ed25519 AAAA...replace-me admin@bar.foo.io
+---
+apiVersion: banlieue.io/v1alpha1
+kind: VirtualMachine
+metadata:
+  name: ec2-01
+  namespace: banlieue-system
+spec:
+  classRef:
+    name: ec2-small
+  imageRef:
+    name: kairos-ec2
+  placement:
+    providerSelector:
+      matchLabels:
+        env: aws
+  userData:
+    configMapRef:
+      name: ec2-01-cloud-config
+  desiredPowerState: PoweredOn
+  migrationPolicy: never

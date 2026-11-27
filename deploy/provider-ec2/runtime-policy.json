@@ -1,0 +1,227 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "RunInstancesTaggedImdsV2Instance",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE",
+          "ec2:MetadataHttpTokens": "required"
+        },
+        "Null": {
+          "aws:RequestTag/banlieue-owner-uid": "false"
+        },
+        "NumericLessThanEquals": {
+          "ec2:MetadataHttpPutResponseHopLimit": "1"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesTaggedEncryptedVolume",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "Null": {
+          "aws:RequestTag/banlieue-owner-uid": "false"
+        },
+        "Bool": {
+          "ec2:Encrypted": "true"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesFromOwnPublishedImage",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION::image/*",
+      "Condition": {
+        "StringEquals": {
+          "ec2:Owner": "ACCOUNT_ID",
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesInTaggedSecurityGroup",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:security-group/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "RunInstancesWithoutPublicIp",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:network-interface/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:subnet/*"
+      ],
+      "Condition": {
+        "BoolIfExists": {
+          "ec2:AssociatePublicIpAddress": "false"
+        }
+      }
+    },
+    {
+      "Sid": "DenyRunInstancesWithAnInstanceProfile",
+      "Effect": "Deny",
+      "Action": "ec2:RunInstances",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "Null": {
+          "ec2:InstanceProfile": "false"
+        }
+      }
+    },
+    {
+      "Sid": "TagOnlyAsPartOfRunInstances",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+        "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": "RunInstances",
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "OperateOwnInstances",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:StopInstances",
+        "ec2:StartInstances",
+        "ec2:TerminateInstances",
+        "ec2:GetConsoleOutput",
+        "ec2:GetInstanceTpmEkPub"
+      ],
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "DisableImdsOnOwnInstancesOnly",
+      "Effect": "Allow",
+      "Action": "ec2:ModifyInstanceMetadataOptions",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:instance/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE",
+          "ec2:Attribute": "HttpEndpoint",
+          "ec2:Attribute/HttpEndpoint": "disabled"
+        },
+        "Null": {
+          "ec2:Attribute/HttpTokens": "true",
+          "ec2:Attribute/HttpPutResponseHopLimit": "true",
+          "ec2:Attribute/HttpProtocolIpv6": "true",
+          "ec2:Attribute/InstanceMetadataTags": "true"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteOwnLeftoverVolumes",
+      "Effect": "Allow",
+      "Action": "ec2:DeleteVolume",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:volume/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "DescribeInRegion",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeInstances",
+        "ec2:DescribeVolumes",
+        "ec2:DescribeImages",
+        "ec2:DescribeAvailabilityZones",
+        "ec2:DescribeInstanceTypeOfferings",
+        "ec2:DescribeInstanceTypes"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "REGION"
+        }
+      }
+    },
+    {
+      "Sid": "ReadEc2VcpuQuotas",
+      "Effect": "Allow",
+      "Action": "servicequotas:GetServiceQuota",
+      "Resource": "arn:aws:servicequotas:REGION:ACCOUNT_ID:ec2/*"
+    },
+    {
+      "Sid": "ListTaggedResourcesForOrphanSweep",
+      "Effect": "Allow",
+      "Action": "tag:GetResources",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "REGION"
+        }
+      }
+    },
+    {
+      "Sid": "OptionalOnlyWithACustomerManagedKmsKeyUseItViaEc2",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant",
+        "kms:Decrypt",
+        "kms:GenerateDataKeyWithoutPlaintext"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT_ID:key/KMS_KEY_ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ec2.REGION.amazonaws.com"
+        }
+      }
+    }
+  ]
+}

@@ -11,7 +11,8 @@
 # The ISO half of Decision 7 needs no rule of its own: no `sources[].kind`
 # names an ISO (the build artifact kind is status, chosen by the
 # imagebuilder), and a cloud image is a `Template` (a published gallery image
-# version) or, once ADR-0162's publisher lands, a published `Url` build.
+# version, an AMI) or a published `Url` build (ADR-0162 Decisions 4 and 9).
+# ec2 refuses deferred installs for the same reason (ADR-0167 Decision 5).
 #
 # The cloud classes are listed by name, as provider-connection.yaml does.
 # Add a class here in the same change that ships it.
@@ -35,7 +36,7 @@ spec:
   # Only images that can land on a cloud class carry anything to check.
   matchConditions:
     - name: has-cloud-source
-      expression: "object.spec.sources.exists(s, s.providerClass in ['azure'])"
+      expression: "object.spec.sources.exists(s, s.providerClass in ['azure', 'ec2'])"
   validations:
     - expression: >-
         !has(object.spec.template)
@@ -43,7 +44,7 @@ spec:
           || object.spec.template.installMode != 'deferred'
       message: >-
         spec.template.installMode: deferred cannot be combined with a cloud
-        source (azure): a cloud VM has no install-media path (ADR-0162).
+        source (azure, ec2): a cloud VM has no install-media path (ADR-0162).
       reason: Invalid
 ---
 apiVersion: admissionregistration.k8s.io/v1
