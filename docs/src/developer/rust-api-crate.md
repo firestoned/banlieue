@@ -12,15 +12,15 @@ the CRD YAML.
 
 ```toml
 [dependencies]
-banlieue-api = "=0.6.0"   # the release whose CRDs your cluster runs
+banlieue-api = "=0.6.1"   # the release whose CRDs your cluster runs
 k8s-openapi = { version = "0.29", features = ["latest"] }
 kube = { version = "5.2", features = ["client", "runtime"] }
 ```
 
-- **Rust 1.95 or newer.** `banlieue-api` 0.6.0 requires kube `~5.2` (the
+- **Rust 1.95 or newer.** `banlieue-api` 0.6.1 requires kube `~5.2` (the
   RUSTSEC-2026-0600 fix), whose minimum Rust version is 1.95.
-- **Match the installed release.** `banlieue-api 0.6.0` holds the types of
-  the `v0.6.0` CRDs. The API groups are `v1alpha1`, so any minor version may
+- **Match the installed release.** `banlieue-api 0.6.1` holds the types of
+  the `v0.6.1` CRDs. The API groups are `v1alpha1`, so any minor version may
   change them; pin the exact version, or at least the minor.
 - **Choose the Kubernetes version yourself.** Like any library built on
   k8s-openapi, the crate enables no Kubernetes version feature; your binary

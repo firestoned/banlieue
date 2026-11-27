@@ -32,6 +32,12 @@ Bring up a management cluster and install banlieue.
     Then set up a backend: what a `Provider` is, how to choose a class, and
     one page per class, from the Cloud Hypervisor host installer to Azure.
 
+- :material-update: **[Upgrading from 0.6.0 to 0.6.1](upgrading-to-0.6.1.md)**
+
+    The Azure provider's new objects, a `migrationPolicy` recreate that now
+    recreates, provider Jobs confined to the build namespace, and the
+    measured image digest.
+
 - :material-update: **[Upgrading from 0.5.x to 0.6.0](upgrading-to-0.6.md)**
 
     What changed between v0.5.9 / v0.5.10 and v0.6.0, the order to roll it
