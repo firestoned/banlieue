@@ -5,7 +5,7 @@
 # this image, then runs /src/build.sh inside it to produce fuzzer binaries in
 # $OUT. Base image pinned by digest (Scorecard Pinned-Dependencies); bump when
 # oss-fuzz-base rolls forward. Pinned 2026-08: base-builder-rust:latest
-FROM gcr.io/oss-fuzz-base/base-builder-rust@sha256:3428d0a90b1e7efbe2ba947bd1d0c9a70594986b4b6553804547f1fb24cfc92f
+FROM gcr.io/oss-fuzz-base/base-builder-rust@sha256:8d2315aeda612bc4176bf20057a72db2a7f61cdf4a8699829c147ab5af02d234
 
 # The base image pins nightly-2025-09-05 (rustc 1.91), below the workspace
 # MSRV (1.95), and upstream has not moved it since. Pin a newer nightly here:

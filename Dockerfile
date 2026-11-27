@@ -36,7 +36,7 @@
 # graph, so an air-gapped build never reaches upstream.
 ARG BASE_IMAGE=pinned-base
 
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:cb87acc574abe719b6e5c547384defa2f7b1f24af9605d3f618cf852495d8be2 AS pinned-base
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:29ee70762214fe8190cea04ef1c0a84a8365879e047ce8f911ae5a5ab2355fa2 AS pinned-base
 
 FROM ${BASE_IMAGE}
 
