@@ -1,6 +1,40 @@
 # Changelog
 
-<<<<<<< HEAD
+## [2026-11-27 10:45] - A running VM stays Ready through an image republish; Azure OS-disk tag merge removed (ADR-0172, ADR-0173 amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: when the infra builder fails only because the
+  `VMImage` has no resolved ref (`MissingResolvedImageRef`, a row not ready while it republishes) and the VM's
+  infra CR exists and is provisioned, the controller leaves that CR as it is and keeps mirroring it instead of
+  reporting `Scheduled=False`/`Ready=False` `InfraBuildFailed` (`keeps_provisioned_infra`). Found live: a
+  running Azure VM read `Ready=False` for the 14 minutes a new gallery version took after the v0.6.1 guest image
+  rebuilt its `VMImage`. A machine not yet provisioned still waits; any other build error is still reported.
+- `crates/banlieue-provider-azure`: no post-create Tags API merge onto the OS disk (`tag_os_disk` removed).
+  Observed 2026-11-27: Azure creates the implicit OS disk with exactly the VM's tags in one `disks/write`, so the
+  merge was redundant, and on disks of VMs created before the UID-derived disk name it missed and retried every
+  pass. `crates/banlieue-azure`: `ArmApi::merge_disk_tags`, `merge_tags_body` and `TAGS_OPERATION_MERGE`
+  removed; `FakeArm` now creates the OS disk with the VM's tags, as ARM does.
+- `deploy/provider-azure/role-definition.json`: `Microsoft.Resources/tags/write` removed.
+- `crates/banlieue-api`: `AzureVirtualMachine.status.osDiskTagged` deprecated (kept, no longer written); CRD and
+  API reference regenerated (description only).
+- ADR-0172 and ADR-0173 amended 2026-11-27; `docs/src/providers/azure.md` (tagging, republish behaviour,
+  troubleshooting row); roadmap 23 rows C and H.
+- Threat model pass: a grant removed, no new component, identity, grant, boundary or input; §2 Azure row, A-16,
+  two TB-4 Azure rows, §7.36 (c); stamp already 2026-11-27, ADR range unchanged (ADR-0172 and 0173 already in it).
+
+### Why
+A running VM does not need its image; a republish should not flip it to not Ready. The OS-disk merge could
+never help a `deny` policy (which judges the disk at create) and Azure already tags the disk at create, so
+removing it drops an unused write grant.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (controller and Azure provider; update the Azure custom role to drop `tags/write`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 10:15] - CI: the API server checks the CRDs and admission policies before any e2e build
 
 **Author:** Erick Bourgeois
@@ -201,40 +235,6 @@ compare objects and belong to scheduling.
 ### Impact
 - [ ] Breaking change
 - [x] Requires cluster rollout (new CRDs; re-apply `banlieue.io_providers.yaml` and the admission policies)
-=======
-## [2026-11-27 06:30] - A running VM stays Ready through an image republish; Azure OS-disk tag merge removed (ADR-0172, ADR-0173 amended)
-
-**Author:** Erick Bourgeois
-
-### Changed
-- `crates/banlieue-controller/src/reconciler/virtualmachine.rs`: when the infra builder fails only because the
-  `VMImage` has no resolved ref (`MissingResolvedImageRef`, a row not ready while it republishes) and the VM's
-  infra CR exists and is provisioned, the controller leaves that CR as it is and keeps mirroring it instead of
-  reporting `Scheduled=False`/`Ready=False` `InfraBuildFailed` (`keeps_provisioned_infra`). Found live: a
-  running Azure VM read `Ready=False` for the 14 minutes a new gallery version took after the v0.6.1 guest image
-  rebuilt its `VMImage`. A machine not yet provisioned still waits; any other build error is still reported.
-- `crates/banlieue-provider-azure`: no post-create Tags API merge onto the OS disk (`tag_os_disk` removed).
-  Observed 2026-11-27: Azure creates the implicit OS disk with exactly the VM's tags in one `disks/write`, so the
-  merge was redundant, and on disks of VMs created before the UID-derived disk name it missed and retried every
-  pass. `crates/banlieue-azure`: `ArmApi::merge_disk_tags`, `merge_tags_body` and `TAGS_OPERATION_MERGE`
-  removed; `FakeArm` now creates the OS disk with the VM's tags, as ARM does.
-- `deploy/provider-azure/role-definition.json`: `Microsoft.Resources/tags/write` removed.
-- `crates/banlieue-api`: `AzureVirtualMachine.status.osDiskTagged` deprecated (kept, no longer written); CRD and
-  API reference regenerated (description only).
-- ADR-0172 and ADR-0173 amended 2026-11-27; `docs/src/providers/azure.md` (tagging, republish behaviour,
-  troubleshooting row); roadmap 23 rows C and H.
-- Threat model pass: a grant removed, no new component, identity, grant, boundary or input; §2 Azure row, A-16,
-  two TB-4 Azure rows, §7.36 (c); stamp already 2026-11-27, ADR range unchanged (ADR-0172 and 0173 already in it).
-
-### Why
-A running VM does not need its image; a republish should not flip it to not Ready. The OS-disk merge could
-never help a `deny` policy (which judges the disk at create) and Azure already tags the disk at create, so
-removing it drops an unused write grant.
-
-### Impact
-- [ ] Breaking change
-- [x] Requires cluster rollout (controller and Azure provider; update the Azure custom role to drop `tags/write`)
->>>>>>> a7edb22 (fix(azure): keep running VMs Ready through a republish; drop the OS-disk tag merge (ADR-0172, ADR-0173))
 - [ ] Config change only
 - [ ] Documentation only
 
