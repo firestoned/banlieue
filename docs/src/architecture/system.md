@@ -105,6 +105,15 @@ flowchart LR
     system-azure-guest["Azure Trusted Launch guest"]
     network-azure-disk-upload["Azure managed-disk upload endpoint (external)"]
     data-asset-azure-disk-encryption-set["Azure disk encryption set (external, admin-owned)"]
+    service-provider-ec2["banlieue-provider-ec2"]
+    service-ec2-image-publisher["EC2 image publish Job"]
+    network-aws-sts["AWS Security Token Service (external)"]
+    network-aws-ec2["Amazon EC2 Query API (external)"]
+    network-aws-s3-staging["S3 staging bucket (external, admin-owned)"]
+    network-aws-vm-import["AWS VM Import service (external)"]
+    network-aws-imds["EC2 Instance Metadata Service (link-local, external)"]
+    data-asset-ec2-machine-cr["EC2Machine Custom Resource"]
+    system-ec2-guest["EC2 NitroTPM guest"]
     subgraph sg_system-banlieue-binary [System Banlieue Binary]
         service-banlieue-controller
         service-banlieue-operator
@@ -113,6 +122,7 @@ flowchart LR
         service-provider-libvirt
         service-banlieue-imagebuilder
         service-provider-azure
+        service-provider-ec2
     end
     subgraph sg_ecosystem-management-cluster [Ecosystem Management Cluster]
         service-banlieue-controller
@@ -125,6 +135,7 @@ flowchart LR
         service-banlieue-imagebuilder
         service-kairos-operator
         service-provider-azure
+        service-provider-ec2
     end
     subgraph sg_service-kubernetes-api [Service Kubernetes Api]
         data-asset-virtualmachine-cr
@@ -306,6 +317,18 @@ flowchart LR
     service-azure-image-publisher -->|HTTPS| network-azure-disk-upload
     service-provider-azure -->|HTTPS| data-asset-azure-disk-encryption-set
     service-azure-image-publisher -->|HTTPS| data-asset-azure-disk-encryption-set
+    service-provider-ec2 -->|HTTPS| service-kubernetes-api
+    service-provider-ec2 -->|HTTPS| network-aws-sts
+    network-aws-sts -->|HTTPS| network-sa-issuer-publication
+    service-provider-ec2 -->|HTTPS| network-aws-ec2
+    service-ec2-image-publisher -->|HTTPS| network-aws-sts
+    service-ec2-image-publisher -->|HTTPS| network-aws-ec2
+    service-ec2-image-publisher -->|HTTPS| network-aws-s3-staging
+    network-aws-vm-import -->|HTTPS| network-aws-s3-staging
+    system-ec2-guest -->|HTTP| network-aws-imds
+    system-ec2-guest --> network-aws-ec2
+    service-banlieue-controller --> data-asset-ec2-machine-cr
+    service-banlieue-controller --> data-asset-provider-cr
 ```
 
 <sub>Source: nodes and relationships in `architecture.json`.</sub>

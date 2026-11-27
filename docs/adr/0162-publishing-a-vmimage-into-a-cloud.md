@@ -11,7 +11,10 @@ SPDX-License-Identifier: Apache-2.0
 - **Amended:** 2026-11-26 (Decision 4: the `VMImage`'s cloud source entry is
   the declaration, as for vSphere, instead of `spec.publish.providers[]`;
   Decision 8 added: the published set is reconciled to the declared one;
-  Decision 3's long-running version create is resumed by adoption)
+  Decision 3's long-running version create is resumed by adoption);
+  2026-11-26 again (Decision 2's EC2 row and Decision 9: EC2 publishes a
+  pre-laid disk through VM Import, not the EBS direct APIs, after roadmap
+  24's spike)
 - **Related:** Roadmap 22 (the centre of it), roadmap 23 (Azure), roadmap 24
   (EC2). [ADR-0010](0010-vmimage-build-pipeline-imagebuilder.md) (the image
   builder produces a raw disk), [ADR-0016](0016-imagebuild-namespace-isolation.md)
@@ -73,7 +76,7 @@ cannot create, register or delete images.
 | Cloud | Uploaded | Registered as | Path |
 | --- | --- | --- | --- |
 | Azure | fixed VHD: the raw disk plus a 512-byte footer, written by banlieue (no `qemu-img`) | managed disk (direct upload, write SAS), snapshot, then an image version in a Compute Gallery image definition | Put Page in 4 MiB chunks, **all-zero chunks skipped**, several in parallel |
-| EC2 | raw disk | EBS snapshot (EBS direct APIs), then an AMI with `BootMode=uefi` and `TpmSupport=v2.0` when needed | roadmap 24 confirms |
+| EC2 | *amended:* the **pre-laid** disk (ADR-0113, ADR-0175) as a stream-optimized VMDK written by banlieue | an encrypted EBS snapshot by VM Import (`ImportSnapshot` from an S3 staging object), then an AMI with `BootMode=uefi`, and `TpmSupport=v2.0` when needed | Decision 9 |
 
 The VHD footer writer and roadmap 15's VMDK writer share one disk-format
 module.
@@ -160,6 +163,51 @@ it. For each `Provider` serving a `VMImage` with a cloud `Url` source:
 
 The check reads the version by name on the provider's slow cadence; it is a
 reconcile over what was read, never a poll in the create path.
+
+### 9. EC2 specifics, from the roadmap 24 spike (added 2026-11-26)
+
+The spike (2026-11-24 to 2026-11-26) published through both the EBS direct
+APIs and VM Import, and booted both. VM Import is the path:
+
+- **Why not EBS direct.** It writes a snapshot block by block
+  (`StartSnapshot`, `PutSnapshotBlock`, `CompleteSnapshot`) and worked, but
+  its `ebs:` actions are a separate grant that governed accounts commonly
+  withhold; the environment the spike targets does. VM Import needs only S3
+  and EC2 Query actions, which the same accounts grant. The EBS direct path
+  is not implemented.
+- **What is uploaded.** The pre-laid disk (ADR-0113), never a raw image
+  that boots into recovery: that first boot took 413 s to ready on EC2,
+  the pre-laid one 49.9 s (ADR-0175 finding 4). Its persistent partition is
+  laid out small (8 GiB in all in the spike) and grows on first boot. The
+  Job writes it as a **stream-optimized VMDK** in `banlieue-diskformat`
+  (the module roadmap 15 planned, `flate2` for the grains, already in the
+  tree): all-zero grains are omitted and the rest compressed, so the
+  upload carries roughly the data, not the disk.
+- **Staging.** The object goes to an **admin-owned S3 bucket** named on the
+  `Provider` (block public access on, expiry of one day and abort of
+  incomplete multipart uploads as a lifecycle backstop) by multipart upload,
+  64 MiB parts in parallel, under a key derived from the source digest. The
+  object is deleted as soon as the import completes.
+- **Import.** `ImportSnapshot` with `Encrypted=true` (the account's default
+  EBS key, or a KMS key the `Provider` names) and the **admin's VM Import
+  service role** (trusted by `vmie.amazonaws.com` with
+  `sts:ExternalId=vmimport`, reading only the staging bucket). The
+  publisher's identity holds `iam:PassRole` for that one role, to that one
+  service, and no S3 read: VM Import reads the object, the publisher only
+  writes it. The task is tagged at creation; the resulting snapshot is
+  tagged by `CreateTags` as soon as it exists (in the spike, the task's
+  tags did not reach it).
+- **Register.** `RegisterImage` with `BootMode=uefi`, `EnaSupport=true`,
+  `TpmSupport=v2.0` when the `VMImage` declares `tpmEnabled` or
+  `firstBootSealing` (ADR-0167), one gp3 root volume of the template's size
+  with `DeleteOnTermination`, tagged at creation.
+- **Long-running and adoptable.** Upload took about 400 s and the import
+  about 680 s for the 8 GiB template; neither is assumed. Every step is
+  named or tagged from the source digest, so a restarted Job adopts the
+  upload (by `ListParts`), the import task (by tag) or the snapshot (by
+  tag) in flight, as Decision 3's Azure amendment does.
+- **Deletion.** Deregister the AMI, then delete its snapshot, both only
+  when tagged as banlieue's and unreferenced (Decision 8).
 
 ## Consequences
 

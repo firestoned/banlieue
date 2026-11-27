@@ -1,5 +1,45 @@
 # Changelog
 
+## [2026-11-27 01:30] - EC2 provider decisions: ADR-0174, ADR-0167, ADR-0175 and ADR-0162 Decision 9 (roadmap 24)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md` (Proposed): kind `EC2Machine` (CAPA owns
+  `AWSMachine`), `providerID` `aws:///<zone>/<instance-id>`; a first-party `banlieue-aws` crate (SigV4 on
+  aws-lc-rs tested against AWS's vectors, `AssumeRoleWithWebIdentity`, EC2 Query, S3 multipart, Service Quotas,
+  Tagging API; `quick-xml` the one new dependency) instead of the official SDK; every instance IMDSv2-only, hop
+  limit 1, encrypted volumes, no public IP, no instance profile, enforced again by the IAM policy's condition
+  keys; IMDS disabled once the guest is ready; `GuestReady` read from the serial console; capacity errors
+  re-place under ADR-0173. Roadmap 24 reserved ADR-0166 for this, which went to another decision. Decision 6:
+  a stolen credential is bounded, not accepted as a gap: STS sessions at the 900 s minimum, the projected
+  ServiceAccount token at 600 s, every action denied off the site's egress (`aws:SourceIp`/`aws:SourceVpce`)
+  by default, and role-wide revocation on `aws:TokenIssueTime` as the incident step.
+- `docs/adr/0167-nitrotpm-and-the-ek-public-key.md` (Proposed): the EK public key from `GetInstanceTpmEkPub`,
+  read host-side, published as `status.tpmEndorsementPublicKeys` and mirrored; `ekTrustBundle` refused on
+  `ec2`; SPIRE's EK public-key allowlist is sound there because the hash comes from the API.
+- `docs/adr/0175-ec2-guest-layer.md` (Proposed): the EC2 guest layer and `banlieue-guest-ec2` helper (IMDSv2
+  user data fetched in `initramfs` so it applies in the same boot, online grow of a sealed persistent
+  partition in Rust, a level-3 `/dev/kmsg` ready line); wait-online masked on EC2.
+
+### Changed
+- `docs/adr/0162-publishing-a-vmimage-into-a-cloud.md`: amended. EC2 publishes the pre-laid disk as a
+  stream-optimized VMDK through an admin-owned S3 staging bucket and VM Import (`ImportSnapshot`, encrypted, the
+  admin's service role passed only to `vmie.amazonaws.com`), then `RegisterImage`; not the EBS direct APIs,
+  which governed accounts commonly withhold (Decision 9, Decision 2's EC2 row).
+- `.github/community/24-ec2-provider.md`, `ROADMAPS.md`: phase 0 results recorded (49.9 s from `RunInstances`
+  to `GuestReady` for a sealed pre-laid template, 40 s restart, EK match), ADR numbers corrected (0174, 0167,
+  0175), phase 0 in progress pending acceptance.
+
+### Why
+Roadmap 24 phase 0 ran in a real account from 2026-11-24 to 2026-11-26; ADD puts the decisions before code.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-27 00:30] - A `migrationPolicy` recreate converges instead of deleting forever
 
 **Author:** Erick Bourgeois

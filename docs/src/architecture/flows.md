@@ -409,3 +409,19 @@ flowchart TD
 
 <sub>Source: flow `flow-replace-azure-virtual-machine-after-allocation-failure` in `architecture.json`.</sub>
 
+
+## An EC2 capacity failure re-places the machine in another zone (ADR-0173, ADR-0174)
+
+DESIGNED, NOT IMPLEMENTED (ADR-0174 Decision 3, ADR-0173 unchanged). The provider reports a zone-specific create failure; the controller, the only placer, re-places a machine that never ran, excluding the failed zone for a bounded, exponential time. Nothing new crosses the CRD-only bus.
+
+```mermaid
+flowchart TD
+    t1["1. RunInstances is refused with InsufficientInstanceCapacity, or with Unsupported for an instance type not offered in the zone."]
+    t2["2. The provider sets EC2Machine VMCreated=False reason ZoneUnavailable (lastTransitionTime = the failure) and increments status.createFailures; it never edits spec.failureDomain."]
+    t3["3. The controller reads the failure for the recorded placement, records it on VirtualMachine.status.placementFailures and schedules again with that failure domain excluded."]
+    t4["4. With another placement, the controller writes status.scheduled and deletes the EC2Machine; the provider's finalizer removes leftovers by owner tag, and the next pass applies a fresh machine in the new zone. With none, the machine stays and the provider retries in place after its back-off."]
+    t1 --> t2 --> t3 --> t4
+```
+
+<sub>Source: flow `flow-replace-ec2-machine-after-allocation-failure` in `architecture.json`.</sub>
+

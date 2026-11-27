@@ -17,22 +17,28 @@
 > authenticates by `AssumeRoleWithWebIdentity` with no access key in the
 > cluster.
 >
-> **Status (2026-11-19): not started.** Nothing in the tree yet. Depends on
-> roadmap 22 phases 0 to D.
+> **Status (2026-11-26): phase 0 done, ADRs Proposed.** The spike ran in
+> one account (2026-11-24 to 2026-11-26); its results are in ADR-0174 (the
+> `EC2Machine` and a first-party AWS client), ADR-0167 (NitroTPM and the EK
+> public key), ADR-0175 (the EC2 guest layer) and ADR-0162's EC2 amendment
+> (publishing through VM Import). No code yet.
 >
 > **Build it shared-capable from the first commit** (ADR-0133): the
 > InfraMachine's `providerRef` is a `ProviderReference`, and the provider
 > serves tenant namespaces through `ProviderScope`.
 
-Baseline when written: `dca5f45` (2026-11-19). This roadmap takes **ADR-0166
-and ADR-0167** from the block roadmaps 22 to 25 reserve (0158 to 0169).
+Baseline when written: `dca5f45` (2026-11-19). This roadmap reserved
+**ADR-0166 and ADR-0167** from the block roadmaps 22 to 25 reserve (0158 to
+0169). ADR-0166 was used for another decision first, so the InfraMachine
+decision is **ADR-0174**; ADR-0167 is as reserved, and the guest layer is
+**ADR-0175**.
 
-**Sequencing.** Roadmap 23 (Azure) comes first in the numbering, but EC2 is
-the cheaper first proof of roadmap 22: an official Rust SDK may cover it
-(roadmap 22 phase 0), `RunInstances` is idempotent by client token, and
-the EBS direct APIs make image publishing a plain upload. Building EC2
-first and Azure second is the recommended order; the numbers stay as they
-are.
+**Sequencing.** Azure (roadmap 23) was built first after all, and EC2
+follows its shape: a first-party client crate (ADR-0174, as ADR-0164 for
+ARM), a guest helper delivered as a bundle (ADR-0175, as ADR-0171), and a
+publish Job (ADR-0162). Publishing goes through VM Import, not the EBS
+direct APIs, because governed accounts commonly withhold the `ebs:`
+actions (ADR-0162 Decision 9).
 
 ## How EC2 maps onto banlieue
 
@@ -43,7 +49,7 @@ are.
 | `VMClass` | an instance type (`m7i.xlarge`, `m8g.xlarge`), mapped per `Provider` (ADR-0160). The type's architecture must match the `VMImage`'s (`Amd64`, `Arm64`): checked at admission and in scheduling |
 | storage class | an EBS volume type and its IOPS and throughput (`gp3`, `io2`) |
 | network class | a subnet ID and security group IDs, per zone |
-| `VMImage` | an AMI published by roadmap 22 (EBS direct APIs, `RegisterImage`), or a hand-published AMI by ID (`Template`) |
+| `VMImage` | an AMI published by roadmap 22 (a pre-laid disk as a stream-optimized VMDK, staged in S3, `ImportSnapshot`, `RegisterImage`; ADR-0162 Decision 9), or a hand-published AMI by ID (`Template`) |
 | `spec.userData` | instance user data (16 KiB limit checked at admission) |
 | `tpmEnabled` | NitroTPM: the AMI is registered with `BootMode=uefi` and `TpmSupport=v2.0`, on an instance type that supports it |
 | `desiredPowerState: PoweredOff` | `StopInstances` (compute stops billing, volumes do not) |
@@ -51,7 +57,11 @@ are.
 
 ## Decisions (one ADR each)
 
-### ADR-0166: the EC2 InfraMachine
+### ADR-0174: the EC2 InfraMachine (reserved as ADR-0166)
+
+Written 2026-11-26 as
+[ADR-0174](../../docs/adr/0174-ec2-inframachine-and-a-first-party-aws-client.md),
+Proposed. What follows is the plan it answered.
 
 - **Kind name.** CAPA owns `AWSMachine`; `EC2Machine` does not collide and
   says what it is. The CRD satisfies the CAPI v1beta2 InfraMachine
@@ -75,6 +85,11 @@ are.
 
 ### ADR-0167: NitroTPM and the endorsement key
 
+Written 2026-11-26 as
+[ADR-0167](../../docs/adr/0167-nitrotpm-and-the-ek-public-key.md), Proposed:
+the EK public key from `GetInstanceTpmEkPub` is published as
+`status.tpmEndorsementPublicKeys`; `ekTrustBundle` is refused on EC2.
+
 NitroTPM gives `tpmEnabled` a real TPM 2.0, so first-boot sealing
 (ADR-0088) can apply. The difference from every other backend: EC2 exposes
 the EK as a **public key** (`GetInstanceTpmEkPub`), host-side, over an
@@ -92,31 +107,39 @@ root. The ADR decides:
 
 ## Phase 0 spike (gates the rest)
 
-- [ ] A Kairos raw image, uploaded through the EBS direct APIs and
-      registered as a UEFI, `TpmSupport=v2.0` AMI, boots and applies user
-      data (does Kairos's datasource read EC2's IMDSv2?), on `x86_64` and
-      on Graviton.
-- [ ] The `GuestReady` transport roadmap 22 picks (ADR-0163) works here
-      (`GetConsoleOutput` with `Latest` is the first candidate), and its
-      latency is recorded.
-- [ ] `GetInstanceTpmEkPub` returns a key that matches what the guest's TPM
-      reports.
-- [ ] Time from `RunInstances` to `GuestReady`, plain and sealed.
-- [ ] Post-quantum key exchange measured against STS, EC2 and EBS
-      (roadmap 22 phase 0).
+- [x] A Kairos image registered as a UEFI, `TpmSupport=v2.0` AMI boots and
+      applies user data, on `x86_64`: through the EBS direct APIs first,
+      then through VM Import (the path chosen, ADR-0162 Decision 9). Kairos's
+      datasource does not read IMDSv2; a baked reader does (ADR-0175).
+      **Graviton not run** (needs an arm64 guest build): open.
+- [x] `GuestReady` transport: a level-3 `/dev/kmsg` line read with
+      `GetConsoleOutput` `Latest`, refreshed about every 30 s (ADR-0174,
+      ADR-0175).
+- [x] `GetInstanceTpmEkPub` (RSA-2048 and ECC P-384) matches the guest's TPM
+      byte for byte, stable across stop and start (ADR-0167).
+- [x] Time from `RunInstances` to `GuestReady`: 144 to 156 s for the first
+      unsealed images; sealed, 413 s from a raw image that reset out of
+      recovery, **49.9 s** from a pre-laid 8 GiB template that grows on first
+      boot, 40 s for a restart. First boots spread 29 to 64 s of guest
+      uptime across three AMIs (likely EBS lazy loading; Fast Snapshot
+      Restore untested).
+- [x] Post-quantum key exchange: STS, EC2, EBS and S3 negotiate
+      X25519MLKEM768 from rustls with aws-lc-rs (ADR-0170).
+- [ ] Not yet run: `InsufficientInstanceCapacity` and zone retry; two
+      instances from one AMI (distinct EKs, sealing isolation).
 
 ## Phases
 
 | Phase | What | Status |
 | --- | --- | --- |
-| 0 | Spike above; ADR-0166 and ADR-0167 written with its results | ⛔ |
-| A | Client: the SDK or first-party SigV4 client roadmap 22 phase 0 chose, behind a trait; a fake that **rejects** what EC2 rejects (an instance type not offered in the zone, a second create with the same client token but different parameters, `IdempotentParameterMismatch`), per `rules/testing.md` rule 1; a live protocol tier (`#[ignore]`, fails loudly without an account) | ⛔ |
+| 0 | Spike above; ADR-0174, ADR-0167, ADR-0175 and ADR-0162's amendment written with its results (Proposed) | 🔶 |
+| A | Client: the first-party `banlieue-aws` crate (ADR-0174: SigV4, STS web identity, EC2 Query, S3 multipart, VM Import), behind a trait; a fake that **rejects** what EC2 rejects (an instance type not offered in the zone, a second create with the same client token but different parameters, `IdempotentParameterMismatch`), per `rules/testing.md` rule 1; a live protocol tier (`#[ignore]`, fails loudly without an account) | ⛔ |
 | B | API: `EC2Machine` and `EC2MachineTemplate`, `ec2` provider class, admission for what the class refuses (`installMode: Deferred`, ISO images, user data over 16 KiB, an architecture mismatch, `tpmEnabled` on an AMI without TPM support), `regen-crds`, examples | ⛔ |
 | C | Provider: create, observe, stop, start, terminate, adopt by tag, zone retry on `InsufficientInstanceCapacity`, quota and offered types per zone on `Provider.status` | ⛔ |
-| D | Images: AMIs published by roadmap 22's publish Job, consumed by digest; `Template` for hand-published AMIs | ⛔ |
+| D | Images: the publish Job for EC2 (ADR-0162 Decision 9: stream-optimized VMDK writer in `banlieue-diskformat`, S3 multipart staging, `ImportSnapshot`, `RegisterImage`, adoption by tag), AMIs consumed by digest; `Template` for hand-published AMIs; the guest layer and `banlieue-guest-ec2` helper (ADR-0175) | ⛔ |
 | E | Controller dispatch and scheduling; `VirtualMachine` status mirrors the infra CR (non-negotiable 6) | ⛔ |
 | F | Pools: a `GuestReady` pool warms, is claimed, releases and refills across two zones; sealed pool on NitroTPM; sealing isolation test | ⛔ |
-| G | Docs and threat model: guide (OIDC provider and role, subnet and security group mapping, first instance, first pool), provider comparison column, threat-model full pass for ADR-0166 and ADR-0167 | ⛔ |
+| G | Docs and threat model: guide (OIDC provider and role, subnet and security group mapping, first instance, first pool), provider comparison column, threat-model full pass for ADR-0174, ADR-0167 and ADR-0175 | ⛔ |
 
 ## Out of scope
 
@@ -134,7 +157,8 @@ Roadmap 22 and its ADRs, then ADR-0043, 0045, 0049, 0088, 0101 and 0133.
 
 - [ ] Stop condition above, verified live against a real account (no
       account ID, ARN or resource ID committed).
-- [ ] ADR-0166 and ADR-0167 accepted, each with its threat-model pass.
+- [ ] ADR-0174, ADR-0167 and ADR-0175 accepted, each with its threat-model
+      pass.
 - [ ] Orphan sweep verified: kill the provider mid-create, restart it, and
       nothing is left behind or duplicated.
 - [ ] `cargo deny` clean.
