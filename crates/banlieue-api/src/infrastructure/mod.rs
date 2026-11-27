@@ -8,6 +8,7 @@
 
 pub mod azure_virtual_machine;
 pub mod cloud_hypervisor_machine;
+pub mod ec2_machine;
 pub mod firecracker_machine;
 pub mod libvirt_machine;
 pub mod proxmox_machine;
@@ -26,6 +27,12 @@ pub use cloud_hypervisor_machine::{
     CloudHypervisorMachineStatus, CloudHypervisorMachineTemplate,
     CloudHypervisorMachineTemplateResource, CloudHypervisorMachineTemplateSpec,
     cloud_hypervisor_provider_id,
+};
+pub use ec2_machine::{
+    DEFAULT_ROOT_DEVICE_NAME, EC2Machine, EC2MachineSpec, EC2MachineStatus, EC2MachineTemplate,
+    EC2MachineTemplateResource, EC2MachineTemplateSpec, Ec2VolumeType,
+    MAX_ROOT_VOLUME_GIB as EC2_MAX_ROOT_VOLUME_GIB, MAX_USER_DATA_BYTES as EC2_MAX_USER_DATA_BYTES,
+    PROVIDER_ID_SCHEME as EC2_PROVIDER_ID_SCHEME, ec2_provider_id, parse_ec2_provider_id,
 };
 pub use firecracker_machine::{
     FIRECRACKER_PROVIDER_ID_SCHEME, FcNicSpec, FirecrackerMachine, FirecrackerMachineSpec,

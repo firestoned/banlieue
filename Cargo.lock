@@ -261,6 +261,7 @@ dependencies = [
  "banlieue-operator",
  "banlieue-provider-azure",
  "banlieue-provider-cloud-hypervisor",
+ "banlieue-provider-ec2",
  "banlieue-provider-libvirt",
  "banlieue-provider-proxmox",
  "banlieue-provider-vsphere",
@@ -276,6 +277,7 @@ dependencies = [
  "clap",
  "k8s-openapi",
  "kube",
+ "regex",
  "schemars",
  "serde",
  "serde-saphyr",
@@ -545,6 +547,26 @@ dependencies = [
  "x509-cert",
  "x509-parser",
  "zbus",
+]
+
+[[package]]
+name = "banlieue-provider-ec2"
+version = "0.6.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "banlieue-api",
+ "banlieue-aws",
+ "banlieue-provider-sdk",
+ "banlieue-tls",
+ "clap",
+ "jiff 0.2.46",
+ "k8s-openapi",
+ "kube",
+ "prometheus-client",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

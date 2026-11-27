@@ -143,6 +143,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "ec2")]
+    fn provider_ec2_subcommand_parses() {
+        let cli = Cli::parse_from([
+            "banlieue",
+            "provider",
+            "ec2",
+            "--provider-name",
+            "ec2-cc",
+            "--no-leader-elect",
+        ]);
+        match cli.command {
+            Command::Provider(p) => assert!(matches!(p.backend, ProviderBackend::Ec2(_))),
+            _ => panic!("expected provider subcommand"),
+        }
+    }
+
+    /// Not a bootstrap backend yet: `banlieue bootstrap` would install a
+    /// ClusterRole and the operator would render a workload, and neither
+    /// knows `ec2` until roadmap 24 phase E.
+    #[test]
+    #[cfg(feature = "ec2")]
+    fn ec2_is_not_a_bootstrap_backend_yet() {
+        assert!(!COMPILED_BACKENDS.contains(&"ec2"));
+    }
+
+    #[test]
     #[cfg(feature = "azure")]
     fn azure_is_a_bootstrap_backend() {
         assert!(COMPILED_BACKENDS.contains(&"azure"));

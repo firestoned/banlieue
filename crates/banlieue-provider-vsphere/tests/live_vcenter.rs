@@ -93,6 +93,7 @@ fn settings() -> Option<Settings> {
             insecure_skip_tls_verify: insecure,
             ca_bundle: None,
             azure: None,
+            ec2: None,
         },
         credentials: Credentials { username, password },
         ca_bundle_pem,

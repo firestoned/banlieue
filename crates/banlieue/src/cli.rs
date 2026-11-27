@@ -15,6 +15,7 @@
 //! banlieue provider libvirt [flags]      -> banlieue_provider_libvirt::run
 //! banlieue provider proxmox [flags]      -> banlieue_provider_proxmox::run
 //! banlieue provider azure [flags]        -> banlieue_provider_azure::run
+//! banlieue provider ec2 [flags]          -> banlieue_provider_ec2::run
 //! banlieue provider cloud-hypervisor     -> banlieue_provider_cloud_hypervisor::run
 //! banlieue imagebuilder [flags]          -> banlieue_imagebuilder::run
 //! banlieue bootstrap <target> [flags]    -> banlieue_operator::bootstrap::run
@@ -158,6 +159,10 @@ pub enum ProviderBackend {
     /// Microsoft Azure provider (ADR-0164).
     #[cfg(feature = "azure")]
     Azure(banlieue_provider_azure::Cli),
+
+    /// Amazon EC2 provider (ADR-0174).
+    #[cfg(feature = "ec2")]
+    Ec2(banlieue_provider_ec2::Cli),
 }
 
 /// Dispatch a parsed [`Cli`] to the selected role's `run` entry point.
@@ -208,6 +213,8 @@ async fn dispatch_provider(backend: ProviderBackend) -> anyhow::Result<()> {
         }
         #[cfg(feature = "azure")]
         ProviderBackend::Azure(args) => banlieue_provider_azure::run(args).await,
+        #[cfg(feature = "ec2")]
+        ProviderBackend::Ec2(args) => banlieue_provider_ec2::run(args).await,
     }
 }
 

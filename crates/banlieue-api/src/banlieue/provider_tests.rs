@@ -97,6 +97,7 @@ mod tests {
             insecure_skip_tls_verify: false,
             ca_bundle: None,
             azure: None,
+            ec2: None,
         };
         let json = serde_json::to_value(&c).unwrap();
         assert_eq!(
@@ -114,6 +115,7 @@ mod tests {
     fn provider_connection_with_optional_ca_and_insecure_round_trip() {
         let c = ProviderConnection {
             azure: None,
+            ec2: None,
             endpoint: "https://pve:8006".to_string(),
             credentials_ref: Some(LocalObjectReference {
                 name: "pve-creds".to_string(),
@@ -188,6 +190,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -225,6 +228,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: true,
@@ -254,6 +258,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities {
                 storage_classes: vec![sample_storage_class("gold")],
@@ -686,6 +691,24 @@ mod tests {
         }
         assert_eq!(props["audience"]["default"], "openbao");
 
+        // Every string is capped: the API server prices a CEL rule by the
+        // longest string it may see, and an uncapped `split('/')` exceeds the
+        // per-rule budget, so the whole Provider CRD is refused at install.
+        for name in [
+            "namespace",
+            "authMount",
+            "loginRole",
+            "tokenRole",
+            "audience",
+        ] {
+            assert_eq!(
+                props[name]["maxLength"].as_u64(),
+                Some(256),
+                "{name} has no maxLength"
+            );
+        }
+        assert_eq!(props["address"]["maxLength"].as_u64(), Some(512));
+
         // The login token must never be a cloud-audience token (ADR-0176
         // Decision 8): the schema refuses the cloud audience.
         let rules = props["audience"]["x-kubernetes-validations"]
@@ -974,6 +997,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -1007,6 +1031,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -1043,6 +1068,7 @@ mod tests {
                 insecure_skip_tls_verify: false,
                 ca_bundle: None,
                 azure: None,
+                ec2: None,
             },
             capabilities: ProviderCapabilities::default(),
             paused: false,
@@ -1649,6 +1675,281 @@ attestation:
         assert!(
             required.is_none_or(|r| !r.iter().any(|v| v == "ekTrustBundle")),
             "a firecracker Provider has no EK trust bundle: {attestation}"
+        );
+    }
+
+    // ---- ec2 (ADR-0174, ADR-0162 Decision 9) ---------------------------
+
+    const EC2_ACCOUNT: &str = "111122223333";
+    const EC2_ENDPOINT: &str = "https://ec2.ca-central-1.amazonaws.com";
+
+    fn ec2_role(name: &str) -> String {
+        format!("arn:aws:iam::{EC2_ACCOUNT}:role/{name}")
+    }
+
+    fn ec2_connection() -> Ec2Connection {
+        Ec2Connection {
+            region: "ca-central-1".to_string(),
+            role_arn: ec2_role("banlieue-ec2-provider"),
+            ..Ec2Connection::default()
+        }
+    }
+
+    fn ec2_publisher() -> Ec2Publisher {
+        Ec2Publisher {
+            role_arn: ec2_role("banlieue-ec2-publisher"),
+            staging_bucket: "banlieue-image-staging".to_string(),
+            vm_import_role_name: "vmimport".to_string(),
+            kms_key_id: None,
+        }
+    }
+
+    fn ec2_refused(conn: &Ec2Connection, endpoint: &str, why: &str) {
+        let err = conn.validate(endpoint).expect_err("refused");
+        assert!(err.contains(why), "expected {why:?} in {err:?}");
+    }
+
+    #[test]
+    fn ec2_connection_round_trips_in_camel_case_and_omits_unset_fields() {
+        let conn = ec2_connection();
+        let json = serde_json::to_value(&conn).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "region": "ca-central-1",
+                "roleArn": ec2_role("banlieue-ec2-provider"),
+            })
+        );
+        let back: Ec2Connection = serde_json::from_value(json).unwrap();
+        assert_eq!(back, conn);
+    }
+
+    #[test]
+    fn ec2_connection_carries_every_optional_setting() {
+        let json = serde_json::json!({
+            "region": "ca-central-1",
+            "roleArn": ec2_role("banlieue-ec2-provider"),
+            "stsEndpoint": "https://sts.ca-central-1.amazonaws.com",
+            "kmsKeyId": "alias/banlieue-ebs",
+            "tags": { "cost-centre": "1234" },
+            "publisher": {
+                "roleArn": ec2_role("banlieue-ec2-publisher"),
+                "stagingBucket": "banlieue-image-staging",
+                "vmImportRoleName": "vmimport",
+                "kmsKeyId": "alias/banlieue-snapshots",
+            },
+        });
+        let conn: Ec2Connection = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(
+            conn.publisher.as_ref().unwrap().vm_import_role_name,
+            "vmimport"
+        );
+        assert_eq!(serde_json::to_value(&conn).unwrap(), json);
+        assert_eq!(conn.validate(EC2_ENDPOINT), Ok(()));
+    }
+
+    #[test]
+    fn provider_connection_carries_the_ec2_block() {
+        let c = ProviderConnection {
+            endpoint: EC2_ENDPOINT.to_string(),
+            credentials_ref: None,
+            insecure_skip_tls_verify: false,
+            ca_bundle: None,
+            azure: None,
+            ec2: Some(ec2_connection()),
+        };
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["ec2"]["region"], "ca-central-1");
+        assert!(json.get("credentialsRef").is_none());
+        let back: ProviderConnection = serde_json::from_value(json).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn a_minimal_ec2_connection_is_valid() {
+        assert_eq!(ec2_connection().validate(EC2_ENDPOINT), Ok(()));
+        assert_eq!(
+            ec2_connection().validate(&format!("{EC2_ENDPOINT}/")),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ec2_region_must_have_the_aws_shape() {
+        let mut conn = ec2_connection();
+        conn.region = "Canada Central".to_string();
+        ec2_refused(&conn, EC2_ENDPOINT, "region");
+    }
+
+    #[test]
+    fn ec2_role_arn_must_be_an_iam_role_in_the_regions_partition() {
+        let mut conn = ec2_connection();
+        conn.role_arn = format!("arn:aws:iam::{EC2_ACCOUNT}:user/banlieue");
+        ec2_refused(&conn, EC2_ENDPOINT, "roleArn");
+
+        let mut conn = ec2_connection();
+        conn.role_arn = format!("arn:aws-cn:iam::{EC2_ACCOUNT}:role/r");
+        ec2_refused(&conn, EC2_ENDPOINT, "partition");
+
+        let mut conn = ec2_connection();
+        conn.region = "cn-north-1".to_string();
+        conn.role_arn = format!("arn:aws-cn:iam::{EC2_ACCOUNT}:role/r");
+        assert_eq!(
+            conn.validate("https://ec2.cn-north-1.amazonaws.com.cn"),
+            Ok(())
+        );
+    }
+
+    /// The EC2 endpoint receives every signed request and its session token:
+    /// the region's own EC2 name or a VPC endpoint of it, nothing else.
+    #[test]
+    fn ec2_endpoint_must_be_the_regions_ec2_endpoint() {
+        let conn = ec2_connection();
+        for bad in [
+            "https://ec2.us-east-1.amazonaws.com",
+            "http://ec2.ca-central-1.amazonaws.com",
+            "https://ec2.ca-central-1.amazonaws.com.example.com",
+            "https://ec2.bar.foo.io",
+            "",
+        ] {
+            ec2_refused(&conn, bad, "endpoint");
+        }
+        assert_eq!(
+            conn.validate(
+                "https://vpce-0123456789abcdef0-abcd1234.ec2.ca-central-1.vpce.amazonaws.com"
+            ),
+            Ok(())
+        );
+    }
+
+    /// The STS endpoint receives the projected ServiceAccount token, the
+    /// `authorityHost` of AWS: the region's STS or a VPC endpoint of it.
+    #[test]
+    fn ec2_sts_endpoint_must_be_the_regions_sts_endpoint() {
+        let mut conn = ec2_connection();
+        conn.sts_endpoint = Some(
+            "https://vpce-0123456789abcdef0-abcd1234.sts.ca-central-1.vpce.amazonaws.com"
+                .to_string(),
+        );
+        assert_eq!(conn.validate(EC2_ENDPOINT), Ok(()));
+        for bad in [
+            "https://sts.amazonaws.com",
+            "https://sts.us-east-1.amazonaws.com",
+            "https://sts.bar.foo.io",
+            "https://ec2.ca-central-1.amazonaws.com",
+        ] {
+            conn.sts_endpoint = Some(bad.to_string());
+            ec2_refused(&conn, EC2_ENDPOINT, "stsEndpoint");
+        }
+        assert_eq!(
+            ec2_connection().sts_endpoint_or_default(),
+            "https://sts.ca-central-1.amazonaws.com"
+        );
+    }
+
+    #[test]
+    fn ec2_kms_key_must_name_a_key() {
+        let mut conn = ec2_connection();
+        conn.kms_key_id = Some(format!(
+            "arn:aws:kms:ca-central-1:{EC2_ACCOUNT}:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+        ));
+        assert_eq!(conn.validate(EC2_ENDPOINT), Ok(()));
+        conn.kms_key_id = Some("my key".to_string());
+        ec2_refused(&conn, EC2_ENDPOINT, "kmsKeyId");
+    }
+
+    #[test]
+    fn ec2_tags_follow_the_extra_tag_rules() {
+        let mut conn = ec2_connection();
+        conn.tags
+            .insert("cost-centre".to_string(), "1234".to_string());
+        assert_eq!(conn.validate(EC2_ENDPOINT), Ok(()));
+        conn.tags
+            .insert("Banlieue-Owner-Uid".to_string(), "x".to_string());
+        ec2_refused(&conn, EC2_ENDPOINT, "banlieue-");
+    }
+
+    #[test]
+    fn ec2_publisher_fields_are_checked() {
+        let mut conn = ec2_connection();
+        conn.publisher = Some(ec2_publisher());
+        assert_eq!(conn.validate(EC2_ENDPOINT), Ok(()));
+
+        let mut p = ec2_publisher();
+        p.role_arn = "banlieue-ec2-publisher".to_string();
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "publisher.roleArn");
+
+        let mut p = ec2_publisher();
+        p.staging_bucket = "Banlieue.Staging".to_string();
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "publisher.stagingBucket");
+
+        let mut p = ec2_publisher();
+        p.vm_import_role_name = format!("arn:aws:iam::{EC2_ACCOUNT}:role/vmimport");
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "publisher.vmImportRoleName");
+
+        let mut p = ec2_publisher();
+        p.kms_key_id = Some("alias/".to_string());
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "publisher.kmsKeyId");
+    }
+
+    /// The publisher imports into the `Provider`'s own account: the AMI must
+    /// be where the provider launches from.
+    #[test]
+    fn ec2_publisher_must_be_in_the_providers_account() {
+        let mut conn = ec2_connection();
+        let mut p = ec2_publisher();
+        p.role_arn = "arn:aws:iam::444455556666:role/banlieue-ec2-publisher".to_string();
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "account");
+    }
+
+    /// The publisher is a separate identity (ADR-0159 Decision 3).
+    #[test]
+    fn ec2_publisher_is_not_the_providers_role() {
+        let mut conn = ec2_connection();
+        let mut p = ec2_publisher();
+        p.role_arn = conn.role_arn.clone();
+        conn.publisher = Some(p);
+        ec2_refused(&conn, EC2_ENDPOINT, "separate");
+    }
+
+    fn connection_schema() -> serde_json::Value {
+        let crd = Provider::crd();
+        let schema = crd.spec.versions[0].schema.clone().unwrap();
+        let root = serde_json::to_value(schema.open_api_v3_schema.unwrap()).unwrap();
+        root["properties"]["spec"]["properties"]["connection"]["properties"]["ec2"].clone()
+    }
+
+    /// The shapes the provider checks are also enforced when the `Provider`
+    /// is stored, and the tags are capped where EC2 would cap them.
+    #[test]
+    fn ec2_connection_schema_carries_the_patterns() {
+        let ec2 = connection_schema();
+        let p = &ec2["properties"];
+        assert_eq!(p["region"]["pattern"], crate::aws::REGION_PATTERN);
+        assert_eq!(p["roleArn"]["pattern"], crate::aws::IAM_ROLE_ARN_PATTERN);
+        assert_eq!(p["kmsKeyId"]["pattern"], crate::aws::KMS_KEY_PATTERN);
+        assert_eq!(p["tags"]["maxProperties"], crate::aws::MAX_EXTRA_TAGS);
+        let publisher = &p["publisher"]["properties"];
+        assert_eq!(
+            publisher["roleArn"]["pattern"],
+            crate::aws::IAM_ROLE_ARN_PATTERN
+        );
+        assert_eq!(
+            publisher["stagingBucket"]["pattern"],
+            crate::aws::S3_BUCKET_NAME_PATTERN
+        );
+        assert_eq!(
+            publisher["vmImportRoleName"]["pattern"],
+            crate::aws::IAM_ROLE_NAME_PATTERN
+        );
+        assert_eq!(
+            publisher["kmsKeyId"]["pattern"],
+            crate::aws::KMS_KEY_PATTERN
         );
     }
 }

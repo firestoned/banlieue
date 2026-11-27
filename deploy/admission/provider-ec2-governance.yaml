@@ -1,0 +1,103 @@
+# Copyright (c) 2026 Erick Bourgeois, banlieue
+# SPDX-License-Identifier: Apache-2.0
+#
+# Extra tags an ec2 Provider puts on everything banlieue creates in AWS
+# (instances and their volumes, import tasks, snapshots, AMIs), for an
+# account whose service control or tag policies require them: the EC2
+# counterpart of provider-azure-governance.yaml (ADR-0172 Decision 1,
+# ADR-0174). The tags reach EC2 verbatim in TagSpecifications, so they are
+# checked at admission, before the object is stored.
+#
+# - spec.connection.ec2.tags: at most 44 (EC2 allows 50 per resource, less
+#   banlieue's own six: Name and the ownership and source digest tags);
+#   keys 1..128 and values 0..256 characters of ASCII letters, digits, space
+#   and + - = . _ : / @ (EC2 also accepts non-ASCII letters; banlieue does
+#   not, so this policy and the provider agree on every engine); no key in
+#   banlieue's own "banlieue-" namespace or AWS's reserved "aws:" one, in any
+#   case; and not "Name", which banlieue sets to the machine's name.
+#
+# The shapes of region, roleArn, the KMS keys, the publisher's bucket and
+# VM Import role name are patterns in the Provider CRD schema; the endpoints
+# are pinned in provider-connection.yaml. Two rules need the Rust check
+# (Ec2Connection::validate in crates/banlieue-api/src/banlieue/provider.rs):
+# the role ARN's partition matching the region, and the publisher's role
+# being a separate role in the same account. The provider refuses those
+# (Provider Ready=False) and creates nothing.
+#
+# Enforced in the API server via CEL (no webhook). Requires Kubernetes 1.30+.
+# Offline test: make ec2-governance-policy-test.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: banlieue-provider-ec2-governance
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["banlieue.io"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["providers"]
+  matchConditions:
+    - name: ec2-block
+      expression: "has(object.spec.connection.ec2)"
+  validations:
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || size(object.spec.connection.ec2.tags) <= 44
+      message: >-
+        spec.connection.ec2.tags: at most 44 extra tags fit beside banlieue's
+        own (EC2 allows 50 per resource).
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || object.spec.connection.ec2.tags.all(k, !k.matches('(?i)^banlieue-'))
+      message: >-
+        spec.connection.ec2.tags: keys starting with banlieue- (in any case)
+        are banlieue's own tags and cannot be set.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || object.spec.connection.ec2.tags.all(k, !k.matches('(?i)^aws:'))
+      message: >-
+        spec.connection.ec2.tags: keys starting with aws: (in any case) are
+        reserved by AWS.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || !('Name' in object.spec.connection.ec2.tags)
+      message: >-
+        spec.connection.ec2.tags: Name is set by banlieue to the machine's
+        name.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || object.spec.connection.ec2.tags.all(k,
+             size(k) >= 1 && size(k) <= 128 && k.matches('^[a-zA-Z0-9 +=._:/@-]*$'))
+      message: >-
+        spec.connection.ec2.tags: a key is 1 to 128 characters of ASCII
+        letters, digits, space and + - = . _ : / @.
+      reason: Invalid
+    - expression: >-
+        !has(object.spec.connection.ec2.tags)
+        || object.spec.connection.ec2.tags.all(k,
+             size(object.spec.connection.ec2.tags[k]) <= 256
+             && object.spec.connection.ec2.tags[k].matches('^[a-zA-Z0-9 +=._:/@-]*$'))
+      message: >-
+        spec.connection.ec2.tags: a value is at most 256 characters of ASCII
+        letters, digits, space and + - = . _ : / @.
+      reason: Invalid
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: banlieue-provider-ec2-governance
+  labels:
+    app.kubernetes.io/name: banlieue
+    app.kubernetes.io/component: admission
+spec:
+  policyName: banlieue-provider-ec2-governance
+  validationActions: ["Deny"]

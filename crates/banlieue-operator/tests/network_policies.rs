@@ -58,8 +58,10 @@ const LIBVIRT_TLS: u16 = 16514;
 
 /// Backends whose provider pods the operator spawns as Deployments.
 /// `cloud-hypervisor` is host-resident (`ProviderDeployment::External`) and
-/// has no pod for a NetworkPolicy to select.
-const OPERATOR_SPAWNED_BACKENDS: [&str; 4] = ["vsphere", "libvirt", "proxmox", "azure"];
+/// has no pod for a NetworkPolicy to select. `ec2`'s policy is checked here
+/// too: the operator stamps the same labels for every backend
+/// (`workload_labels_for`), and roadmap 24 phase E renders its workload.
+const OPERATOR_SPAWNED_BACKENDS: [&str; 5] = ["vsphere", "libvirt", "proxmox", "azure", "ec2"];
 
 /// Component labels on the Jobs banlieue launches, and where each is stamped:
 /// - `registry-push`: `crates/banlieue-imagebuilder/src/reconciler/push.rs`
@@ -257,6 +259,8 @@ fn expected_egress() -> BTreeMap<String, BTreeSet<(String, u16)>> {
         (component("proxmox"), with(&[(TCP, PROXMOX_API)])),
         // Azure Resource Manager and Entra ID, both HTTPS (ADR-0164).
         (component("azure"), with(&[(TCP, HTTPS)])),
+        // STS and EC2, both HTTPS (ADR-0174).
+        (component("ec2"), with(&[(TCP, HTTPS)])),
         (component("libvirt"), with(&[(TCP, LIBVIRT_TLS)])),
         ("vsphere-import".to_string(), with(&[(TCP, HTTPS)])),
         ("libvirt-import".to_string(), with(&[(TCP, LIBVIRT_TLS)])),

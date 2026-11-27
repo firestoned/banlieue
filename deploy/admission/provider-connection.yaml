@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Provider connection hardening (security review 2026-07-31 CHAIN-001, and
-# ADR-0159 for the azure class). A Provider's spec.connection.endpoint is spliced into URLs by
+# ADR-0159 for the azure and ec2 classes, ADR-0174 Decision 5 for ec2). A Provider's spec.connection.endpoint is spliced into URLs by
 # the provider's backend client, and the credentials named by credentialsRef
 # are POSTed there every reconcile. Without admission checks, anyone who may
 # create Providers can point a Provider at an attacker host — a confused-deputy
@@ -27,7 +27,7 @@ spec:
         apiVersions: ["v1alpha1"]
         operations: ["CREATE", "UPDATE"]
         resources: ["providers"]
-  # Used by the azure token-destination rules below.
+  # Used by the azure and ec2 token-destination rules below.
   variables:
     - name: isAzure
       expression: "object.spec.providerClassRef.name == 'azure'"
@@ -41,27 +41,50 @@ spec:
           && has(object.spec.connection.azure.authorityHost)
           ? object.spec.connection.azure.authorityHost
           : ''
+    - name: isEc2
+      expression: "object.spec.providerClassRef.name == 'ec2'"
+    # '' when unset. The CRD schema pins its shape
+    # (^[a-z]{2}(-gov)?-[a-z]+-[0-9]{1,2}$), so it is safe to splice into the
+    # patterns below.
+    - name: region
+      expression: >-
+        has(object.spec.connection.ec2) ? object.spec.connection.ec2.region : ''
+    # The region's DNS suffix as a regular expression: China regions are
+    # amazonaws.com.cn, every other partition banlieue accepts amazonaws.com.
+    - name: awsSuffix
+      expression: >-
+        variables.region.startsWith('cn-')
+          ? 'amazonaws[.]com[.]cn'
+          : 'amazonaws[.]com'
+    # '' when unset: the provider then uses the region's own STS endpoint.
+    - name: sts
+      expression: >-
+        has(object.spec.connection.ec2)
+          && has(object.spec.connection.ec2.stsEndpoint)
+          ? object.spec.connection.ec2.stsEndpoint
+          : ''
   validations:
     - expression: "isURL(object.spec.connection.endpoint)"
       messageExpression: >-
         'spec.connection.endpoint must be an absolute URL (got '
         + object.spec.connection.endpoint + ').'
       reason: Invalid
-    # vsphere / proxmox / azure speak HTTPS to the backend (azure: the ARM
-    # endpoint); libvirt uses its own schemes (qemu+ssh://, qemu+tls://, ...)
-    # and is governed by the URL and userinfo/fragment checks instead.
+    # vsphere / proxmox / azure / ec2 speak HTTPS to the backend (azure: the
+    # ARM endpoint; ec2: the region's EC2 endpoint); libvirt uses its own
+    # schemes (qemu+ssh://, qemu+tls://, ...) and is governed by the URL and
+    # userinfo/fragment checks instead.
     - expression: >-
-        !(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure'])
+        !(object.spec.providerClassRef.name in ['vsphere', 'proxmox', 'azure', 'ec2'])
         || object.spec.connection.endpoint.startsWith('https://')
-      message: spec.connection.endpoint must use https:// for vsphere/proxmox/azure providers.
+      message: spec.connection.endpoint must use https:// for vsphere/proxmox/azure/ec2 providers.
       reason: Invalid
     # credentialsRef became optional in the schema for ADR-0060 Decision 4;
     # every backend that authenticates to a remote endpoint with a stored
-    # secret still needs one. cloud-hypervisor (runs on the host) and azure
-    # (workload identity federation, ADR-0159 Decision 1) must read no Secret
-    # and are handled below.
+    # secret still needs one. cloud-hypervisor (runs on the host), azure and
+    # ec2 (workload identity federation, ADR-0159 Decision 1) must read no
+    # Secret and are handled below.
     - expression: >-
-        object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure']
+        object.spec.providerClassRef.name in ['cloud-hypervisor', 'azure', 'ec2']
         || has(object.spec.connection.credentialsRef)
       message: spec.connection.credentialsRef is required for this provider class.
       reason: Invalid
@@ -126,6 +149,63 @@ spec:
         management.usgovcloudapi.net: https://login.microsoftonline.us,
         management.chinacloudapi.cn: https://login.chinacloudapi.cn) (got '
         + variables.authority + ').'
+      reason: Invalid
+    # ec2 authenticates the same way (ADR-0174 Decision 5): the projected
+    # ServiceAccount token is exchanged with STS by AssumeRoleWithWebIdentity
+    # for a short session as spec.connection.ec2.roleArn. No access key is
+    # ever read, so credentialsRef is refused.
+    - expression: >-
+        object.spec.providerClassRef.name != 'ec2'
+        || has(object.spec.connection.ec2)
+      message: >-
+        spec.connection.ec2 (region, roleArn) is required for ec2 providers
+        (ADR-0174).
+      reason: Invalid
+    - expression: >-
+        object.spec.providerClassRef.name != 'ec2'
+        || !has(object.spec.connection.credentialsRef)
+      message: >-
+        spec.connection.credentialsRef must not be set for ec2: the provider
+        authenticates by workload identity federation and reads no Secret
+        (ADR-0159 Decision 1).
+      reason: Invalid
+    - expression: >-
+        object.spec.providerClassRef.name == 'ec2'
+        || !has(object.spec.connection.ec2)
+      message: spec.connection.ec2 is only valid for ec2 providers.
+      reason: Invalid
+    # ec2 token destinations (ADR-0159, ADR-0174 Decision 6). Every request
+    # to spec.connection.endpoint carries the STS session token, and
+    # spec.connection.ec2.stsEndpoint receives the projected ServiceAccount
+    # token. ec2 has no credentialsRef, so the Secret-read check never fires
+    # for it: both are pinned to the region's own AWS names instead, the
+    # regional endpoint or the regional DNS name of an interface VPC endpoint
+    # for that service, with or without one trailing slash. The Rust check is
+    # Ec2Connection::validate (crates/banlieue-api/src/banlieue/provider.rs).
+    - expression: >-
+        !variables.isEc2
+        || variables.endpoint.matches(
+             '^https://(ec2[.]' + variables.region
+             + '|vpce-[0-9a-f]{17}-[0-9a-z]{8}[.]ec2[.]' + variables.region + '[.]vpce)[.]'
+             + variables.awsSuffix + '/?$')
+      messageExpression: >-
+        'spec.connection.endpoint must be the EC2 endpoint of the region,
+        https://ec2.' + variables.region + '.amazonaws.com (.amazonaws.com.cn in
+        China), or the DNS name of an interface VPC endpoint for EC2 in that
+        region, for ec2 providers (got ' + object.spec.connection.endpoint + ').'
+      reason: Invalid
+    - expression: >-
+        !variables.isEc2
+        || variables.sts == ''
+        || variables.sts.matches(
+             '^https://(sts[.]' + variables.region
+             + '|vpce-[0-9a-f]{17}-[0-9a-z]{8}[.]sts[.]' + variables.region + '[.]vpce)[.]'
+             + variables.awsSuffix + '/?$')
+      messageExpression: >-
+        'spec.connection.ec2.stsEndpoint must be unset, the STS
+        endpoint (https://sts.' + variables.region + '.amazonaws.com) or the DNS
+        name of an interface VPC endpoint for STS in that region (got '
+        + variables.sts + ').'
       reason: Invalid
     - expression: >-
         object.spec.providerClassRef.name != 'cloud-hypervisor'

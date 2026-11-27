@@ -148,6 +148,7 @@ help: ## Show this help
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 \
         prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 \
         test test-lib lint format clean crds api-docs run-local \
+        kind-apiserver-check kind-apiserver-check-apply \
         ci-code-changed \
         provider-vsphere-run-local imagebuilder-run-local \
         docker-build docker-build-amd64 docker-build-arm64 \
@@ -165,7 +166,7 @@ help: ## Show this help
         release-manifests install-yaml crds-yaml admission-policies-yaml network-policies-yaml \
         kind-capi-create kind-capi-delete kind-capi-init kind-e2e-capi kind-e2e-capi-logs \
         kind-e2e-capi-bootstrap kind-e2e-capi-bootstrap-run \
-        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test credentialsref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test hostca-policy-test ektrustbundle-policy-test azure-governance-policy-test provider-bench ch-pool-timings \
+        claim-live-test claim-policy-live-test move-fields-policy-live-test provider-ref-policy-live-test credentialsref-policy-live-test address-live-test pool-claim-e2e vsphere-pool-claim-e2e ch-e2e ch-vtpm-e2e ch-deferred-e2e ch-restart-e2e ch-host-install-test ch-polkit-test hostca-policy-test ektrustbundle-policy-test azure-governance-policy-test ec2-governance-policy-test provider-connection-policy-test provider-bench ch-pool-timings \
         dev-oidc-up dev-oidc-attach dev-oidc-github-creds dev-oidc-login \
         dev-oidc-try-claim dev-oidc-status dev-oidc-down \
         dev-oidc-k0s-up dev-oidc-k0s-login dev-oidc-k0s-grant \
@@ -768,11 +769,17 @@ ch-polkit-test: ## Cloud Hypervisor: run the host polkit rule against its allow/
 hostca-policy-test: ## Evaluate the Provider hostCa admission policy (ADR-0143) offline as CEL (needs: pip install cel-python pyyaml)
 	python3 scripts/test-provider-hostca-policy.py
 
-ektrustbundle-policy-test: ## Evaluate the Provider ekTrustBundle admission policy offline as CEL, incl. a hostCa-only Provider (needs: pip install cel-python pyyaml)
+ektrustbundle-policy-test: ## Evaluate the Provider ekTrustBundle admission policy offline as CEL, incl. a hostCa-only and an ec2 Provider (needs: pip install cel-python pyyaml)
 	python3 scripts/test-provider-ektrustbundle-policy.py
 
 azure-governance-policy-test: ## Evaluate the azure Provider governance admission policy (ADR-0172) offline as CEL (needs: pip install cel-python pyyaml)
 	python3 scripts/test-provider-azure-governance-policy.py
+
+ec2-governance-policy-test: ## Evaluate the ec2 Provider extra-tags admission policy (ADR-0174) offline as CEL (needs: pip install cel-python pyyaml)
+	python3 scripts/test-provider-ec2-governance-policy.py
+
+provider-connection-policy-test: ## Evaluate the Provider connection admission policy's ec2 and azure token-destination rules offline as CEL (needs: pip install cel-python pyyaml)
+	python3 scripts/test-provider-connection-policy.py
 
 ch-e2e: ## Cloud Hypervisor: VM -> guest with an address -> delete leaves nothing on the host (ON THE HOST, never CI)
 	@# Runs on the Cloud Hypervisor host itself: the unit, the tap and the
@@ -1599,6 +1606,46 @@ kind-down: kind-delete ## Alias for kind-delete
 kind-deploy-crds: kind-create crds ## Apply CRDs + create $(NAMESPACE) on the kind cluster (creates cluster if missing)
 	$(KIND_KUBECTL) apply -f $(CRD_OUT_DIR)/
 	$(KIND_KUBECTL) apply -f deploy/controller/namespace.yaml
+
+# ----- API server install check ----------------------------------------------
+#
+# The API server checks things no unit test can: structural schema rules and,
+# above all, the estimated cost of every CEL rule (`x-kubernetes-validations`
+# and ValidatingAdmissionPolicy expressions). A rule over a string with no
+# `maxLength` can exceed the per-rule budget and get the whole CRD refused;
+# ADR-0176's OpenBao rules did, and every e2e job failed at install. This
+# applies the checked-in CRDs, then the admission policies, to a throwaway kind
+# cluster on $(KIND_NODE_IMAGE) (the oldest Kubernetes the e2e pins), with no
+# build, and always deletes the cluster.
+APISERVER_CHECK_CLUSTER ?= banlieue-apiserver-check
+
+kind-apiserver-check: ## Apply deploy/crds and deploy/admission to a throwaway kind cluster (schema and CEL cost checks); no build
+	@set -e; rc=0; \
+	$(MAKE) --no-print-directory kind-apiserver-check-apply KIND_CLUSTER_NAME=$(APISERVER_CHECK_CLUSTER) || rc=$$?; \
+	$(MAKE) --no-print-directory kind-delete KIND_CLUSTER_NAME=$(APISERVER_CHECK_CLUSTER) || true; \
+	rm -f $(CURDIR)/.kind-kubeconfig-$(APISERVER_CHECK_CLUSTER); \
+	if [ $$rc -ne 0 ]; then echo "::error::the API server refused a CRD or an admission policy (see above)"; fi; \
+	exit $$rc
+
+kind-apiserver-check-apply: kind-create
+	$(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f $(CRD_OUT_DIR)/
+	$(KIND_KUBECTL) wait --for condition=established --timeout=60s crd --all
+	@# Some policies carry a namespaced parameter object in $(NAMESPACE).
+	$(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f deploy/controller/namespace.yaml
+	@# Per file, so a refusal names its file. A MutatingAdmissionPolicy file
+	@# needs Kubernetes 1.36+ (deploy/admission/README.md); on an older server
+	@# it is skipped, by name, only when MutatingAdmissionPolicy v1 is not
+	@# served. CI runs this on the oldest and the newest pinned Kubernetes.
+	@set -e; \
+	if $(KIND_KUBECTL) get --raw /apis/admissionregistration.k8s.io/v1 | grep -q '"mutatingadmissionpolicies"'; then map=1; else map=0; fi; \
+	for f in deploy/admission/*.yaml; do \
+	  if [ $$map -eq 0 ] && grep -q '^kind: MutatingAdmissionPolicy$$' $$f; then \
+	    echo "skipped $$f: MutatingAdmissionPolicy v1 is not served here (Kubernetes 1.36+)"; continue; \
+	  fi; \
+	  $(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f $$f >/dev/null; \
+	  echo "accepted $$f"; \
+	done
+	@echo "✓ the API server accepted every CRD in $(CRD_OUT_DIR) and every policy it serves in deploy/admission"
 
 kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the kind cluster (creates cluster if missing)
 	@HOST_ARCH=$$(uname -m); \

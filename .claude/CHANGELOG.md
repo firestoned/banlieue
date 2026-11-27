@@ -1,5 +1,208 @@
 # Changelog
 
+## [2026-11-27 10:15] - CI: the API server checks the CRDs and admission policies before any e2e build
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `kind-apiserver-check` (with `kind-apiserver-check-apply`). Creates a throwaway kind cluster on
+  `$(KIND_NODE_IMAGE)`, server-side applies `$(CRD_OUT_DIR)` (and waits for every CRD to be established), the
+  controller namespace, then each file in `deploy/admission/` by name, and always deletes the cluster. A file
+  holding a `MutatingAdmissionPolicy` is skipped, by name, only when the server does not serve that kind at
+  `admissionregistration.k8s.io/v1` (Kubernetes 1.36+, as `deploy/admission/README.md` documents). No build.
+- `.github/workflows/e2e.yaml`: job `apiserver-check`, run on the oldest pinned Kubernetes (`kind_node_image`,
+  v1.31.0 by default) and on `kindest/node:v1.36.4` pinned by digest (the runners' kind is v0.33.0); the `e2e`
+  and `capi` jobs now `need` it.
+
+### Why
+No unit test runs the API server's CEL cost estimator. ADR-0176's uncapped OpenBao strings got
+`providers.banlieue.io` refused, and every e2e job found out only after a 15-minute build. Verified on slate:
+main's CRDs fail this check on 1.31 and 1.36 with CI's error; this branch passes on both (the
+`MutatingAdmissionPolicy` file skipped on 1.31, applied on 1.36). actionlint clean.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-27 09:30] - Provider CRD refused at install: cap the OpenBao strings (ADR-0176 fix)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/banlieue-api/src/banlieue/provider.rs`: every `connection.azure.openbao` string now has a
+  `maxLength` (`address` 512, `namespace`, `authMount`, `loginRole`, `tokenRole` and `audience` 256). Without
+  one, the API server priced the `!self.split('/').exists(...)` rules on `namespace` and `authMount` for a string
+  as long as a request, 2.6 times over the per-rule CEL cost budget, and refused the whole
+  `providers.banlieue.io` CRD: every e2e job on main has failed at CRD install since ADR-0176 (#260).
+  Reproduced on kind with `kindest/node:v1.31.0` (main's CRDs refused with CI's error; with this change all 23
+  CRDs apply).
+- `crates/banlieue-api/src/banlieue/provider_tests.rs`: the OpenBao schema test asserts each cap.
+- `deploy/crds/banlieue.io_providers.yaml`: regenerated.
+
+### Why
+No offline test runs the API server's CEL cost estimator; only the e2e jobs install the CRDs, so the unit
+tier passed while every install failed.
+
+### Impact
+- [ ] Breaking change (values longer than the caps were never valid OpenBao paths in practice)
+- [x] Requires cluster rollout (re-apply `banlieue.io_providers.yaml`)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-27 08:00] - EC2 provider reconcilers: EC2Machine and Provider (roadmap 24 phase C, ADR-0174)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-provider-ec2` (new workspace member, library only), modelled on `banlieue-provider-azure`:
+  - `reconciler/ec2machine.rs` (+ `_tests.rs`): the `EC2Machine` lifecycle (ADR-0174 Decision 3). Finalizer
+    `banlieue.io/ec2machine` before any create; adoption by the `banlieue-owner-uid` tag before a create;
+    `RunInstances` with `client_token_for(uid, zone)`, never awaited (the instance ID is stored in
+    `status.instanceId` and observed on later passes; a fresh ID that describes as not found is "not visible
+    yet", never gone). Observes state, private IPv4 (`InternalIP`) and DNS name (`InternalDNS`), the zone ID
+    (`DescribeAvailabilityZones`), `providerID` `aws:///<zone>/<instance-id>`. `GuestReady` from the
+    `banlieue-ec2-guest` console line for this instance only (ADR-0175; another instance's line is
+    `ReadyLineMismatch`), sticky. IMDS turned off once after `GuestReady` (`imdsDisabled`). With `tpmEnabled`,
+    the RSA-2048 and ECC P-384 EK public keys as PEM SPKI, a not-found read retried soon (ADR-0167).
+    `desiredPowerState` as `StopInstances`/`StartInstances`. `InsufficientInstanceCapacity` and `Unsupported`
+    are `VMCreated=False`/`ZoneUnavailable` (ADR-0173), quota is `QuotaExceeded`, other refusals
+    `CreateRefused`, all with the exponential `createFailures` back-off; throttling, 5xx, transport and
+    credential failures requeue without counting. A stored instance not tagged as this machine's is dropped
+    and reported (`ForeignResource`), never touched. An instance terminated outside banlieue is reported
+    (`InstanceTerminated`), not replaced. Booting instances poll every 2 s for 180 s after launch, then 30 s
+    (ADR-0043 Decision 8). Delete terminates the stored instance and any other instance tagged with the UID
+    (already gone is success), waits for a fresh unseen ID up to 5 minutes, and removes the finalizer once
+    every owned instance is terminated or gone. Status is patched with server-side apply, never replaced.
+  - `reconciler/provider.rs` (+ `_tests.rs`): `ec2` Providers. One failure domain per zone (names over IDs,
+    `raw.zone` and `raw.zoneId`) that offers a mapped instance type (`DescribeInstanceTypeOfferings` by zone
+    ID), with `vmClasses`, `tpmVmClasses` (NitroTPM 2.0 and UEFI, from `DescribeInstanceTypes`), storage
+    classes with a `volumeType` target and network classes with `subnetId` and `securityGroupIds`. Zones
+    reported `unavailable` or `impaired` are skipped. A type offered nowhere is a `CapabilitiesIncomplete`
+    condition, not a failed probe. Throttling keeps the last failure domains. No `capacity` yet (below).
+  - `reconciler/instances.rs` (+ `_tests.rs`): ownership by tag and the orphan sweep (ADR-0158 Decision 5):
+    instances tagged for this Provider and kind `EC2Machine` whose owner UID names no listed `EC2Machine`,
+    launched at least 15 minutes ago, not already terminating; a home-only provider judges only instances
+    tagged with its home namespace; at most 3 terminates a pass, stopping when throttled.
+  - `metrics.rs`: `banlieue_ec2_orphan_sweeps_total` and `banlieue_ec2_orphan_sweep_resources_total`, as
+    Azure's.
+  - `client.rs`: `Ec2ClientFactory`; `HttpClientFactory` builds `Ec2Client` on a `WebIdentitySource` (the
+    projected token file, the role ARN and region from `connection.ec2`, the STS endpoint from `stsEndpoint`
+    or the region's, a 900 s session named `<namespace>.<name>`), cached per connection, sending to
+    `connection.endpoint` only after `Ec2Connection::validate` pinned it; `credentialsRef` refused.
+  - `app.rs`: `banlieue provider ec2` (Provider and EC2Machine controllers, shared-capable scope as
+    ADR-0133, `--web-identity-token-file` / `AWS_WEB_IDENTITY_TOKEN_FILE`, default
+    `/var/run/secrets/aws/tokens/aws-identity-token`).
+- `crates/banlieue/{Cargo.toml,src/cli.rs}`: the `ec2` feature (on by default) and the `provider ec2`
+  subcommand. Not a bootstrap backend yet.
+- `crates/banlieue-provider-sdk/src/ssa.rs`: `FIELD_MANAGER_PROVIDER_EC2`.
+- `deploy/provider-ec2/rbac/clusterrole.yaml`: Providers read and status, `ec2machines` read/patch, status and
+  finalizers (no create or delete), namespaces list/watch, Events; no Secret, Job or VMImage rule.
+- `deploy/network-policies/provider-ec2.yaml`: DNS, the API server, TCP 443 to STS and EC2.
+
+### Changed
+- `crates/banlieue-aws/src/fake.rs`: `FakeEc2` was more permissive than EC2 for the EK: it now answers
+  `InstanceTpmEkPub.NotFound` for a `pending` instance and, when set with `set_ek_not_found_reads`, for the
+  first reads after each launch or start, as EC2 did right at `running` (ADR-0167 Decision 1). Tested in
+  `fake_tests.rs`; the existing restart test now waits for `running` before reading the EK.
+- `crates/banlieue-operator/tests/network_policies.rs`: the ec2 policy is checked like the other providers'.
+- `deploy/network-policies/README.md`, `deploy/provider-ec2/README.md`: the new files.
+
+### Why
+Roadmap 24 phase C. Open in phase C: vCPU quota as capacity (Service Quotas `GetServiceQuota`, which
+`banlieue-aws` does not call yet), the post-terminate leftover-volume check (`DescribeVolumes`/`DeleteVolume`,
+not in the client; `DeleteOnTermination` covers the root volume), the `Provider` condition for sustained
+throttling (needs the client's throttling state through the trait), and the live lifecycle run. The operator's
+`ec2` workload (projected token, `SHARED_PROVIDER_BACKENDS`, bootstrap) is phase E.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-11-27 06:00] - EC2Machine API and the ec2 Provider class (roadmap 24 phase B, ADR-0174)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/banlieue-api/src/infrastructure/ec2_machine.rs` (+ `_tests.rs`): `EC2Machine` (`ec2m`) and
+  `EC2MachineTemplate` (`ec2mt`) in `infrastructure.banlieue.io/v1alpha1`, CAPI v1beta2 InfraMachine shape, printer
+  columns as `AzureVirtualMachine`'s. `providerID` `aws:///<zone>/<instance-id>` with `ec2_provider_id` and
+  `parse_ec2_provider_id`. Spec: `providerRef`, `zone`, `instanceType`, `imageId`, `rootDeviceName` (default
+  `/dev/xvda`), `rootVolumeGiB`, `volumeType` (`gp3` default, `gp2`, `io1`, `io2`), `iops`, `throughput`,
+  `kmsKeyId`, `subnetId`, `securityGroupIds` (at least one), `tpmEnabled`, `userData` (at most 16,384 bytes),
+  `desiredPowerState`. Status: `addresses`, `instanceId`, `zoneId` (ADR-0158 Decision 3), `instanceState`,
+  sticky `guestInstalled` and `imdsDisabled` (ADR-0174 Decision 3), `tpmEndorsementPublicKeys` (PEM SPKI read
+  host-side, ADR-0167 Decision 1), `createFailures`, `observedPowerState`, `conditions`. `validate()` checks every
+  rule; the volume rules (throughput only with gp3, iops required for io1/io2 and refused for gp2) are also CEL on
+  the CRD.
+- `crates/banlieue-api/src/aws.rs` (+ `_tests.rs`): the AWS identifier shapes (region, AMI, subnet, security
+  group, instance, IAM role ARN and name, S3 bucket, KMS key, service endpoints, extra tags), each as a CRD
+  pattern and a Rust check, tested over the same cases with the `regex` crate so the two cannot drift.
+- `Provider.spec.connection.ec2` (`Ec2Connection`, `Ec2Publisher` in `banlieue/provider.rs`): `region`,
+  `roleArn`, optional `stsEndpoint` (the regional STS or a VPC endpoint of it, as Azure's `authorityHost`),
+  `kmsKeyId`, `tags` (at most 44; no `banlieue-` or `aws:` prefix, no `Name`) and `publisher` (ADR-0162
+  Decision 9: its own `roleArn`, `stagingBucket`, `vmImportRoleName`, `kmsKeyId`). `Ec2Connection::validate`
+  also pins `connection.endpoint` to the region's EC2 endpoint or a VPC endpoint of it, and requires the role's
+  partition to match the region and the publisher to be a separate role in the same account.
+- `deploy/admission/provider-ec2-governance.yaml`: the extra-tag rules as CEL;
+  `scripts/test-provider-ec2-governance-policy.py` (`make ec2-governance-policy-test`, 25 cases) and
+  `scripts/test-provider-connection-policy.py` (`make provider-connection-policy-test`, 35 cases, ec2 and azure),
+  both run with cel-python.
+- `examples/33-virtualmachine-ec2.yaml` (Provider, VMImage `Template` AMI, VMClass, VirtualMachine) and its test
+  in `crates/banlieue-api/tests/examples.rs`.
+
+### Changed
+- `deploy/admission/provider-connection.yaml`: an `ec2` Provider needs `connection.ec2` and no `credentialsRef`;
+  `connection.ec2` only on `ec2`; https required; the endpoint and `stsEndpoint` (token destinations) pinned to
+  the region's AWS names.
+- `deploy/admission/provider-attestation-ektrustbundle.yaml`: `ekTrustBundle` refused on `ec2` (ADR-0167
+  Decision 2); `scripts/test-provider-ektrustbundle-policy.py` gains the cases.
+- `deploy/admission/vmimage-cloud-install-mode.yaml`: `ec2` sources join `azure` (Deferred refused).
+- `deploy/admission/machine-provider-ref.yaml`, `deploy/capi/clusterrole-aggregate.yaml`: `ec2machines` and
+  `ec2machinetemplates`.
+- `deploy/admission/provider-jobs.yaml`: `banlieue-ec2-publisher` allowed as a Job identity, for phase D's
+  publish Job.
+- `crates/banlieue-api/src/{capi.rs,crdgen_support.rs,infrastructure/mod.rs,lib.rs}`: `EC2Machine` registered
+  (bootstrap target, `all_crds`).
+- `crates/banlieue-operator/tests/admission_policies.rs`: structural tests for the ec2 rules.
+- Every `ProviderConnection` literal in the workspace's tests gains `ec2: None`.
+- `deploy/crds/` regenerated (`banlieue.io_providers.yaml`, new `infrastructure.banlieue.io_ec2machines.yaml` and
+  `_ec2machinetemplates.yaml`), `docs/src/reference/api.md` regenerated; `deploy/admission/README.md`,
+  `examples/32-vmimage-kairos-ec2.yaml` header, roadmap 24 phase B row and `ROADMAPS.md` updated.
+- `crates/banlieue-api/Cargo.toml`: `regex` as a dev-dependency only (already in the lock file).
+
+- `deploy/provider-ec2/`: the IAM documents ADR-0174 promises, from the roadmap 24 spike's live-tested caller
+  policy, split per ADR-0159 Decision 3: `runtime-policy.json` (RunInstances only with the ownership tags,
+  IMDSv2, hop limit 1, encrypted volumes, no public IP, an explicit deny on any instance profile; operations
+  only on instances tagged for this `Provider`), `publisher-policy.json` (S3 writes to the staging bucket with
+  no read, `iam:PassRole` for the VM Import role to `vmie.amazonaws.com` only, ImportSnapshot, RegisterImage,
+  deletes of banlieue-tagged images and snapshots), `source-binding.json` (ADR-0174 Decision 6: deny unless
+  from the site's egress or VPC endpoint, AWS-service calls exempt), `trust-policy.json` (web identity,
+  subject and audience pinned), `revoke-sessions.json` (the incident step), and a README. Access Analyzer:
+  0 findings on four, one informational suggestion on the trust policy's audience check, kept on purpose.
+  Open, for the threat-model pass: the public-IP rule only bites when the request names the setting
+  (`BoolIfExists`, as live-tested); the publisher may tag untagged snapshots, because VM Import does not
+  carry the task's tags to the snapshot. `ModifyInstanceMetadataOptions` is limited to turning IMDS off
+  (Sid `DisableImdsOnOwnInstancesOnly`): the condition is on `ec2:Attribute/HttpEndpoint`, the request's
+  value, because a live test showed `ec2:MetadataHttpEndpoint` carries the instance's current setting (a rule
+  on it refused the disable and would allow a re-enable); `Null` conditions refuse riders that loosen tokens,
+  the hop limit or metadata tags in the same call. Verified live: enable refused with IMDS on and off, a
+  disable with a rider refused, a plain disable allowed; Access Analyzer 0 findings.
+
+### Why
+Roadmap 24 phase B: the API the EC2 provider (phase C) and the controller dispatch (phase E) build on. Open in
+phase B: the architecture mismatch, `tpmEnabled` on an AMI without TPM support and `trustedBoot` on EC2, which
+compare objects and belong to scheduling.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new CRDs; re-apply `banlieue.io_providers.yaml` and the admission policies)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 05:30] - banlieue-aws: the EC2 client, core and network layer, verified live (ADR-0174, roadmap 24 phase A)
 
 **Author:** Erick Bourgeois

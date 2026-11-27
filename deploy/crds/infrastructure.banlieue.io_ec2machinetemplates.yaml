@@ -1,0 +1,216 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  labels:
+    cluster.x-k8s.io/v1beta2: v1alpha1
+  name: ec2machinetemplates.infrastructure.banlieue.io
+spec:
+  group: infrastructure.banlieue.io
+  names:
+    kind: EC2MachineTemplate
+    plural: ec2machinetemplates
+    shortNames:
+    - ec2mt
+    singular: ec2machinetemplate
+  scope: Namespaced
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          EC2MachineTemplate: a stamped-out EC2Machine spec.
+
+          CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+          can mint identical machines. banlieue ships it for CAPI compatibility;
+          standalone VirtualMachine users do not need it.
+        properties:
+          spec:
+            description: |-
+              EC2MachineTemplate: a stamped-out EC2Machine spec.
+
+              CAPI requires an InfraMachineTemplate so a MachineSet or MachineDeployment
+              can mint identical machines. banlieue ships it for CAPI compatibility;
+              standalone VirtualMachine users do not need it.
+            properties:
+              template:
+                description: The spec stamped into every machine created from this template.
+                properties:
+                  spec:
+                    description: The EC2Machine spec for machines created from this template.
+                    properties:
+                      desiredPowerState:
+                        default: PoweredOn
+                        description: |-
+                          Desired power state, resolved from the parent `VirtualMachine`.
+                          `PoweredOff` stops the instance, which stops compute billing (volumes
+                          are still billed). `Suspended` is refused.
+                        enum:
+                        - PoweredOn
+                        - PoweredOff
+                        - Suspended
+                        type: string
+                      failureDomain:
+                        description: |-
+                          CAPI contract (optional): failure domain placement, the name of one of
+                          the `Provider`'s failure domains (one per availability zone).
+                        nullable: true
+                        type: string
+                      imageId:
+                        description: |-
+                          The AMI to launch (`ami-` and 8 or 17 hex digits), from the
+                          `VMImage`'s `ec2` source: published by banlieue (ADR-0162 Decision 9)
+                          or a hand-published `Template`. When `tpmEnabled` is set, the AMI
+                          must be registered with `TpmSupport=v2.0` and `BootMode=uefi`
+                          (ADR-0167 Decision 5).
+                        pattern: ^ami-([0-9a-f]{8}|[0-9a-f]{17})$
+                        type: string
+                      instanceType:
+                        description: |-
+                          Instance type (`m7i.large`), resolved from the `Provider`'s
+                          `instanceSizes` mapping for the `VMClass` (ADR-0160).
+                        pattern: ^[a-z0-9-]+[.][a-z0-9-]+$
+                        type: string
+                      iops:
+                        description: |-
+                          Provisioned IOPS: required for `io1` and `io2`, optional for `gp3`
+                          (above its baseline), refused for `gp2`. From the storage class's
+                          `iops` target. EC2 refuses a value outside the type's range.
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      kmsKeyId:
+                        description: |-
+                          KMS key that encrypts the root volume: a key ID, key ARN, alias name
+                          or alias ARN, from the `Provider`'s `connection.ec2.kmsKeyId`. Unset:
+                          the account's default EBS key. Volumes are encrypted either way.
+                        nullable: true
+                        pattern: ^((arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:key/)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|mrk-[0-9a-f]{32})|(arn:aws(-cn|-us-gov)?:kms:[a-z0-9-]+:[0-9]{12}:)?alias/[A-Za-z0-9/_-]{1,250})$
+                        type: string
+                      providerID:
+                        description: |-
+                          CAPI contract: Provider ID for the resulting Node. Format:
+                          `aws:///<zone-name>/<instance-id>`, the form the AWS cloud controller
+                          manager writes. Set by the provider once the instance exists.
+                        nullable: true
+                        type: string
+                      providerRef:
+                        description: |-
+                          The `Provider` whose connection names the region and the role to
+                          assume (ADR-0133: a shared provider serves tenant namespaces).
+                        properties:
+                          name:
+                            description: Name of the `Provider`.
+                            type: string
+                          namespace:
+                            description: |-
+                              Namespace of the `Provider`. Defaults to the referrer's namespace.
+
+                              Only `banlieue-controller` may set this: a machine naming a provider in
+                              another namespace is a placement that skipped scheduling, so an
+                              admission policy reserves the field to the controller's identity.
+                            nullable: true
+                            type: string
+                        required:
+                        - name
+                        type: object
+                      rootDeviceName:
+                        default: /dev/xvda
+                        description: |-
+                          The AMI's root device name, which the root volume's block device
+                          mapping names. Defaults to `/dev/xvda`, the name banlieue registers
+                          its AMIs with.
+                        pattern: ^/dev/[a-z0-9]+$
+                        type: string
+                      rootVolumeGiB:
+                        description: |-
+                          Root volume size in GiB, from the `VMClass` (ADR-0160 Decision 4).
+                          At least the AMI's snapshot size, which EC2 enforces.
+                        maximum: 65536.0
+                        minimum: 1.0
+                        type: integer
+                      securityGroupIds:
+                        description: |-
+                          Security groups of the primary network interface, from the network
+                          class's `securityGroupIds` target. At least one.
+                        items:
+                          pattern: ^sg-([0-9a-f]{8}|[0-9a-f]{17})$
+                          type: string
+                        minItems: 1
+                        type: array
+                      subnetId:
+                        description: |-
+                          Subnet the primary network interface is created in, from the network
+                          class's `subnetId` target for this zone. No public IP is assigned.
+                        pattern: ^subnet-([0-9a-f]{8}|[0-9a-f]{17})$
+                        type: string
+                      throughput:
+                        description: |-
+                          Throughput in MiB/s, `gp3` only, from the storage class's
+                          `throughput` target. EC2 refuses a value outside the type's range.
+                        minimum: 1.0
+                        nullable: true
+                        type: integer
+                      tpmEnabled:
+                        description: |-
+                          NitroTPM: the instance gets a TPM 2.0 (ADR-0167). Set from the
+                          `VMClass`'s `tpmEnabled`; the AMI must be registered with
+                          `TpmSupport=v2.0` and the instance type must support NitroTPM.
+                        type: boolean
+                      userData:
+                        description: |-
+                          Guest bootstrap payload, already resolved and placeholder-substituted
+                          by `banlieue-controller` (ADR-0025, ADR-0038). Sent as instance user
+                          data; at most 16,384 bytes before encoding. The provider reads no
+                          Secret or ConfigMap. IMDS is disabled once the guest is ready, so the
+                          guest reads it only during its first boot (ADR-0174 Decision 3).
+                        maxLength: 16384
+                        nullable: true
+                        type: string
+                      volumeType:
+                        default: gp3
+                        description: |-
+                          EBS volume type of the root volume, from the storage class's
+                          `volumeType` target. Defaults to `gp3`.
+                        enum:
+                        - gp3
+                        - gp2
+                        - io1
+                        - io2
+                        type: string
+                      zone:
+                        description: |-
+                          Availability zone **name** the instance is launched in, as the account
+                          names it (`ca-central-1a`). Resolved from the failure domain's
+                          `labels.zone`; the zone ID is reported in status (ADR-0158
+                          Decision 3).
+                        minLength: 1
+                        pattern: ^[a-z0-9-]+$
+                        type: string
+                    required:
+                    - imageId
+                    - instanceType
+                    - providerRef
+                    - rootVolumeGiB
+                    - securityGroupIds
+                    - subnetId
+                    - zone
+                    type: object
+                    x-kubernetes-validations:
+                    - message: throughput is set only with volumeType gp3
+                      rule: "!has(self.throughput) || !has(self.volumeType) || self.volumeType == 'gp3'"
+                    - message: iops is required with volumeType io1 or io2
+                      rule: "!has(self.volumeType) || !(self.volumeType in ['io1', 'io2']) || has(self.iops)"
+                    - message: iops cannot be set with volumeType gp2, whose IOPS follow its size
+                      rule: "!has(self.iops) || !has(self.volumeType) || self.volumeType != 'gp2'"
+                required:
+                - spec
+                type: object
+            required:
+            - template
+            type: object
+        required:
+        - spec
+        title: EC2MachineTemplate
+        type: object
+    served: true
+    storage: true

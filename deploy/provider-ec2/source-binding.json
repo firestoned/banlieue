@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "DenyUnlessFromTheSiteEgressOrTheSiteVpcEndpoint",
+      "Effect": "Deny",
+      "Action": "*",
+      "Resource": "*",
+      "Condition": {
+        "NotIpAddress": {
+          "aws:SourceIp": [
+            "SITE_EGRESS_CIDR"
+          ]
+        },
+        "StringNotEqualsIfExists": {
+          "aws:SourceVpce": [
+            "SITE_VPCE_ID"
+          ]
+        },
+        "Bool": {
+          "aws:ViaAWSService": "false"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WriteOnlyToTheStagingBucket",
+      "Effect": "Allow",
+      "Action": [
+        "s3:PutObject",
+        "s3:AbortMultipartUpload",
+        "s3:ListMultipartUploadParts",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::STAGING_BUCKET/*",
+      "Condition": {
+        "StringEquals": {
+          "s3:ResourceAccount": "ACCOUNT_ID"
+        }
+      }
+    },
+    {
+      "Sid": "FindUploadsInFlightToAdopt",
+      "Effect": "Allow",
+      "Action": "s3:ListBucketMultipartUploads",
+      "Resource": "arn:aws:s3:::STAGING_BUCKET",
+      "Condition": {
+        "StringEquals": {
+          "s3:ResourceAccount": "ACCOUNT_ID"
+        }
+      }
+    },
+    {
+      "Sid": "PassTheVmImportRoleToVmImportOnly",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::ACCOUNT_ID:role/VMIMPORT_ROLE_NAME",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "vmie.amazonaws.com"
+        }
+      }
+    },
+    {
+      "Sid": "ImportSnapshotTaggedTask",
+      "Effect": "Allow",
+      "Action": "ec2:ImportSnapshot",
+      "Resource": "arn:aws:ec2:REGION:ACCOUNT_ID:import-snapshot-task/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "Null": {
+          "aws:RequestTag/banlieue-owner-uid": "false"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider",
+            "banlieue-source-sha256"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "ImportSnapshotTarget",
+      "Effect": "Allow",
+      "Action": "ec2:ImportSnapshot",
+      "Resource": "arn:aws:ec2:REGION::snapshot/*"
+    },
+    {
+      "Sid": "TagImportTaskAndImageOnCreate",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:REGION:ACCOUNT_ID:import-snapshot-task/*",
+        "arn:aws:ec2:REGION::image/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "ec2:CreateAction": [
+            "ImportSnapshot",
+            "RegisterImage"
+          ],
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider",
+            "banlieue-source-sha256"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "TagTheImportedSnapshotUntaggedOrOwn",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": "arn:aws:ec2:REGION::snapshot/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "StringEqualsIfExists": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "Null": {
+          "aws:RequestTag/banlieue-owner-uid": "false"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider",
+            "banlieue-source-sha256"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RegisterTaggedImage",
+      "Effect": "Allow",
+      "Action": "ec2:RegisterImage",
+      "Resource": "arn:aws:ec2:REGION::image/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        },
+        "Null": {
+          "aws:RequestTag/banlieue-owner-uid": "false"
+        },
+        "ForAllValues:StringEquals": {
+          "aws:TagKeys": [
+            "Name",
+            "banlieue-owner-uid",
+            "banlieue-owner-kind",
+            "banlieue-owner-namespace",
+            "banlieue-provider",
+            "banlieue-source-sha256"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "RegisterImageFromOwnSnapshot",
+      "Effect": "Allow",
+      "Action": "ec2:RegisterImage",
+      "Resource": "arn:aws:ec2:REGION::snapshot/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteOwnImagesAndSnapshots",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DeregisterImage",
+        "ec2:DeleteSnapshot"
+      ],
+      "Resource": [
+        "arn:aws:ec2:REGION::image/*",
+        "arn:aws:ec2:REGION::snapshot/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/banlieue-provider": "PROVIDER_TAG_VALUE"
+        }
+      }
+    },
+    {
+      "Sid": "DescribeInRegion",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeImportSnapshotTasks",
+        "ec2:DescribeSnapshots",
+        "ec2:DescribeImages"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "REGION"
+        }
+      }
+    },
+    {
+      "Sid": "OptionalOnlyWithACustomerManagedKmsKeyUseItViaEc2",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant",
+        "kms:Decrypt",
+        "kms:GenerateDataKeyWithoutPlaintext"
+      ],
+      "Resource": "arn:aws:kms:REGION:ACCOUNT_ID:key/KMS_KEY_ID",
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": "ec2.REGION.amazonaws.com"
+        }
+      }
+    }
+  ]
+}
