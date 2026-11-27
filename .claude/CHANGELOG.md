@@ -234,6 +234,62 @@ for `--push-image`, which predates `banlieue imagebuilder digest`, and failed `D
 - [ ] Config change only
 - [ ] Documentation only
 
+## [2026-11-26 18:30] - `make build-el8`: a glibc 2.28 binary for RHEL 8 hosts
+
+**Author:** Erick Bourgeois
+
+### Added
+- `scripts/build-el8.sh`, `make build-el8`: builds `banlieue` in an el8 container (`EL8_IMAGE`, default
+  `almalinux:8`; x86_64, emulated on arm64) from crates vendored on the calling machine, with rustup at the
+  workspace `rust-version` and the release build's `--remap-path-prefix` flags, then refuses a binary whose
+  symbols need a glibc above 2.28. Output: `target/el8/banlieue`. The toolchain image is cached under
+  `banlieue-el8-toolchain:<rust>`. `EL8_PROXY`, `EL8_CA_FILE`, `EL8_JOBS`, `EL8_OUT`, `EL8_DOCKER` and
+  `EL8_DRY_RUN` are optional; every one defaults to empty or a public value, so no real host is named.
+- `scripts/build-el8-test.sh`, `make build-el8-test`: 18 pure checks (the plan, the refusals, the glibc
+  ceiling as a version comparison, the 12 GiB memory floor); no container is started.
+- `docs/src/providers/cloud-hypervisor.md`: the RHEL 8 warning under Requirements, naming the target.
+
+### Why
+The release binary needs a newer glibc than RHEL 8's 2.28 and a RHEL 8 host cannot build it (rustc 1.92 vs the
+1.95 MSRV, no internet). Rolling v0.6.0 onto such a host meant working the recipe out by hand: the toolchain
+image, the proxy CA, dnf retries, and the finding that `vim_rs` is OOM-killed in 8 GiB. The target records it.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (a build helper; no shipped binary changes)
+
+No ADR, CALM or threat-model change: a local build helper, not an architectural decision. A release artifact
+built for glibc 2.28 in CI would be one, and is still open.
+
+## [2026-11-26 17:30] - Draft EC2 `VMImage` with its cloud-config layer (roadmap 24)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `examples/32-vmimage-kairos-ec2.yaml`: a Secret holding the EC2 cloud-config layer and a `VMImage`
+  (`providerClass: ec2`, `kind: Url`, `firstBootSealing: {}`) that references it. The layer is the roadmap
+  22/24 spike's config minus its trace and diagnostic stages: grow `COS_PERSISTENT` after sealing, read user
+  data once over IMDSv2 into `/oem`, and write `BANLIEUE-GUESTREADY` to `/dev/kmsg` for an active boot only
+  (the ADR-0163 console transport). The header lists what the base image must carry (`curl`, `growpart`,
+  `sfdisk`, `systemd-networkd-wait-online` and `kairos-splash` masked) and the VM Import delivery path
+  (extension-free S3 key, `Format=VMDK`, `--tpm-support v2.0`), used where an SCP denies EBS direct.
+- `crates/banlieue-api/tests/examples.rs`: `ec2_vmimage_example_matches_the_types` (types round-trip, source
+  class, sealing declared, Secret name matches, layer has the GuestReady marker and IMDSv2 and no
+  `encrypted_partitions`).
+
+### Why
+The spike needs a reproducible image definition that exists before the EC2 provider does, and the layer is
+the only part of an EC2 image that is not the base OS.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (an example; no `ec2` ProviderClass exists yet, nothing consumes it)
+
+No ADR, CALM or threat-model change: this is a draft example, not an architectural decision. ADR-0166/0167
+(EC2 InfraMachine, EC2 guest layer) still have to be written before a Rust helper or builder-added layer.
+
 ## [2026-11-26 16:30] - Azure guest layer and the `banlieue-azure-guest` helper (ADR-0171)
 
 **Author:** Erick Bourgeois
