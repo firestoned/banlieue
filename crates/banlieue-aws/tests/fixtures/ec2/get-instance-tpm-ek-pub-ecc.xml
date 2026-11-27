@@ -1,0 +1,7 @@
+<GetInstanceTpmEkPubResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+    <requestId>59dbff89-35bd-4eac-99ed-be587EXAMPLE</requestId>
+    <instanceId>i-1234567890abcdef0</instanceId>
+    <keyType>ecc-sec-p384</keyType>
+    <keyFormat>der</keyFormat>
+    <keyValue>MHYwEAYHKoZIzj0CAQYFK4EEACIDYgAEY9FoXFXU/Rts5cNfqCSzIo1B0YeoLUpyUnGJ+IPhg4WoNA9h5md7I48DPaW4bYJyC7UaLC4cZX/oWbiCdbXAJdGX39hRVD4HXhyejfrYsXpQ61XGPBSjDzoP3tt0LIyn</keyValue>
+</GetInstanceTpmEkPubResponse>

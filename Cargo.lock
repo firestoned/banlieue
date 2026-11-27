@@ -300,6 +300,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "banlieue-aws"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "jiff 0.2.46",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "banlieue-azure"
 version = "0.6.0"
 dependencies = [
@@ -2827,6 +2842,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
+ "serde",
 ]
 
 [[package]]

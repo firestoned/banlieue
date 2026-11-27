@@ -1,0 +1,20 @@
+<DescribeInstanceTypeOfferingsResponse xmlns="http://ec2.amazonaws.com/doc/2016-11-15/">
+    <requestId>59dbff89-35bd-4eac-99ed-be587EXAMPLE</requestId>
+    <instanceTypeOfferingSet>
+        <item>
+            <instanceType>m6i.large</instanceType>
+            <locationType>availability-zone-id</locationType>
+            <location>usw2-az1</location>
+        </item>
+        <item>
+            <instanceType>m6i.large</instanceType>
+            <locationType>availability-zone-id</locationType>
+            <location>usw2-az2</location>
+        </item>
+        <item>
+            <instanceType>t3.micro</instanceType>
+            <locationType>availability-zone-id</locationType>
+            <location>usw2-az1</location>
+        </item>
+    </instanceTypeOfferingSet>
+</DescribeInstanceTypeOfferingsResponse>

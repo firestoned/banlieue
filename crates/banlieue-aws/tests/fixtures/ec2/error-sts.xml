@@ -1,0 +1,8 @@
+<ErrorResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
+  <Error>
+    <Type>Sender</Type>
+    <Code>InvalidIdentityToken</Code>
+    <Message>Incorrect token audience</Message>
+  </Error>
+  <RequestId>c6104cbe-af31-11e0-8154-cbc7ccf896c7</RequestId>
+</ErrorResponse>

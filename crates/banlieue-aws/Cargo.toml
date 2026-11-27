@@ -1,0 +1,34 @@
+[package]
+name = "banlieue-aws"
+# Internal to the workspace: only banlieue-api is published (ADR-0100).
+publish = false
+description = "First-party AWS client for the EC2 provider: SigV4, STS web identity, typed EC2 Query requests, S3 multipart and VM Import, typed AWS errors, and an in-memory fake that refuses what EC2 refuses (ADR-0174)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+# Protocol only, like banlieue-azure, banlieue-proxmox and banlieue-libvirt:
+# no `kube`, no banlieue API types. Every dependency below is already in the
+# lockfile (quick-xml 0.42 and aws-lc-rs arrive through the workspace's other
+# crates), so this crate compiles no new third-party code (ADR-0174 Decision 2).
+
+[dependencies]
+async-trait.workspace = true
+# SigV4's HMAC-SHA-256 and SHA-256 from the process's one crypto library
+# (ADR-0170, ADR-0174 Decision 2), as banlieue-provider-azure uses it.
+aws-lc-rs = "1"
+base64.workspace = true
+# Timestamps: SigV4's `x-amz-date`, launch times, the sweep's grace period.
+jiff.workspace = true
+# EC2, STS and S3 answer in XML (ADR-0174 Decision 2).
+quick-xml = { version = "0.42", features = ["serialize"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time", "test-util"] }

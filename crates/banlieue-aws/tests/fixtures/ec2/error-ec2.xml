@@ -1,0 +1,9 @@
+<Response>
+    <Errors>
+         <Error>
+           <Code>InvalidInstanceID.NotFound</Code>
+           <Message>The instance ID 'i-1a2b3c4d' does not exist</Message>
+         </Error>
+    </Errors>
+    <RequestID>ea966190-f9aa-478e-9ede-example</RequestID>
+</Response>
