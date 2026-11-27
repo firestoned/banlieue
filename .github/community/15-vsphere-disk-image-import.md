@@ -13,7 +13,11 @@
 > `VMImage` destroys the per-zone templates exactly as ADR-0028 does today. The
 > provider image is still distroless, with no `qemu-img` in it.
 >
-> **Status: not started.** This closes the follow-up
+> **Status: not started.** *Audited 2026-11-27 against the tree:* no VMDK
+> writer, no `importMethod` field and no ADR-0057 to 0059 exist yet. The only
+> adjacent work is the `banlieue-diskformat` crate (fixed-VHD writer for
+> ADR-0162), whose manifest names the VMDK writer as a later addition; the
+> crate this doc calls `banlieue-vmdk` would land there or beside it. This closes the follow-up
 > [ADR-0010](../../docs/adr/0010-vmimage-build-pipeline-imagebuilder.md) left
 > open ("whether the upload goes through an OVF/`HttpNfcLease` import or a
 > plain datastore file PUT") and that

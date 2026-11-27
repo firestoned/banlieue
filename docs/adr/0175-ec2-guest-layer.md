@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0175: The EC2 guest layer and its Rust helper
 
-- **Status:** Proposed
-- **Date:** 2026-11-26
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-26
+- **Notes:** Partially implemented: the `GuestReady` console-line matcher in `banlieue-aws` (`console.rs`); the guest helper is not built. The rest is not implemented.
 - **Deciders:** Erick Bourgeois
 - **Related:** Implements [ADR-0163](0163-guestready-on-a-cloud.md) for EC2,
   with the transport [ADR-0174](0174-ec2-inframachine-and-a-first-party-aws-client.md)

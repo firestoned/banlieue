@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0146: A Cloud Hypervisor guest may attest with x509pop, using a certificate its host signs with an attestation CA the administrator asserts
 
-- **Status:** Proposed
-- **Date:** 2026-11-19
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-19
+- **Notes:** Not implemented.
 - **Amended:** 2026-11-25 (Decision 8: verified against a real OpenBao by the OpenBao repository's `scripts/attestation-ca.sh` tests; the path length is pinned and sent as a string, all five parameters are required, no default policy on the token), 2026-11-20 (Decision 7: the CA certificate may be signed by an upstream CA, by CSR; Decision 8: the installer may have that one request signed by OpenBao, logging in as the host's own ServiceAccount with a token pinned to its own CA name)
 - **Deciders:** Erick Bourgeois
 - **Related:** Extends [ADR-0143](0143-firecracker-host-attestation-ca-and-guest-signer.md)

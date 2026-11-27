@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0136: Cloud Hypervisor guests get whole PCI devices through VFIO
 
-- **Status:** Proposed
-- **Date:** 2026-11-16
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-16
+- **Notes:** Not implemented.
 - **Deciders:** Erick Bourgeois
 - **Related:** Follows [ADR-0062](0062-cloudhypervisormachine-inframachine-contract.md)
   Decision 4 (hosts declare, machines name a class) for a third kind of

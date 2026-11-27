@@ -19,7 +19,7 @@ is a reason to keep this roadmap open:
 |---|---|---|
 | Migration-policy e2e scenario (4.5) | roadmap 14, *Tests* | live migration itself |
 | Snapshot-schedule e2e scenario (4.5) | roadmap 10, *Definition of done* | the snapshot CRDs |
-| Nightly real-backend CI matrix (4.5) | deferred, no roadmap | self-hosted runners |
+| ~~Nightly real-backend CI matrix (4.5)~~ | dropped 2026-11-27, no self-hosted runners wanted | nothing |
 | ~~`cargo publish` of `banlieue-api` (4.8)~~ | done 2026-10-14, ADR-0100 | nothing; first upload on the next release |
 | Threat model kept current (4.10) | `rules/threat-modeling.md` | nothing: a standing rule, run as ADD's last step |
 
@@ -226,11 +226,13 @@ Concrete tasks:
         `e2e_bootstrap_install.rs` (roadmap 11).
   - [x] ~~CAPI integration: Machine + VSphereMachine pair~~:
         `e2e_capi_contract.rs` (`make kind-e2e-capi`), §4.2 above.
-- [ ] CI matrix per backend; nightly runs against real vCenter/Proxmox
+- [x] ~~CI matrix per backend; nightly runs against real vCenter/Proxmox
       where possible (self-hosted runners). **Still open** — `e2e.yaml`
       fans the `kind` suites out one job each, but every backend-touching
       suite is `#[ignore]`d and local-only; there are no self-hosted
-      runners. **Deferred at close (2026-10-09)** until runners exist.
+      runners. **Deferred at close (2026-10-09)** until runners exist.~~
+      *Closed 2026-11-27 by the maintainer:* self-hosted runners are not required; the backend
+      suites stay local-only (`make libvirt-e2e` and friends). Phase 4 is complete.
 
 ## 4.6 ~~Helm chart~~: out of scope
 

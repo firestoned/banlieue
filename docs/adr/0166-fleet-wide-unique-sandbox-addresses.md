@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0166: Sandbox addresses are private and unique across the fleet, carved from one recorded supernet and checked against it
 
-- **Status:** Proposed
-- **Date:** 2026-11-19
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-19
+- **Notes:** Not implemented.
 - **Renumbered:** 2026-11-25. Written as 0145 on 2026-11-19; `main` took 0145 for "controllers audit their own progress and fail liveness when objects go unreconciled" first, so this is 0166 (the next free number; 0165 was the highest)
 - **Deciders:** Erick Bourgeois
 - **Related:** Enforces the amended Decision 2 of

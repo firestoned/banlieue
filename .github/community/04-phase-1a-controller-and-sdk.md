@@ -376,5 +376,7 @@ banlieue-controller [--kubeconfig PATH]
 
 ## Open items
 
-- **O-001 / O-002 / O-003** still open — see `01-decisions.md`. None
+- **O-002** (live migration semantics) is still open, a Phase 2 design
+  review; see `01-decisions.md`. *Updated 2026-11-27 against the tree:*
+  O-001 closed by ADR-0074 and O-003 closed by ADR-0003 and ADR-0016. None
   block Phase 1A.

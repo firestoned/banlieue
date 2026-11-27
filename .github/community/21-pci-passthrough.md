@@ -16,7 +16,9 @@
 > `MachineDeployment` of one GPU worker (`maxSurge: 0`) joins its cluster,
 > and a replacement `Machine` gets the GPU too.
 >
-> **Status (2026-11-16): not started.** ADR-0136 is Proposed.
+> **Status (2026-11-27): not started.** ADR-0136 is Accepted (2026-11-27)
+> and marked "Not implemented"; no `device_classes`, `DevicesAssigned` or
+> `vfio-grant` exists in `crates/` or `deploy/`.
 
 Baseline when written: ADRs 0001 to 0135 exist or are reserved. **This
 roadmap reserves ADR-0136.** Issue #190.

@@ -4,8 +4,10 @@ SPDX-License-Identifier: Apache-2.0
 -->
 # 0174: The EC2 InfraMachine and a first-party AWS client
 
-- **Status:** Proposed
-- **Date:** 2026-11-26
+- **Status:** Accepted
+- **Date:** 2026-11-27
+- **Proposed:** 2026-11-26
+- **Notes:** Partially implemented: phase A: the `banlieue-aws` client (SigV4, STS, EC2 Query, `FakeEc2`, live test). The rest is not implemented.
 - **Deciders:** Erick Bourgeois
 - **Related:** Roadmap 24 (EC2 provider), which reserved ADR-0166 for this
   decision; that number went to

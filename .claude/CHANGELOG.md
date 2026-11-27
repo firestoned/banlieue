@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-27 12:00] - ADRs accepted as not implemented; roadmaps audited against the tree
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/adr/`: ADR-0082, 0136, 0145, 0146, 0166, 0167, 0174 and 0175 moved from Proposed to Accepted (2026-11-27)
+  with `Notes: Not implemented.`; the original date is kept as `Proposed:`. ADR-0053 is the only ADR still Proposed.
+- `.github/community/`: roadmaps 03 to 25 audited against the tree. Closed: roadmap 03 action 1 (D-023), 04 open
+  items O-001 and O-003, 17 "two claims in the same second" (`two_claims_cannot_bind_the_same_member`), three
+  roadmap 20 phase C items and the ADR-0120 item (superseded by ADR-0140 Decision 3), and roadmap 07's `qemu+ssh`
+  gotcha (superseded by ADR-0011). Roadmap 22 phase 0 is done and phases B, E and F are marked partial; roadmap 24
+  records phase A (`banlieue-aws`) as done. Prose that still called ADR-0136, 0167, 0174 and 0175 Proposed is fixed.
+- `docs/adr/0174-*.md`, `docs/adr/0175-*.md`: Notes changed from "Not implemented" to "Partially implemented" (`banlieue-aws` exists).
+- `.github/community/12-phase-4-finos-ready.md`: the nightly real-backend CI box closed by the maintainer (no self-hosted runners required); roadmap 12 stays complete.
+- `.github/community/07-phase-1d-libvirt-provider.md`: the CI-integration box closed by the maintainer (no self-hosted runner required); roadmap 07 stays complete.
+- `ROADMAPS.md`: row 03 moves from done to in progress (open items remain); rows 07 and 12 stay done; rows 21 and 24 updated.
+
+### Why
+Keep the status board true to the tree. Items needing a live run, an upstream event or a human decision were left
+open on purpose.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-11-27 07:00] - The release ships a glibc 2.28 binary for RHEL 8 hosts (ADR-0177)
 
 **Author:** Erick Bourgeois
