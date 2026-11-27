@@ -8,6 +8,8 @@ SPDX-License-Identifier: Apache-2.0
 - **Date:** 2026-11-19
 - **Proposed:** 2026-11-18
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-11-27 (Decision 1: the CA certificate is `CA:TRUE` with path
+  length 0 and `keyCertSign` only)
 - **Related:** mediatore ADR-0049 (Accepted; the attestor this serves, `x509pop`
   with a certificate the host signs for the guest's own key),
   [ADR-0049](0049-attestation-trust-anchors.md) Decision 10 (trust anchors are
@@ -63,6 +65,21 @@ overwritten by a re-run.
   every agent ID it signs: it must be unique across every CA the SPIRE server
   trusts, which the installer cannot check (it does not see the others), so it is
   documented here and checked where the bundle is assembled.
+- **What it may sign (amended 2026-11-27):** the certificate is `CA:TRUE` with
+  `pathLenConstraint` 0 and `keyUsage` `keyCertSign` alone, both critical. The CA
+  signs guests' leaf certificates and nothing else (Decision 4), so it has no use
+  for a CA below it, and no revocation list is issued (Decision 2), so it has no
+  use for `cRLSign`. This is the profile ADR-0146's shared `banlieue-attestation-ca`
+  has had from its first commit and that its Decision 7 requires of an imported
+  certificate. The module in `banlieue-provider-firecracker` created an
+  unconstrained CA with `cRLSign` until this date; mediatore's `x509pop` wiring
+  refuses a CA that is not `CA:TRUE, pathlen:0`, so that a guest holding a leaf can
+  never be handed something that chains further. Nothing links that module (no
+  binary, no installer verb), so no host holds a CA it made. A CA made before the
+  constraint, should one exist, is **not** replaced on load: it still loads and
+  signs, `Ca::signs_leaves_only` reports `false` so the caller can warn, and it
+  goes away by the rotation below (a new CA under a new name, re-asserted on the
+  Provider and in the SPIRE bundle, the old one removed from both).
 - **Rotation is explicit:** `--force` does not rotate it (unlike the EK CA, whose
   rotation invalidates certificates nobody renews). A separate `--rotate-attestation-ca`
   makes a **new** CA with a **new** name, since a CA name must never be reused for a

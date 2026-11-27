@@ -2,11 +2,17 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Shared fixtures for the unit tests of this module.
 
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use rcgen::{CertificateParams, KeyPair, PKCS_ECDSA_P256_SHA256, SignatureAlgorithm};
+use rcgen::{
+    BasicConstraints, CertificateParams, DistinguishedName, DnType, IsCa, KeyPair, KeyUsagePurpose,
+    PKCS_ECDSA_P256_SHA256, SignatureAlgorithm,
+};
 
 use super::ca::Ca;
 
@@ -23,6 +29,32 @@ pub fn test_ca() -> (tempfile::TempDir, Ca) {
     let dir = tmp.path().join("attestation-ca");
     let ca = Ca::create(&dir, TEST_CA_NAME, SystemTime::now()).expect("create CA");
     (tmp, ca)
+}
+
+/// A CA directory as `Ca::create` wrote it before the path length constraint:
+/// no path length, `keyCertSign` and `cRLSign`. Returns the guard and the
+/// directory; keep the guard alive.
+pub fn legacy_unconstrained_ca() -> (tempfile::TempDir, PathBuf) {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let dir = tmp.path().join("attestation-ca");
+    fs::create_dir(&dir).expect("mkdir");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmod dir");
+
+    let key = KeyPair::generate_for(&PKCS_ECDSA_P256_SHA256).expect("key");
+    let mut params = CertificateParams::default();
+    params.distinguished_name = DistinguishedName::new();
+    params
+        .distinguished_name
+        .push(DnType::CommonName, TEST_CA_NAME);
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let cert = params.self_signed(&key).expect("self-sign");
+
+    let key_path = dir.join("ca.key");
+    fs::write(&key_path, key.serialize_pem()).expect("write key");
+    fs::set_permissions(&key_path, fs::Permissions::from_mode(0o600)).expect("chmod key");
+    fs::write(dir.join("ca.crt"), cert.pem()).expect("write cert");
+    (tmp, dir)
 }
 
 /// Wraps DER in PEM with `label`.
