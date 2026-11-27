@@ -1,5 +1,31 @@
 # Changelog
 
+## [2026-11-27 10:15] - CI: the API server checks the CRDs and admission policies before any e2e build
+
+**Author:** Erick Bourgeois
+
+### Added
+- `Makefile`: `kind-apiserver-check` (with `kind-apiserver-check-apply`). Creates a throwaway kind cluster on
+  `$(KIND_NODE_IMAGE)`, server-side applies `$(CRD_OUT_DIR)` (and waits for every CRD to be established), the
+  controller namespace, then each file in `deploy/admission/` by name, and always deletes the cluster. A file
+  holding a `MutatingAdmissionPolicy` is skipped, by name, only when the server does not serve that kind at
+  `admissionregistration.k8s.io/v1` (Kubernetes 1.36+, as `deploy/admission/README.md` documents). No build.
+- `.github/workflows/e2e.yaml`: job `apiserver-check`, run on the oldest pinned Kubernetes (`kind_node_image`,
+  v1.31.0 by default) and on `kindest/node:v1.36.4` pinned by digest (the runners' kind is v0.33.0); the `e2e`
+  and `capi` jobs now `need` it.
+
+### Why
+No unit test runs the API server's CEL cost estimator. ADR-0176's uncapped OpenBao strings got
+`providers.banlieue.io` refused, and every e2e job found out only after a 15-minute build. Verified on slate:
+main's CRDs fail this check on 1.31 and 1.36 with CI's error; this branch passes on both (the
+`MutatingAdmissionPolicy` file skipped on 1.31, applied on 1.36). actionlint clean.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 09:30] - Provider CRD refused at install: cap the OpenBao strings (ADR-0176 fix)
 
 **Author:** Erick Bourgeois

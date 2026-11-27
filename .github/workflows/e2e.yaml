@@ -78,8 +78,39 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # The API server's own checks on what we ship, before any build: structural
+  # schemas and the estimated cost of every CEL rule, in the CRDs and in the
+  # admission policies. No unit test runs the cost estimator; an uncapped
+  # string under a CEL rule got the Provider CRD refused and failed every job
+  # below at install (ADR-0176). This takes about a minute; the suites below
+  # wait for it. Oldest and newest pinned Kubernetes: the newest is also the
+  # only one that serves deploy/admission's MutatingAdmissionPolicy.
+  apiserver-check:
+    name: 🧪 API server accepts CRDs and policies (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: oldest
+            image: ${{ inputs.kind_node_image || 'kindest/node:v1.31.0' }}
+          - name: Kubernetes 1.36
+            image: kindest/node:v1.36.4@sha256:099e049362a1526b2db71494e1947aae99bd16290d7c895f2b7ea312e3cbfaed
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Apply CRDs and admission policies to a kind API server
+        env:
+          KIND_NODE_IMAGE: ${{ matrix.image }}
+        run: make kind-apiserver-check
+
   e2e:
     name: 🧪 ${{ matrix.name }}
+    needs: apiserver-check
     runs-on: ubuntu-latest
     # A cold Rust build plus a kind cluster; the suites poll with a 120s
     # convergence budget per wait.
@@ -145,6 +176,7 @@ jobs:
   # CAPI v1.14 needs a v1.33+ management cluster, so kind v0.30 or newer.
   capi:
     name: 🧪 ${{ matrix.name }}
+    needs: apiserver-check
     runs-on: ubuntu-latest
     # A cold build of the whole `banlieue` binary, a kind cluster and
     # clusterctl init; the suites poll with a 120s budget per wait.

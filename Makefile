@@ -148,6 +148,7 @@ help: ## Show this help
 .PHONY: help install build build-debug build-linux-amd64 build-linux-arm64 \
         prepare-binaries-linux-amd64 prepare-binaries-linux-arm64 \
         test test-lib lint format clean crds api-docs run-local \
+        kind-apiserver-check kind-apiserver-check-apply \
         ci-code-changed \
         provider-vsphere-run-local imagebuilder-run-local \
         docker-build docker-build-amd64 docker-build-arm64 \
@@ -1605,6 +1606,46 @@ kind-down: kind-delete ## Alias for kind-delete
 kind-deploy-crds: kind-create crds ## Apply CRDs + create $(NAMESPACE) on the kind cluster (creates cluster if missing)
 	$(KIND_KUBECTL) apply -f $(CRD_OUT_DIR)/
 	$(KIND_KUBECTL) apply -f deploy/controller/namespace.yaml
+
+# ----- API server install check ----------------------------------------------
+#
+# The API server checks things no unit test can: structural schema rules and,
+# above all, the estimated cost of every CEL rule (`x-kubernetes-validations`
+# and ValidatingAdmissionPolicy expressions). A rule over a string with no
+# `maxLength` can exceed the per-rule budget and get the whole CRD refused;
+# ADR-0176's OpenBao rules did, and every e2e job failed at install. This
+# applies the checked-in CRDs, then the admission policies, to a throwaway kind
+# cluster on $(KIND_NODE_IMAGE) (the oldest Kubernetes the e2e pins), with no
+# build, and always deletes the cluster.
+APISERVER_CHECK_CLUSTER ?= banlieue-apiserver-check
+
+kind-apiserver-check: ## Apply deploy/crds and deploy/admission to a throwaway kind cluster (schema and CEL cost checks); no build
+	@set -e; rc=0; \
+	$(MAKE) --no-print-directory kind-apiserver-check-apply KIND_CLUSTER_NAME=$(APISERVER_CHECK_CLUSTER) || rc=$$?; \
+	$(MAKE) --no-print-directory kind-delete KIND_CLUSTER_NAME=$(APISERVER_CHECK_CLUSTER) || true; \
+	rm -f $(CURDIR)/.kind-kubeconfig-$(APISERVER_CHECK_CLUSTER); \
+	if [ $$rc -ne 0 ]; then echo "::error::the API server refused a CRD or an admission policy (see above)"; fi; \
+	exit $$rc
+
+kind-apiserver-check-apply: kind-create
+	$(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f $(CRD_OUT_DIR)/
+	$(KIND_KUBECTL) wait --for condition=established --timeout=60s crd --all
+	@# Some policies carry a namespaced parameter object in $(NAMESPACE).
+	$(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f deploy/controller/namespace.yaml
+	@# Per file, so a refusal names its file. A MutatingAdmissionPolicy file
+	@# needs Kubernetes 1.36+ (deploy/admission/README.md); on an older server
+	@# it is skipped, by name, only when MutatingAdmissionPolicy v1 is not
+	@# served. CI runs this on the oldest and the newest pinned Kubernetes.
+	@set -e; \
+	if $(KIND_KUBECTL) get --raw /apis/admissionregistration.k8s.io/v1 | grep -q '"mutatingadmissionpolicies"'; then map=1; else map=0; fi; \
+	for f in deploy/admission/*.yaml; do \
+	  if [ $$map -eq 0 ] && grep -q '^kind: MutatingAdmissionPolicy$$' $$f; then \
+	    echo "skipped $$f: MutatingAdmissionPolicy v1 is not served here (Kubernetes 1.36+)"; continue; \
+	  fi; \
+	  $(KIND_KUBECTL) apply --server-side --field-manager=banlieue-apiserver-check -f $$f >/dev/null; \
+	  echo "accepted $$f"; \
+	done
+	@echo "✓ the API server accepted every CRD in $(CRD_OUT_DIR) and every policy it serves in deploy/admission"
 
 kind-load: kind-create ## Cross-compile $(BINARY) and load the image into the kind cluster (creates cluster if missing)
 	@HOST_ARCH=$$(uname -m); \
