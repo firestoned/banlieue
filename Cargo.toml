@@ -108,7 +108,7 @@ clap = { version = "4", features = ["derive", "env"] }
 # Misc
 # Time: jiff, the same crate k8s-openapi 0.29 uses for `Time`. chrono is
 # unmaintained (RUSTSEC-2026-0543) and was removed from the workspace.
-jiff = "0.2"
+jiff = "1.0"
 async-trait = "0.1"
 # Artifact integrity for provider import Jobs (SEC-004): the import subcommand
 # hashes the built raw disk before streaming it to a backend.
