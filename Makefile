@@ -324,10 +324,10 @@ check-infra-identifiers: ## Fail if a tracked file names real infrastructure (ge
 check-infra-identifiers-test: ## Test scripts/check-infra-identifiers.sh against throwaway repositories
 	@scripts/check-infra-identifiers-test.sh
 
-build-el8: ## Build the banlieue binary against glibc 2.28 for RHEL 8 hosts, in an el8 container -> target/el8/banlieue (EL8_IMAGE / EL8_PROXY / EL8_CA_FILE / EL8_JOBS; container runtime needs >= 12 GiB)
+build-el8: ## Build the banlieue binary against glibc 2.28 for RHEL 8 hosts, in an el8 container -> target/el8/banlieue (the release job runs this; EL8_IMAGE / EL8_PROXY / EL8_CA_FILE / EL8_JOBS; container runtime needs >= 12 GiB)
 	@scripts/build-el8.sh
 
-build-el8-test: ## Test scripts/build-el8.sh (pure checks: the plan, the refusals, the glibc ceiling; starts no container)
+build-el8-test: ## Test scripts/build-el8.sh and the release wiring of the el8 asset in build.yaml (pure checks; starts no container; needs yq)
 	@scripts/build-el8-test.sh
 
 ch-storage-to-xfs-test: ## Test scripts/ch-storage-to-xfs.sh (pure checks; sudo CH_XFS_LIVE=1 adds the whole move on a loop device)

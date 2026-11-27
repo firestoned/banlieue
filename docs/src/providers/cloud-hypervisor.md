@@ -116,17 +116,23 @@ provider is not root, and the credential can read no Secrets.
 - **The `banlieue` binary.** It prepares the host (`banlieue host cloud-hypervisor`, ADR-0067)
   and then runs on it as the provider.
 
-    !!! warning "RHEL 8 cannot run the release binary"
-        The release binary needs a newer glibc than RHEL 8's 2.28, and a RHEL 8
-        host usually cannot build it itself (its `rustc` trails the workspace
-        MSRV). Build one off-host with `make build-el8`: it vendors the crates
-        here, builds in an el8 container, refuses a binary that needs a glibc
-        newer than 2.28, and leaves `target/el8/banlieue`. Hand that to
-        `install --provider-binary`. The container runtime needs at least
-        12 GiB of memory (the `vim_rs` crate is OOM-killed in 8; Colima:
-        `colima start --memory 16`). Behind a proxy that intercepts TLS, set
-        `EL8_PROXY` (as the container sees it) and `EL8_CA_FILE`; to build from
-        a mirror, set `EL8_IMAGE`. RHEL 9 runs the release binary as it is.
+    !!! warning "RHEL 8 needs the el8 build of the binary"
+        `banlieue-linux-amd64` links the glibc of the machine that built it
+        (2.39) and does not start on RHEL 8 (glibc 2.28): `GLIBC_2.39 not
+        found`. From v0.6.2 each release also ships
+        **`banlieue-linux-amd64-el8.tar.gz`**, built against glibc 2.28 in an
+        AlmaLinux 8 container (ADR-0177). It is signed and attested like the
+        other binaries: verify it the same way, then hand the `banlieue` inside
+        to `install --provider-binary`. RHEL 9 and later run the ordinary
+        `banlieue-linux-amd64` as it is.
+
+        To build it yourself (an older release, or a mirror), `make build-el8`
+        vendors the crates, builds in an el8 container, refuses a binary that
+        needs a glibc newer than 2.28, and leaves `target/el8/banlieue`. The
+        container runtime needs at least 12 GiB of memory (the `vim_rs` crate
+        is OOM-killed in 8; Colima: `colima start --memory 16`). Behind a proxy
+        that intercepts TLS, set `EL8_PROXY` (as the container sees it) and
+        `EL8_CA_FILE`; to build from a mirror, set `EL8_IMAGE`.
 
 ---
 

@@ -467,6 +467,7 @@ kubectl apply --server-side -f $URL/install.yaml
 | `admission-policies.yaml` | every policy in `deploy/admission/`; opt-in, and **edit its two parameter ConfigMaps first** (see `deploy/admission/README.md`) |
 | `network-policies.yaml` | every policy in `deploy/network-policies/` (ADR-0094); opt-in, applied per namespace |
 | `deploy-manifests.tar.gz` | the whole `deploy/` tree, READMEs and host units included |
+| `banlieue-linux-amd64.tar.gz`, `banlieue-linux-arm64.tar.gz`, `banlieue-linux-amd64-el8.tar.gz` | the `banlieue` binary, each with a cosign bundle. The `-el8` build is for RHEL 8 hosts (glibc 2.28; [Cloud Hypervisor](../providers/cloud-hypervisor.md)); every other host takes the plain one |
 | `infrastructure-components.yaml`, `metadata.yaml` | the clusterctl provider ([Cluster API](cluster-api.md)) |
 
 All of them are listed in `checksums.sha256` and covered by the release's

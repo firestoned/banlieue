@@ -1,5 +1,48 @@
 # Changelog
 
+## [2026-11-27 07:00] - The release ships a glibc 2.28 binary for RHEL 8 hosts (ADR-0177)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0177-the-release-ships-a-glibc-2-28-binary-for-rhel-8-hosts.md`: Accepted. The release publishes
+  `banlieue-linux-amd64-el8.tar.gz` beside the amd64 and arm64 tarballs, built against glibc 2.28 so it starts on
+  RHEL 8, signed and attested like the others. Records why not an el8-built main binary, a musl binary or
+  `cargo-zigbuild`, and what the el8 binary is not (integration-tested).
+- `.github/workflows/build.yaml`: a `build-el8` job (main and release, not pull requests) that calls `make build-el8`
+  on a native `ubuntu-24.04` runner with `EL8_IMAGE` pinned to the AlmaLinux 8 index digest, stamps the tag's version
+  on a release, and uploads `banlieue-linux-amd64-el8`. `sign-artifacts` gains it in its matrix and in `needs`, so it is
+  cosign-signed, attested, in the SLSA subjects and in `checksums.sha256`, and a failed build stops the release. The
+  `test` job runs `make build-el8-test`.
+- `scripts/build-el8-test.sh`: 11 checks of the release wiring, read from `build.yaml` with `yq` (the job exists and calls
+  only the Makefile, the base image is digest-pinned, no pull-request run, version stamp on release, artifact name,
+  signing matrix and `needs`, the SLSA pattern covers it, actions are commit-pinned, CI runs the test). Written first
+  and failing, 9 of 11.
+
+### Changed
+- `docs/src/providers/cloud-hypervisor.md`: the RHEL 8 admonition names the release asset (from v0.6.2) and keeps
+  `make build-el8` as the way to build an older release or build from a mirror.
+- `docs/architecture/calm/architecture.json`: the host installer's description says which binary a RHEL 8 host takes
+  (`make calm-validate` clean; the diagrams do not change).
+- `docs/src/security/threat-model.md`: full pass for ADR-0177. A-5 names the el8 binary; TB-6 gains a row for it; two
+  §8 rows (the el8 binary is checked for its glibc ceiling and `--version`, not tested; the build trusts a base image,
+  package repositories and a rustup toolchain, one of them untracked by Dependabot). Stamp advanced to ADR-0177. No
+  new component, actor, namespace, identity or boundary.
+
+### Why
+v0.6.0 met RHEL 8 on a real host: the release binary needs glibc 2.39 and does not start on glibc 2.28. The workaround was
+an unsigned binary built by hand on a laptop, which a host operator cannot verify. The release now builds, signs and
+attests the el8 binary itself.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+The release workflow changes, and the first release to carry the asset has not run yet: the job is unproven on a
+GitHub runner. The first push to `main` after this merges runs it before any tag does.
+
 ## [2026-11-27 05:30] - banlieue-aws: the EC2 client, core and network layer, verified live (ADR-0174, roadmap 24 phase A)
 
 **Author:** Erick Bourgeois
