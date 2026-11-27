@@ -1,5 +1,21 @@
 # Changelog
 
+## [2026-11-27 13:00] - banlieue-aws live test tags instances banlieue-purpose=banlieue-aws-provider
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/banlieue-aws/tests/live_ec2.rs`: the `banlieue-purpose` tag value is now `banlieue-aws-provider`
+  (was `roadmap22-24-25-spike`), matching the tag condition in the account's IAM policy, which is being changed to it.
+
+### Why
+The tag-scoped policy gates `RunInstances`, `CreateTags` and the operate actions on this value; a mismatch is a 403.
+
+### Impact
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-11-27 12:45] - EC2: read a hand-published AMI with DescribeImages (roadmap 24 phase E)
 
 **Author:** Erick Bourgeois

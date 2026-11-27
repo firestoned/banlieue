@@ -37,7 +37,7 @@
 //! NitroTPM), `AWS_SUBNET_ID`, `AWS_SECURITY_GROUP_ID` and `AWS_ZONE` (a
 //! zone name in the subnet's zone), and takes `AWS_ROOT_DEVICE` (default
 //! `/dev/xvda`) and `AWS_ROOT_GIB` (default 10). Its tags carry
-//! `banlieue-purpose=roadmap22-24-25-spike` so a tag-scoped policy can
+//! `banlieue-purpose=banlieue-aws-provider` so a tag-scoped policy can
 //! allow it. Nothing printed names an account, an ARN or a whole
 //! instance ID.
 
@@ -71,7 +71,7 @@ const LIVE_KIND: &str = "EC2Machine";
 const LIVE_NAMESPACE: &str = "banlieue-live";
 const LIVE_PROVIDER: &str = "ec2-live";
 const PURPOSE_TAG: &str = "banlieue-purpose";
-const PURPOSE: &str = "roadmap22-24-25-spike";
+const PURPOSE: &str = "banlieue-aws-provider";
 const USER_DATA: &[u8] = b"#!/bin/sh\necho banlieue-live-ec2\n";
 
 /// RunInstances to `running`: the spike's launches took well under this.
