@@ -111,6 +111,42 @@ else
   echo "ok   8 GiB is refused"
 fi
 
+# --- release wiring (ADR-0177) ---------------------------------------------
+# The release builds the el8 binary in CI by the same recipe, and signs it like
+# the other binaries. These read .github/workflows/build.yaml with yq.
+WORKFLOW="$ROOT/.github/workflows/build.yaml"
+EL8_ARTIFACT="banlieue-linux-amd64-el8"
+
+wf() { yq "$1" "$WORKFLOW"; }
+
+if ! command -v yq >/dev/null 2>&1; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL yq is required to check the release wiring"
+else
+  check "the build-el8 job exists" \
+    bash -c '[ "$(yq ".jobs | has(\"build-el8\")" "$1")" = true ]' _ "$WORKFLOW"
+  check "the build-el8 job calls only the Makefile target" \
+    bash -c 'yq ".jobs.build-el8.steps[].run | select(. != null)" "$1" | grep -qx "make build-el8" && ! yq ".jobs.build-el8.steps[].run | select(. != null)" "$1" | grep -v "^make " | grep -q .' _ "$WORKFLOW"
+  check "the base image is pinned by digest" \
+    bash -c 'yq ".jobs.build-el8.steps[].env.EL8_IMAGE | select(. != null)" "$1" | grep -Eq "@sha256:[0-9a-f]{64}$"' _ "$WORKFLOW"
+  check "the job does not run on pull requests" \
+    bash -c 'wf=$(yq ".jobs.build-el8.if" "$1"); grep -q "!= .pull_request." <<<"$wf"' _ "$WORKFLOW"
+  check "a release stamps the tag version before building" \
+    bash -c 'yq ".jobs.build-el8.steps[].run | select(. != null)" "$1" | grep -q "^make set-version"' _ "$WORKFLOW"
+  check "the binary is uploaded as the $EL8_ARTIFACT artifact" \
+    bash -c 'yq ".jobs.build-el8.steps[] | select(.with.name == \"$2\") | .with.path" "$1" | grep -q "target/el8/banlieue"' _ "$WORKFLOW" "$EL8_ARTIFACT"
+  check "the el8 binary is signed with the other binaries" \
+    bash -c 'yq ".jobs.sign-artifacts.strategy.matrix.artifact_name[]" "$1" | grep -qx "$2"' _ "$WORKFLOW" "$EL8_ARTIFACT"
+  check "signing waits for the el8 build, so a failed build stops the release" \
+    bash -c 'yq ".jobs.sign-artifacts.needs[]" "$1" | grep -qx "build-el8"' _ "$WORKFLOW"
+  check "the SLSA subjects pattern covers the signed el8 tarball" \
+    bash -c 'pattern=$(yq ".jobs.generate-provenance-subjects.steps[0].with.pattern" "$1"); case "$2-signed" in $pattern) true ;; *) false ;; esac' _ "$WORKFLOW" "$EL8_ARTIFACT"
+  check "every action in the build-el8 job is pinned to a commit" \
+    bash -c 'yq ".jobs.build-el8.steps[].uses | select(. != null)" "$1" | grep -Evq "@[0-9a-f]{40}( |$)" && exit 1; exit 0' _ "$WORKFLOW"
+  check "the unit tests run build-el8-test in CI" \
+    bash -c 'yq ".jobs.test.steps[].run | select(. != null)" "$1" | grep -qx "make build-el8-test"' _ "$WORKFLOW"
+fi
+
 echo
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

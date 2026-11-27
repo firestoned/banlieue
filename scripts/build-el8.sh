@@ -106,9 +106,8 @@ main() {
   rust="$(workspace_rust_version "$root")"
   tag="banlieue-el8-toolchain:$rust"
 
-  local -a proxy_build=() proxy_run=()
+  local -a proxy_run=()
   if [ -n "$proxy" ]; then
-    proxy_build=(--build-arg "http_proxy=$proxy" --build-arg "https_proxy=$proxy")
     proxy_run=(-e "http_proxy=$proxy" -e "https_proxy=$proxy")
   fi
 
