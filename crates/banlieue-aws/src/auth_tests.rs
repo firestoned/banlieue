@@ -6,7 +6,6 @@
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
 
     use jiff::{SignedDuration, Timestamp};
 
@@ -24,12 +23,16 @@ mod tests {
     const SESSION_TOKEN: &str = "session-token-EXAMPLE";
     const STS_ERROR: &str = include_str!("../tests/fixtures/ec2/error-sts.xml");
 
-    static NEXT_FILE: AtomicU32 = AtomicU32::new(0);
-
+    /// A fresh token file. `tempfile` creates it exclusively under a random
+    /// name, so no other process can pre-create or guess the path; `keep`
+    /// stops the delete-on-drop so the source can read it for the whole test.
     fn token_file(contents: &str) -> PathBuf {
-        let n = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("banlieue-aws-sa-{}-{n}", std::process::id()));
-        std::fs::write(&path, contents).unwrap();
+        let mut file = tempfile::Builder::new()
+            .prefix("banlieue-aws-sa-")
+            .tempfile()
+            .unwrap();
+        std::io::Write::write_all(&mut file, contents.as_bytes()).unwrap();
+        let (_, path) = file.keep().unwrap();
         path
     }
 

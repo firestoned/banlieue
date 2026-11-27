@@ -46,6 +46,11 @@
   IMDS disabled, found by owner tag and terminated in 13 s. Found: EC2 can answer `InstanceTpmEkPub.NotFound`
   right at `running`; recorded in ADR-0167 Decision 1 as "not yet".
 
+### Fixed
+- `crates/banlieue-aws/src/auth_tests.rs`: the token-file helper built a predictable path under
+  `std::env::temp_dir()`, which Semgrep's `rust.lang.security.temp-dir.temp-dir` rule flags. It now uses
+  `tempfile` (exclusive create, random name); `tempfile` is a `banlieue-aws` dev-dependency.
+
 ### Why
 Roadmap 24 phase A, after ADR-0174 (#257). Same order as the Azure client (#236 then #238), in one branch.
 

@@ -39,4 +39,5 @@ tokio = { workspace = true, features = ["fs", "sync", "time"] }
 # reqwest's `rustls-no-provider` panics at client build without a process
 # default provider; the binary installs it, tests do it themselves.
 banlieue-tls.workspace = true
+tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "fs", "sync", "time", "test-util"] }
